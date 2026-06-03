@@ -1,0 +1,22 @@
+{
+  "name": "local-keep",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "npm run build && node server.js",
+    "dev": "concurrently \"node server.js\" \"vite\"",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^4.22.2",
+    "vue": "^3.4.0",
+    "ws": "^8.21.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.0",
+    "concurrently": "^8.2.2",
+    "vite": "^5.0.0"
+  }
+}
