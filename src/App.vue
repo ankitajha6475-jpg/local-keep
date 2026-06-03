@@ -166,6 +166,7 @@ export default {
     let reconnectTimer = null
     const wsConnecting = ref(false)
     const wsConnected = ref(false)
+    const pendingNotes = ref(null)
 
     // Create WebSocket connection
     const connectWebSocket = () => {
@@ -204,13 +205,15 @@ export default {
               if (!editingId.value) {
                 // Force reactivity by creating a new array reference
                 notes.value = [...data.notes]
+                pendingNotes.value = null
                 console.log(`[${now}] 📨 Notes set in Vue, length: ${notes.value.length}`)
                 // Force DOM update using queuePostFlushCb
                 requestAnimationFrame(() => {
                   console.log(`[${now}] 📨 After RAF, notes length: ${notes.value.length}`)
                 })
               } else {
-                console.log(`[${now}] 📨 Skipping - editing mode`)
+                console.log(`[${now}] 📨 Skipping - editing mode. Buffering update.`)
+                pendingNotes.value = [...data.notes]
               }
             }
           } catch (e) {
@@ -376,6 +379,7 @@ export default {
     }
 
     const startEditing = (note) => {
+      pendingNotes.value = null
       editingId.value = note.id
       editForm.value = { title: note.title, content: note.content }
     }
@@ -402,6 +406,10 @@ export default {
     const cancelEdit = () => {
       editingId.value = null
       editForm.value = { title: '', content: '' }
+      if (pendingNotes.value) {
+        notes.value = [...pendingNotes.value]
+        pendingNotes.value = null
+      }
     }
 
     // Computed
