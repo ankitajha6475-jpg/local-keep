@@ -237,6 +237,29 @@ app.delete('/api/notes/:id', checkAuth, (req, res) => {
   broadcastNotes()
 })
 
+app.post('/api/notes/batch-delete', checkAuth, (req, res) => {
+  try {
+    const { ids } = req.body
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'Invalid note IDs' })
+    }
+
+    console.log(`🗑️ POST /api/notes/batch-delete - Deleting ${ids.length} notes`)
+    const placeholders = ids.map(() => '?').join(',')
+    const stmt = db.prepare(`DELETE FROM notes WHERE id IN (${placeholders})`)
+    const info = stmt.run(...ids)
+
+    console.log(`✓ Deleted ${info.changes} notes from SQLite`)
+    res.json({ success: true, count: info.changes })
+    broadcastNotes()
+  } catch (e) {
+    console.error('🗑️ ERROR in POST /api/notes/batch-delete:', e)
+    if (!res.headersSent) {
+      res.status(500).json({ error: e.message })
+    }
+  }
+})
+
 // WebSocket Server
 const wss = new WebSocketServer({ server, path: '/ws' })
 

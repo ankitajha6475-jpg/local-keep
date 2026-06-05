@@ -59,7 +59,39 @@
       </header>
 
       <main>
-        <div class="notes-grid">
+        <!-- Selection Action Bar -->
+        <div v-if="selectedNoteIds.size > 0" class="selection-bar">
+          <div class="selection-info">
+            <span class="selection-count">{{ selectedNoteIds.size }} selected</span>
+          </div>
+          <div class="selection-actions">
+            <button @click="selectAll" class="btn-select-all">Select All</button>
+            <button @click="deselectAll" class="btn-deselect-all">Deselect All</button>
+            <button @click="triggerDeleteConfirm(null)" class="btn-delete-selected" title="Delete selected notes">
+              🗑️ Delete
+            </button>
+          </div>
+        </div>
+
+        <!-- Sort / Control Bar -->
+        <div v-else class="control-bar">
+          <div class="control-left">
+            <span class="notes-count">{{ notes.length }} notes</span>
+          </div>
+          <div class="control-right">
+            <span class="sort-label">Sort by:</span>
+            <select v-model="sortBy" class="sort-select">
+              <option value="updatedAt">Last Modified</option>
+              <option value="createdAt">Date Created</option>
+              <option value="title">Title</option>
+            </select>
+            <button @click="sortOrder = sortOrder === 'asc' ? 'desc' : 'asc'" class="sort-dir-btn" :title="sortOrder === 'asc' ? 'Sort Ascending' : 'Sort Descending'">
+              {{ sortOrder === 'asc' ? '↑' : '↓' }}
+            </button>
+          </div>
+        </div>
+
+        <div class="notes-grid" :class="{ 'notes-grid-selection-active': selectedNoteIds.size > 0 }">
           <!-- Always Show Shortcuts Tip Card First -->
           <div class="note-card shortcut-tips-card">
             <div class="note-content">
@@ -86,8 +118,27 @@
           </div>
 
           <!-- Real Note Cards -->
-          <div v-for="note in sortedNotes" :key="note.id" class="note-card" :class="{ editing: note.id === editingId }">
-            <div @click="startEditing(note)" class="note-content">
+          <div 
+            v-for="note in sortedNotes" 
+            :key="note.id" 
+            class="note-card" 
+            :class="{ 
+              editing: note.id === editingId,
+              selected: selectedNoteIds.has(note.id)
+            }"
+            @click="handleCardClick(note)"
+          >
+            <!-- Checkbox for Selection -->
+            <div class="card-checkbox-container" @click.stop>
+              <input 
+                type="checkbox" 
+                :checked="selectedNoteIds.has(note.id)" 
+                @change="toggleSelect(note.id)"
+                class="card-checkbox"
+              >
+            </div>
+
+            <div class="note-content">
               <h3 v-if="note.title">{{ note.title }}</h3>
               <p>{{ note.content }}</p>
               <small class="note-date">{{ formatDate(note.updatedAt) }}</small>
@@ -144,8 +195,11 @@
       <!-- Custom Confirmation Modal for Deletion -->
       <div v-if="isConfirmOpen" class="modal-overlay" @click.self="closeConfirm">
         <div class="modal-content confirm-modal">
-          <h2>Delete Note?</h2>
-          <p>Are you sure you want to delete this note? This action cannot be undone.</p>
+          <h2>{{ noteToDeleteId ? 'Delete Note?' : 'Delete Selected Notes?' }}</h2>
+          <p>
+            {{ noteToDeleteId ? 'Are you sure you want to delete this note?' : `Are you sure you want to delete these ${selectedNoteIds.size} selected notes?` }}
+            This action cannot be undone.
+          </p>
           <div class="confirm-actions">
             <button @click="confirmDelete" class="delete-confirm-btn">Delete</button>
             <button @click="closeConfirm" class="cancel-confirm-btn">Cancel</button>
@@ -209,6 +263,9 @@ export default {
     const copiedId = ref(null)
     const isConfirmOpen = ref(false)
     const noteToDeleteId = ref(null)
+    const sortBy = ref('updatedAt')
+    const sortOrder = ref('desc')
+    const selectedNoteIds = ref(new Set())
 
     // Template refs
     const modalTitleInput = ref(null)
@@ -549,7 +606,7 @@ export default {
       }
     }
 
-    const triggerDeleteConfirm = (id) => {
+    const triggerDeleteConfirm = (id = null) => {
       console.log('[DEBUG] triggerDeleteConfirm called for ID:', id)
       noteToDeleteId.value = id
       isConfirmOpen.value = true
@@ -562,17 +619,58 @@ export default {
     }
 
     const confirmDelete = async () => {
-      if (!noteToDeleteId.value) return
-      const id = noteToDeleteId.value
-      console.log('[DEBUG] confirmDelete called for ID:', id)
+      console.log('[DEBUG] confirmDelete called')
       try {
-        const result = await api(`/api/notes/${id}`, { method: 'DELETE' })
-        console.log('[DEBUG] API response:', result)
-        notes.value = notes.value.filter(n => n.id !== id)
-        console.log('[DEBUG] Note removed from local state. Remaining notes count:', notes.value.length)
+        if (noteToDeleteId.value) {
+          const id = noteToDeleteId.value
+          const result = await api(`/api/notes/${id}`, { method: 'DELETE' })
+          console.log('[DEBUG] API response:', result)
+          notes.value = notes.value.filter(n => n.id !== id)
+          if (selectedNoteIds.value.has(id)) {
+            toggleSelect(id)
+          }
+        } else if (selectedNoteIds.value.size > 0) {
+          const ids = Array.from(selectedNoteIds.value)
+          const result = await api('/api/notes/batch-delete', {
+            method: 'POST',
+            body: JSON.stringify({ ids })
+          })
+          console.log('[DEBUG] API response:', result)
+          notes.value = notes.value.filter(n => !selectedNoteIds.value.has(n.id))
+          deselectAll()
+        }
         closeConfirm()
       } catch (e) {
         console.error('[DEBUG] Error in confirmDelete:', e)
+      }
+    }
+
+    const toggleSelect = (id) => {
+      console.log('[DEBUG] toggleSelect called for ID:', id)
+      const next = new Set(selectedNoteIds.value)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      selectedNoteIds.value = next
+    }
+
+    const selectAll = () => {
+      console.log('[DEBUG] selectAll called')
+      selectedNoteIds.value = new Set(sortedNotes.value.map(n => n.id))
+    }
+
+    const deselectAll = () => {
+      console.log('[DEBUG] deselectAll called')
+      selectedNoteIds.value = new Set()
+    }
+
+    const handleCardClick = (note) => {
+      if (selectedNoteIds.value.size > 0) {
+        toggleSelect(note.id)
+      } else {
+        startEditing(note)
       }
     }
 
@@ -612,9 +710,20 @@ export default {
 
     // Computed
     const sortedNotes = computed(() => {
-      return [...notes.value].sort((a, b) =>
-        new Date(b.updatedAt) - new Date(a.updatedAt)
-      )
+      return [...notes.value].sort((a, b) => {
+        let valA, valB
+        if (sortBy.value === 'title') {
+          valA = (a.title || '').toLowerCase()
+          valB = (b.title || '').toLowerCase()
+        } else {
+          valA = new Date(a[sortBy.value])
+          valB = new Date(b[sortBy.value])
+        }
+
+        if (valA < valB) return sortOrder.value === 'asc' ? -1 : 1
+        if (valA > valB) return sortOrder.value === 'asc' ? 1 : -1
+        return 0
+      })
     })
 
     // Utilities
@@ -668,6 +777,14 @@ export default {
       triggerDeleteConfirm,
       closeConfirm,
       confirmDelete,
+      // Sorting and Selection
+      sortBy,
+      sortOrder,
+      selectedNoteIds,
+      toggleSelect,
+      selectAll,
+      deselectAll,
+      handleCardClick,
       // WebSocket
       wsConnected,
       wsConnecting,
@@ -1324,6 +1441,179 @@ main {
 .note-form-actions small {
   color: #80868b;
   font-size: 0.75rem;
+}
+
+/* Sort / Action Bar */
+.control-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  padding: 0.5rem 1rem;
+  background: #f8f9fa;
+  border: 1px solid #dadce0;
+  border-radius: 8px;
+}
+
+.notes-count {
+  font-size: 0.875rem;
+  color: #5f6368;
+  font-weight: 500;
+}
+
+.control-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.sort-label {
+  font-size: 0.875rem;
+  color: #5f6368;
+}
+
+.sort-select {
+  padding: 0.375rem 0.5rem;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  background: white;
+  font-size: 0.875rem;
+  color: #202124;
+  cursor: pointer;
+  outline: none;
+}
+
+.sort-select:focus {
+  border-color: #1a73e8;
+}
+
+.sort-dir-btn {
+  width: 32px;
+  height: 32px;
+  border: 1px solid #dadce0;
+  background: white;
+  color: #5f6368;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  font-weight: bold;
+  transition: background 0.2s, color 0.2s;
+}
+
+.sort-dir-btn:hover {
+  background: #f1f3f4;
+  color: #202124;
+}
+
+/* Selection Action Bar */
+.selection-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  padding: 0.5rem 1rem;
+  background: #e8f0fe;
+  border: 1px solid #d2e3fc;
+  border-radius: 8px;
+  color: #1a73e8;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.selection-count {
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.selection-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.btn-select-all,
+.btn-deselect-all {
+  padding: 0.375rem 0.75rem;
+  background: transparent;
+  color: #1a73e8;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.btn-select-all:hover,
+.btn-deselect-all:hover {
+  background: #d2e3fc;
+}
+
+.btn-delete-selected {
+  padding: 0.375rem 1rem;
+  background: #d93025;
+  color: white;
+  border: 1px solid #d93025;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background 0.2s;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.btn-delete-selected:hover {
+  background: #b8251b;
+  border-color: #b8251b;
+}
+
+/* Card Selection Checkboxes */
+.card-checkbox-container {
+  position: absolute;
+  top: 0.5rem;
+  left: 0.5rem;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.2s;
+  z-index: 5;
+}
+
+.card-checkbox {
+  cursor: pointer;
+  width: 16px;
+  height: 16px;
+  accent-color: #1a73e8;
+}
+
+.note-card.selected {
+  border-color: #1a73e8 !important;
+  background-color: #f8fafd !important;
+  outline: 2px solid #1a73e8;
+}
+
+.note-card:hover .card-checkbox-container,
+.note-card.selected .card-checkbox-container,
+.notes-grid-selection-active .card-checkbox-container {
+  opacity: 1;
+}
+
+/* When selections exist, copy/delete individual buttons shift a bit to accommodate check */
+.notes-grid-selection-active .copy-btn {
+  right: 2.5rem;
+}
+.notes-grid-selection-active .delete-btn {
+  right: 0.5rem;
 }
 
 /* Floating Action Button */
