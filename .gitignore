@@ -4,8 +4,8 @@ node_modules/
 # Build output
 dist/
 
-# Local data (optional - don't commit if you store actual notes in git)
-# localStorage/
+# Data (SQLite DB, password hash, notes)
+data/
 
 # Editor
 .vscode/
@@ -15,5 +15,3 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
-data
-    

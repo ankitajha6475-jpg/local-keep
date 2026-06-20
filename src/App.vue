@@ -44,18 +44,47 @@
       </div>
     </div>
 
+    <!-- Whiteboard Editor (full-screen) -->
+    <WhiteboardEditor
+      v-else-if="isAuthenticated && currentView === 'canvas'"
+      :noteId="editingCanvasId"
+      :canvasData="editingCanvasData"
+      :initialTitle="editingCanvasTitle"
+      :ws="wsRef"
+      @back="closeCanvasEditor"
+    />
+
     <!-- Main App -->
-    <div v-else class="main-app">
+    <div v-else-if="isAuthenticated" class="main-app">
       <header>
-        <h1>📝 Local Keep</h1>
-        <div class="header-right">
-          <span class="sync-status" :class="{ connected: wsConnected, connecting: wsConnecting }">
-            {{ wsConnected ? '● Synced' : wsConnecting ? '○ Connecting...' : '○ Offline' }}
-          </span>
-          <button v-if="!wsConnected && !wsConnecting" @click="manualReconnect" class="reconnect-btn" title="Reconnect now">🔌 Connect</button>
-          <button @click="loadNotes" class="refresh-btn" title="Refresh notes">↻</button>
-          <button @click="logout" class="logout-btn">Lock</button>
-        </div>
+        <template v-if="!searchOpen">
+          <h1>📝 Local Keep</h1>
+          <div class="header-right">
+            <span class="sync-status" :class="{ connected: wsConnected, connecting: wsConnecting }">
+              {{ wsConnected ? '● Synced' : wsConnecting ? '○ Connecting...' : '○ Offline' }}
+            </span>
+            <button v-if="!wsConnected && !wsConnecting" @click="manualReconnect" class="reconnect-btn" title="Reconnect now">🔌 Connect</button>
+            <button @click="loadNotes" class="refresh-btn" title="Refresh notes">↻</button>
+            <button @click="openNewCanvas" class="canvas-btn" title="New whiteboard">✏️ Whiteboard</button>
+            <button @click="openSearch" class="search-toggle-btn" title="Search (Ctrl+I)">🔍</button>
+            <button @click="logout" class="logout-btn">Lock</button>
+          </div>
+        </template>
+        <template v-else>
+          <div class="header-search-field">
+            <span class="search-icon">🔍</span>
+            <input
+              ref="searchInput"
+              v-model="searchQuery"
+              type="text"
+              placeholder="Search notes..."
+              class="search-input"
+              @input="onSearchInput"
+            >
+            <button v-if="searchQuery" @click="clearSearch" class="search-clear-btn" title="Clear search">×</button>
+            <button @click="closeSearch" class="search-close-btn" title="Close search (Esc)">✕</button>
+          </div>
+        </template>
       </header>
 
       <main>
@@ -76,7 +105,9 @@
         <!-- Sort / Control Bar -->
         <div v-else class="control-bar">
           <div class="control-left">
-            <span class="notes-count">{{ notes.length }} notes</span>
+            <span class="notes-count" v-if="!searchQuery">{{ notes.length }} notes</span>
+            <span class="notes-count" v-else-if="searchLoading">Searching...</span>
+            <span class="notes-count" v-else>{{ sortedNotes.length }} results</span>
           </div>
           <div class="control-right">
             <span class="sort-label">Sort by:</span>
@@ -98,20 +129,24 @@
               <h3>💡 Quick Shortcuts</h3>
               <div class="shortcut-tips-content">
                 <div class="shortcut-row">
-                  <span class="shortcut-keys"><kbd>Ctrl</kbd> + <kbd>Enter</kbd></span>
-                  <span class="shortcut-desc">Create note (closed)</span>
-                </div>
-                <div class="shortcut-row">
-                  <span class="shortcut-keys"><kbd>Ctrl</kbd> + <kbd>Enter</kbd></span>
-                  <span class="shortcut-desc">Save note (editing)</span>
-                </div>
-                <div class="shortcut-row">
-                  <span class="shortcut-keys"><kbd>Ctrl</kbd> + <kbd>V</kbd></span>
+              <span class="shortcut-keys"><kbd>{{ modKey }}</kbd> + <kbd>Enter</kbd></span>
+                <span class="shortcut-desc">Create note (closed)</span>
+              </div>
+              <div class="shortcut-row">
+                <span class="shortcut-keys"><kbd>{{ modKey }}</kbd> + <kbd>Enter</kbd></span>
+                <span class="shortcut-desc">Save note (editing)</span>
+              </div>
+              <div class="shortcut-row">
+                <span class="shortcut-keys"><kbd>{{ modKey }}</kbd> + <kbd>V</kbd></span>
                   <span class="shortcut-desc">Paste clipboard note</span>
                 </div>
                 <div class="shortcut-row">
                   <span class="shortcut-keys"><kbd>Esc</kbd></span>
                   <span class="shortcut-desc">Cancel edit / delete</span>
+                </div>
+                <div class="shortcut-row">
+                  <span class="shortcut-keys"><kbd>{{ modKey }}</kbd> + <kbd>I</kbd></span>
+                  <span class="shortcut-desc">Open search</span>
                 </div>
               </div>
             </div>
@@ -124,7 +159,8 @@
             class="note-card" 
             :class="{ 
               editing: note.id === editingId,
-              selected: selectedNoteIds.has(note.id)
+              selected: selectedNoteIds.has(note.id),
+              'canvas-note': note.type === 'canvas'
             }"
             @click="handleCardClick(note)"
           >
@@ -139,11 +175,27 @@
             </div>
 
             <div class="note-content">
+              <!-- Canvas note: show thumbnail -->
+              <div v-if="note.type === 'canvas'" class="canvas-thumbnail-wrapper">
+                <img 
+                  v-if="note.thumbnail" 
+                  :src="note.thumbnail" 
+                  class="canvas-thumbnail" 
+                  alt="Canvas thumbnail"
+                />
+                <div v-else class="canvas-thumbnail-placeholder">
+                  <span>✏️</span>
+                  <span>Whiteboard</span>
+                </div>
+              </div>
               <h3 v-if="note.title">{{ note.title }}</h3>
-              <p>{{ note.content }}</p>
+              <h3 v-else-if="note.type === 'canvas'" class="canvas-untitled">Untitled Whiteboard</h3>
+              <p v-if="note.type !== 'canvas'">{{ note.content }}</p>
               <small class="note-date">{{ formatDate(note.updatedAt) }}</small>
             </div>
+            <!-- Copy button (text notes only) -->
             <button
+              v-if="note.type !== 'canvas'"
               @click.stop="copyNote(note)"
               class="copy-btn"
               :class="{ copied: copiedId === note.id }"
@@ -159,7 +211,11 @@
 
       <!-- Modal for Add/Edit Note -->
       <div v-if="isModalOpen" class="modal-overlay" @click.self="closeModal">
-        <div class="modal-content note-form-modal" :class="{ 'editing-form': editingId !== null }">
+        <div
+          class="modal-content note-form-modal"
+          :class="{ 'editing-form': editingId !== null }"
+          :style="modalSize.width ? { width: modalSize.width + 'px', height: modalSize.height + 'px', maxWidth: 'none', maxHeight: 'none' } : {}"
+        >
           <div class="modal-header">
             <h2>{{ editingId ? 'Editing Note' : 'New Note' }}</h2>
             <button @click="closeModal" class="close-modal-btn">×</button>
@@ -172,6 +228,7 @@
               placeholder="Title"
               class="note-title-input"
               @keydown.ctrl.enter.stop.prevent="editingId ? saveEdit() : addNote()"
+              @keydown.meta.enter.stop.prevent="editingId ? saveEdit() : addNote()"
             >
             <textarea
               ref="modalContentInput"
@@ -180,15 +237,32 @@
               rows="5"
               required
               @keydown.ctrl.enter.stop.prevent="editingId ? saveEdit() : addNote()"
+              @keydown.meta.enter.stop.prevent="editingId ? saveEdit() : addNote()"
             ></textarea>
             <div class="note-form-actions">
               <div class="action-buttons">
                 <button type="submit" class="save-btn">{{ editingId ? 'Save' : 'Add Note' }}</button>
                 <button type="button" @click="closeModal" class="cancel-btn">Cancel</button>
               </div>
-              <small>{{ editingId ? 'Ctrl+Enter to save' : 'Ctrl+Enter to add' }}</small>
+              <small>{{ editingId ? `${modKey}+Enter to save` : `${modKey}+Enter to add` }}</small>
             </div>
           </form>
+          <div class="modal-resize-handle" @mousedown.prevent="startResize"></div>
+        </div>
+      </div>
+
+      <!-- Unsaved Changes Confirmation Modal -->
+      <div v-if="isUnsavedChangesOpen" class="modal-overlay" @click.self="cancelDiscardChanges">
+        <div class="modal-content confirm-modal">
+          <h2>Unsaved Changes</h2>
+          <p>
+            You have unsaved changes. What would you like to do?
+          </p>
+          <div class="confirm-actions">
+            <button @click="saveAndClose" class="save-btn">Save</button>
+            <button @click="discardChanges" class="cancel-confirm-btn">Discard</button>
+            <button @click="cancelDiscardChanges" class="delete-confirm-btn">Continue Editing</button>
+          </div>
         </div>
       </div>
 
@@ -212,17 +286,26 @@
         v-if="isAuthenticated"
         @click="openNewNoteModal"
         class="fab-btn"
-        title="Create new note (Ctrl+Enter)"
+        :title="`Create new note (${modKey}+Enter)`"
       >
         +
       </button>
+
+      <!-- Hidden paste receiver for clipboard interception -->
+      <textarea
+        ref="pasteReceiver"
+        class="paste-receiver"
+      ></textarea>
     </div>
   </div>
 </template>
 
 <script>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import debug from 'debug'
+import WhiteboardEditor from './components/WhiteboardEditor.vue'
 
+const log = debug('local-keep:client')
 const API_BASE = window.location.origin
 
 // API helper
@@ -243,8 +326,13 @@ async function api(url, options = {}) {
   return res.json()
 }
 
+// Platform detection
+const isMac = /Mac/.test(navigator.userAgent)
+const modKey = isMac ? 'Cmd' : 'Ctrl'
+
 export default {
   name: 'App',
+  components: { WhiteboardEditor },
   setup() {
     // Auth state
     const showSetup = ref(false)
@@ -263,16 +351,41 @@ export default {
     const copiedId = ref(null)
     const isConfirmOpen = ref(false)
     const noteToDeleteId = ref(null)
+    const isUnsavedChangesOpen = ref(false)
     const sortBy = ref('updatedAt')
     const sortOrder = ref('desc')
     const selectedNoteIds = ref(new Set())
 
+    // Search state
+    const searchOpen = ref(false)
+    const searchQuery = ref('')
+    const searchResults = ref(null)
+    const searchLoading = ref(false)
+    let searchTimer = null
+
+    // Canvas / Whiteboard state
+    const currentView = ref('list') // 'list' | 'canvas'
+    const editingCanvasId = ref(null)
+    const editingCanvasData = ref(null)
+    const editingCanvasTitle = ref('')
+
+    // Modal resize state
+    const modalSize = ref({ width: null, height: null })
+    const isResizing = ref(false)
+    const justResized = ref(false)
+    let resizeStartX = 0
+    let resizeStartY = 0
+    let resizeStartWidth = 0
+    let resizeStartHeight = 0
+
     // Template refs
     const modalTitleInput = ref(null)
     const modalContentInput = ref(null)
+    const searchInput = ref(null)
 
     // WebSocket state
     let ws = null
+    const wsRef = ref(null)
     let reconnectTimer = null
     const wsConnecting = ref(false)
     const wsConnected = ref(false)
@@ -295,6 +408,7 @@ export default {
 
         ws.onopen = () => {
           console.log('✅ WebSocket connected')
+          wsRef.value = ws
           wsConnecting.value = false
           wsConnected.value = true
           reconnectAttempts.value = 0
@@ -335,6 +449,7 @@ export default {
 
         ws.onclose = () => {
           console.log('❌ WebSocket disconnected')
+          wsRef.value = null
           ws = null
           wsConnecting.value = false
           wsConnected.value = false
@@ -353,6 +468,7 @@ export default {
 
         ws.onerror = (error) => {
           console.error('WebSocket error:', error)
+          wsRef.value = null
         }
       } catch (e) {
         console.error('Failed to create WebSocket:', e)
@@ -365,6 +481,7 @@ export default {
         clearTimeout(reconnectTimer)
         reconnectTimer = null
       }
+      wsRef.value = null
       if (ws) {
         ws.close()
         ws = null
@@ -397,6 +514,13 @@ export default {
     const handleKeyDown = async (e) => {
       if (!isAuthenticated.value) return
 
+      log('keydown: key=%s ctrl=%s meta=%s shift=%s alt=%s target=%s',
+        e.key, e.ctrlKey, e.metaKey, e.shiftKey, e.altKey,
+        document.activeElement?.tagName || 'none')
+
+      // 0. Skip keyboard shortcuts when in canvas editor view
+      if (currentView.value === 'canvas') return
+
       // 1. Handlers when delete confirmation modal is open
       if (isConfirmOpen.value) {
         if (e.key === 'Enter') {
@@ -411,13 +535,43 @@ export default {
         }
       }
 
-      // 2. Handlers when note editor modal is open
+      // 2. Handlers when unsaved changes confirmation is open
+      if (isUnsavedChangesOpen.value) {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          saveAndClose()
+          return
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          cancelDiscardChanges()
+          return
+        }
+      }
+
+      // 3. Ctrl+I / Cmd+I to open search
+      if ((e.metaKey || e.ctrlKey) && e.key === 'i') {
+        if (!isModalOpen.value && !isConfirmOpen.value) {
+          e.preventDefault()
+          openSearch()
+          return
+        }
+      }
+
+      // 4. Handlers when note editor modal is open
       if (isModalOpen.value) {
         if (e.key === 'Escape') {
           e.preventDefault()
           closeModal()
           return
         }
+      }
+
+      // 5. Search bar Escape handling
+      if (searchOpen.value && e.key === 'Escape' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault()
+        closeSearch()
+        return
       }
 
       const activeEl = document.activeElement
@@ -427,25 +581,20 @@ export default {
         activeEl.isContentEditable
       )
 
-      // Ctrl + Enter: Open new note modal if closed
-      if (e.ctrlKey && e.key === 'Enter') {
+      // Cmd/Ctrl + Enter: Open new note modal if closed
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        log('Cmd/Ctrl+Enter: modalOpen=%s confirmOpen=%s', isModalOpen.value, isConfirmOpen.value)
         if (!isModalOpen.value && !isConfirmOpen.value) {
           e.preventDefault()
           openNewNoteModal()
         }
-      }
-
-      // Ctrl + V: Open modal and paste clipboard
-      if (e.ctrlKey && e.key.toLowerCase() === 'v') {
-        if (isInputActive) return
-        e.preventDefault()
-        openPasteNoteModal()
       }
     }
 
     // Check if setup is needed on mount
     onMounted(async () => {
       window.addEventListener('keydown', handleKeyDown)
+      window.addEventListener('paste', handleWindowPaste)
       try {
         const data = await api('/api/password')
         if (!data.hasPassword) {
@@ -465,6 +614,7 @@ export default {
 
     onUnmounted(() => {
       window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('paste', handleWindowPaste)
       disconnectWebSocket()
     })
 
@@ -525,7 +675,7 @@ export default {
       loginForm.value.password = ''
       loginError.value = ''
       disconnectWebSocket()
-      closeModal()
+      closeModal(true)
     }
 
     // Modal creation/editing triggers
@@ -534,6 +684,7 @@ export default {
       editingId.value = null
       newNoteTitle.value = ''
       newNoteContent.value = ''
+      modalSize.value = { width: null, height: null }
       setTimeout(() => {
         if (modalTitleInput.value) {
           modalTitleInput.value.focus()
@@ -541,18 +692,26 @@ export default {
       }, 50)
     }
 
-    const openPasteNoteModal = async () => {
+    const handleWindowPaste = (e) => {
+      if (!isAuthenticated.value) return
+      if (currentView.value === 'canvas') return
+      const activeEl = document.activeElement
+      const isInputActive = activeEl && (
+        activeEl.tagName === 'INPUT' || 
+        activeEl.tagName === 'TEXTAREA' || 
+        activeEl.isContentEditable
+      )
+      log('paste event: inputActive=%s target=%s', isInputActive, activeEl?.tagName || 'none')
+      if (isInputActive) return
+      e.preventDefault()
+      const text = e.clipboardData?.getData('text') || ''
+      log('paste intercepted: textLength=%d', text.length)
+      if (!text.trim()) return
       isModalOpen.value = true
       editingId.value = null
       newNoteTitle.value = ''
-      newNoteContent.value = 'Reading clipboard...'
-      try {
-        const text = await navigator.clipboard.readText()
-        newNoteContent.value = text
-      } catch (err) {
-        console.error('Failed to read clipboard: ', err)
-        newNoteContent.value = ''
-      }
+      newNoteContent.value = text
+      modalSize.value = { width: null, height: null }
       setTimeout(() => {
         if (modalContentInput.value) {
           modalContentInput.value.focus()
@@ -560,7 +719,23 @@ export default {
       }, 50)
     }
 
-    const closeModal = () => {
+    const hasUnsavedChanges = () => {
+      if (editingId.value) {
+        const original = notes.value.find(n => n.id === editingId.value)
+        if (original) {
+          return newNoteTitle.value !== original.title || newNoteContent.value !== original.content
+        }
+        return true
+      }
+      return newNoteTitle.value.trim() !== '' || newNoteContent.value.trim() !== ''
+    }
+
+    const closeModal = (force = false) => {
+      if (justResized.value) return
+      if (force !== true && hasUnsavedChanges()) {
+        isUnsavedChangesOpen.value = true
+        return
+      }
       isModalOpen.value = false
       editingId.value = null
       newNoteTitle.value = ''
@@ -569,6 +744,53 @@ export default {
         notes.value = [...pendingNotes.value]
         pendingNotes.value = null
       }
+      modalSize.value = { width: null, height: null }
+    }
+
+    const discardChanges = () => {
+      isUnsavedChangesOpen.value = false
+      closeModal(true)
+    }
+
+    const saveAndClose = async () => {
+      isUnsavedChangesOpen.value = false
+      if (editingId.value) {
+        await saveEdit()
+      } else {
+        await addNote()
+      }
+    }
+
+    const cancelDiscardChanges = () => {
+      isUnsavedChangesOpen.value = false
+    }
+
+    const startResize = (e) => {
+      isResizing.value = true
+      resizeStartX = e.clientX
+      resizeStartY = e.clientY
+      resizeStartWidth = e.target.closest('.modal-content').offsetWidth
+      resizeStartHeight = e.target.closest('.modal-content').offsetHeight
+      window.addEventListener('mousemove', onResize)
+      window.addEventListener('mouseup', stopResize)
+    }
+
+    const onResize = (e) => {
+      if (!isResizing.value) return
+      const dx = e.clientX - resizeStartX
+      const dy = e.clientY - resizeStartY
+      modalSize.value = {
+        width: Math.max(340, resizeStartWidth + dx),
+        height: Math.max(280, resizeStartHeight + dy)
+      }
+    }
+
+    const stopResize = () => {
+      isResizing.value = false
+      justResized.value = true
+      setTimeout(() => { justResized.value = false }, 0)
+      window.removeEventListener('mousemove', onResize)
+      window.removeEventListener('mouseup', stopResize)
     }
 
     // Copy note action
@@ -576,7 +798,19 @@ export default {
       console.log('[DEBUG] copyNote called for note:', note.id)
       try {
         const textToCopy = note.title ? `${note.title}\n\n${note.content}` : note.content
-        await navigator.clipboard.writeText(textToCopy)
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(textToCopy)
+        } else {
+          // Fallback for non-secure contexts (e.g., LAN IP access)
+          const textarea = document.createElement('textarea')
+          textarea.value = textToCopy
+          textarea.style.position = 'fixed'
+          textarea.style.opacity = '0'
+          document.body.appendChild(textarea)
+          textarea.select()
+          document.execCommand('copy')
+          document.body.removeChild(textarea)
+        }
         console.log('[DEBUG] Clipboard write successful')
         copiedId.value = note.id
         setTimeout(() => {
@@ -600,7 +834,7 @@ export default {
           })
         })
         notes.value.unshift(note)
-        closeModal()
+        closeModal(true)
       } catch (e) {
         console.error('Failed to add note', e)
       }
@@ -669,6 +903,8 @@ export default {
     const handleCardClick = (note) => {
       if (selectedNoteIds.value.size > 0) {
         toggleSelect(note.id)
+      } else if (note.type === 'canvas') {
+        openCanvasNote(note)
       } else {
         startEditing(note)
       }
@@ -681,6 +917,7 @@ export default {
       newNoteTitle.value = note.title
       newNoteContent.value = note.content
       isModalOpen.value = true
+      modalSize.value = { width: null, height: null }
       setTimeout(() => {
         if (modalTitleInput.value) {
           modalTitleInput.value.focus()
@@ -702,15 +939,104 @@ export default {
         if (index !== -1) {
           notes.value[index] = updated
         }
-        closeModal()
+        closeModal(true)
       } catch (e) {
         console.error('Failed to save note', e)
       }
     }
 
+    // Search methods
+    const openSearch = () => {
+      searchOpen.value = true
+      setTimeout(() => {
+        if (searchInput.value) searchInput.value.focus()
+      }, 100)
+    }
+
+    const closeSearch = () => {
+      searchOpen.value = false
+      searchQuery.value = ''
+      searchResults.value = null
+      if (searchTimer) clearTimeout(searchTimer)
+    }
+
+    const toggleSearch = () => {
+      if (searchOpen.value) {
+        closeSearch()
+      } else {
+        openSearch()
+      }
+    }
+
+    const onSearchInput = () => {
+      if (searchTimer) clearTimeout(searchTimer)
+      const q = searchQuery.value.trim()
+      if (!q) {
+        searchResults.value = null
+        return
+      }
+      searchTimer = setTimeout(async () => {
+        searchLoading.value = true
+        try {
+          searchResults.value = await api(`/api/search?q=${encodeURIComponent(q)}`)
+        } catch (e) {
+          searchResults.value = []
+        } finally {
+          searchLoading.value = false
+        }
+      }, 250)
+    }
+
+    const clearSearch = () => {
+      searchQuery.value = ''
+      searchResults.value = null
+      if (searchTimer) clearTimeout(searchTimer)
+      if (searchInput.value) searchInput.value.focus()
+    }
+
+    // Canvas note methods
+    const openNewCanvas = async () => {
+      try {
+        const note = await api('/api/notes', {
+          method: 'POST',
+          body: JSON.stringify({
+            title: '',
+            content: '',
+            type: 'canvas',
+            canvasData: null
+          })
+        })
+        editingCanvasId.value = note.id
+        editingCanvasData.value = null
+        editingCanvasTitle.value = ''
+        currentView.value = 'canvas'
+      } catch (e) {
+        console.error('Failed to create canvas note', e)
+      }
+    }
+
+    const openCanvasNote = (note) => {
+      editingCanvasId.value = note.id
+      editingCanvasData.value = note.canvasData || null
+      editingCanvasTitle.value = note.title || ''
+      currentView.value = 'canvas'
+    }
+
+    const closeCanvasEditor = () => {
+      currentView.value = 'list'
+      editingCanvasId.value = null
+      editingCanvasData.value = null
+      editingCanvasTitle.value = ''
+    }
+
     // Computed
     const sortedNotes = computed(() => {
-      return [...notes.value].sort((a, b) => {
+      let filtered = notes.value
+      if (searchQuery.value.trim() && searchResults.value !== null) {
+        const matchIds = new Set(searchResults.value)
+        filtered = notes.value.filter(n => matchIds.has(n.id))
+      }
+      return [...filtered].sort((a, b) => {
         let valA, valB
         if (sortBy.value === 'title') {
           valA = (a.title || '').toLowerCase()
@@ -765,11 +1091,12 @@ export default {
       formatDate,
       // Modal/Shortcuts
       isModalOpen,
+      modalSize,
+      startResize,
       copiedId,
       modalTitleInput,
       modalContentInput,
       openNewNoteModal,
-      openPasteNoteModal,
       closeModal,
       copyNote,
       // Delete Confirmation Modal
@@ -777,6 +1104,11 @@ export default {
       triggerDeleteConfirm,
       closeConfirm,
       confirmDelete,
+      // Unsaved Changes Confirmation
+      isUnsavedChangesOpen,
+      discardChanges,
+      saveAndClose,
+      cancelDiscardChanges,
       // Sorting and Selection
       sortBy,
       sortOrder,
@@ -788,7 +1120,29 @@ export default {
       // WebSocket
       wsConnected,
       wsConnecting,
-      manualReconnect
+      manualReconnect,
+      // Platform
+      modKey,
+      // Search
+      searchOpen,
+      searchQuery,
+      searchResults,
+      searchLoading,
+      searchInput,
+      openSearch,
+      closeSearch,
+      toggleSearch,
+      onSearchInput,
+      clearSearch,
+      // Canvas
+      currentView,
+      editingCanvasId,
+      editingCanvasData,
+      editingCanvasTitle,
+      wsRef,
+      openNewCanvas,
+      openCanvasNote,
+      closeCanvasEditor
     }
   }
 }
@@ -883,6 +1237,118 @@ header {
 
 header h1 {
   font-size: 1.5rem;
+}
+
+.header-search-field {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  gap: 0;
+  background: #f1f3f4;
+  border-radius: 8px;
+  transition: background 0.2s, box-shadow 0.2s;
+  max-width: 600px;
+}
+
+.header-search-field:focus-within {
+  background: white;
+  box-shadow: 0 1px 4px rgba(26, 115, 232, 0.2);
+}
+
+.header-search-field .search-icon {
+  padding-left: 12px;
+  font-size: 1rem;
+  color: #80868b;
+  flex-shrink: 0;
+}
+
+.search-toggle-btn {
+  width: 36px;
+  height: 36px;
+  border: none;
+  background: #f1f3f4;
+  color: #5f6368;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 1.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+
+.search-toggle-btn:hover {
+  background: #e8eaed;
+}
+
+.search-input {
+  width: 100%;
+  padding: 0.55rem 0.5rem;
+  border: none;
+  background: transparent;
+  font-size: 0.95rem;
+  color: #202124;
+  outline: none;
+  border-radius: 8px;
+}
+
+.search-input::placeholder {
+  color: #80868b;
+}
+
+.search-clear-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: #80868b;
+  font-size: 1.2rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+
+.search-clear-btn:hover {
+  background: #e0e0e0;
+  color: #202124;
+}
+
+.search-close-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  color: #80868b;
+  font-size: 1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: background 0.2s;
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+
+.search-close-btn:hover {
+  background: #e0e0e0;
+  color: #202124;
+}
+
+.search-input-wrapper {
+  max-width: 600px;
+  margin: 0 auto;
+  position: relative;
+  display: flex;
+  align-items: center;
+  background: #f1f3f4;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
 }
 
 .header-right {
@@ -1024,6 +1490,69 @@ main {
 .reconnect-btn:hover {
   background: #d2e3fc;
   border-color: #1a73e8;
+}
+
+.canvas-btn {
+  padding: 0.5rem 0.75rem;
+  background: #e8f0fe;
+  color: #1a73e8;
+  border: 1px solid #d2e3fc;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  transition: background 0.2s, border-color 0.2s;
+  white-space: nowrap;
+}
+
+.canvas-btn:hover {
+  background: #d2e3fc;
+  border-color: #1a73e8;
+}
+
+/* Canvas note card */
+.note-card.canvas-note {
+  cursor: pointer;
+}
+
+.canvas-thumbnail-wrapper {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 4px;
+  margin-bottom: 0.5rem;
+  background: #f8f9fa;
+  border: 1px solid #e8eaed;
+}
+
+.canvas-thumbnail {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.canvas-thumbnail-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  color: #80868b;
+  font-size: 0.8125rem;
+  padding: 1rem;
+}
+
+.canvas-thumbnail-placeholder span:first-child {
+  font-size: 2rem;
+}
+
+.canvas-untitled {
+  color: #80868b;
+  font-style: italic;
 }
 
 .shortcut-tips-card {
@@ -1310,11 +1839,14 @@ main {
   background: white;
   border-radius: 12px;
   padding: 1.5rem;
-  width: 90%;
-  max-width: 500px;
+  width: min(620px, 90vw);
+  min-height: min(500px, 85vh);
+  max-height: 85vh;
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
   position: relative;
   animation: slideUp 0.2s ease-out;
+  display: flex;
+  flex-direction: column;
 }
 
 @keyframes slideUp {
@@ -1376,6 +1908,13 @@ main {
   box-sizing: border-box;
 }
 
+.note-form-modal form {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 .note-form-modal textarea {
   width: 100%;
   padding: 0.75rem;
@@ -1383,15 +1922,37 @@ main {
   border-radius: 6px;
   font-size: 1rem;
   font-family: inherit;
-  resize: vertical;
+  resize: none;
   margin-bottom: 0.75rem;
   box-sizing: border-box;
+  flex: 1;
+  min-height: 100px;
 }
 
 .note-form-modal .note-title-input:focus,
 .note-form-modal textarea:focus {
   outline: none;
   border-color: #1a73e8;
+}
+
+.modal-resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 20px;
+  height: 20px;
+  cursor: nwse-resize;
+}
+.modal-resize-handle::after {
+  content: '';
+  display: block;
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid #bcc0c4;
+  border-bottom: 2px solid #bcc0c4;
 }
 
 .note-form-actions {
@@ -1641,6 +2202,16 @@ main {
 .fab-btn:hover {
   transform: scale(1.05);
   box-shadow: 0 6px 15px rgba(118, 75, 162, 0.6);
+}
+
+.paste-receiver {
+  position: fixed;
+  top: -9999px;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
 }
 
 @media (max-width: 600px) {
