@@ -589,7 +589,7 @@ wss.on('connection', (ws, req) => {
               noteId: msg.noteId,
               elements: stampedElements,
               serverTs
-            }, ws)
+            })
           }
           break
         }

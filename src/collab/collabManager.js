@@ -148,6 +148,9 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus }) {
     const currentMap = new Map(currentElements.map(el => [el.id, el]))
     let changed = false
 
+    // Track which elements came from the remote delta (accepted by LWW)
+    const acceptedIds = new Set()
+
     for (const el of msg.elements) {
       if (!el || !el.id) continue
       const serverTs = el._collab_ts || msg.serverTs || 0
@@ -160,6 +163,7 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus }) {
         } else {
           currentMap.set(el.id, stripTs(el))
         }
+        acceptedIds.add(el.id)
         changed = true
       }
     }
@@ -167,7 +171,18 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus }) {
     if (changed) {
       const mergedElements = [...currentMap.values()]
       currentElements = mergedElements
-      updateLastCommitted(mergedElements)
+
+      // Only update lastCommitted for elements that were actually accepted from the remote.
+      // This preserves the diff for local-only changes (e.g. handwriting not yet flushed).
+      for (const id of acceptedIds) {
+        const el = currentMap.get(id)
+        if (el && !el.isDeleted) {
+          lastCommitted.set(id, { ...el })
+        } else {
+          lastCommitted.delete(id)
+        }
+      }
+
       api.updateScene({ elements: mergedElements })
     }
 

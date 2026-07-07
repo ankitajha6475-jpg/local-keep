@@ -56,7 +56,7 @@
 
     <!-- Main App -->
     <div v-else-if="isAuthenticated" class="main-app">
-      <header>
+      <header @click="fabMenuOpen = false">
         <template v-if="!searchOpen">
           <h1>📝 Local Keep</h1>
           <div class="header-right">
@@ -65,7 +65,6 @@
             </span>
             <button v-if="!wsConnected && !wsConnecting" @click="manualReconnect" class="reconnect-btn" title="Reconnect now">🔌 Connect</button>
             <button @click="loadNotes" class="refresh-btn" title="Refresh notes">↻</button>
-            <button @click="openNewCanvas" class="canvas-btn" title="New whiteboard">✏️ Whiteboard</button>
             <button @click="openSearch" class="search-toggle-btn" title="Search (Ctrl+I)">🔍</button>
             <button @click="logout" class="logout-btn">Lock</button>
           </div>
@@ -87,7 +86,7 @@
         </template>
       </header>
 
-      <main>
+      <main @click="fabMenuOpen = false">
         <!-- Selection Action Bar -->
         <div v-if="selectedNoteIds.size > 0" class="selection-bar">
           <div class="selection-info">
@@ -210,7 +209,7 @@
       </main>
 
       <!-- Modal for Add/Edit Note -->
-      <div v-if="isModalOpen" class="modal-overlay" @click.self="closeModal">
+      <div v-if="isModalOpen" class="modal-overlay" @mousedown.self="closeModal">
         <div
           class="modal-content note-form-modal"
           :class="{ 'editing-form': editingId !== null }"
@@ -234,7 +233,7 @@
               ref="modalContentInput"
               v-model="newNoteContent"
               placeholder="Take a note..."
-              rows="5"
+              rows="15"
               required
               @keydown.ctrl.enter.stop.prevent="editingId ? saveEdit() : addNote()"
               @keydown.meta.enter.stop.prevent="editingId ? saveEdit() : addNote()"
@@ -252,7 +251,7 @@
       </div>
 
       <!-- Unsaved Changes Confirmation Modal -->
-      <div v-if="isUnsavedChangesOpen" class="modal-overlay" @click.self="cancelDiscardChanges">
+      <div v-if="isUnsavedChangesOpen" class="modal-overlay" @mousedown.self="cancelDiscardChanges">
         <div class="modal-content confirm-modal">
           <h2>Unsaved Changes</h2>
           <p>
@@ -267,7 +266,7 @@
       </div>
 
       <!-- Custom Confirmation Modal for Deletion -->
-      <div v-if="isConfirmOpen" class="modal-overlay" @click.self="closeConfirm">
+      <div v-if="isConfirmOpen" class="modal-overlay" @mousedown.self="closeConfirm">
         <div class="modal-content confirm-modal">
           <h2>{{ noteToDeleteId ? 'Delete Note?' : 'Delete Selected Notes?' }}</h2>
           <p>
@@ -282,14 +281,26 @@
       </div>
 
       <!-- Floating Action Button -->
-      <button
-        v-if="isAuthenticated"
-        @click="openNewNoteModal"
-        class="fab-btn"
-        :title="`Create new note (${modKey}+Enter)`"
-      >
-        +
-      </button>
+      <div v-if="isAuthenticated" class="fab-container">
+        <div v-if="fabMenuOpen" class="fab-menu">
+          <button @click="fabNewTextNote" class="fab-menu-item">
+            <span class="fab-menu-icon">📝</span>
+            <span>Text Note</span>
+          </button>
+          <button @click="fabNewWhiteboard" class="fab-menu-item">
+            <span class="fab-menu-icon">✏️</span>
+            <span>Whiteboard</span>
+          </button>
+        </div>
+        <button
+          @click="toggleFabMenu"
+          class="fab-btn"
+          :class="{ 'fab-open': fabMenuOpen }"
+          title="Create new"
+        >
+          +
+        </button>
+      </div>
 
       <!-- Hidden paste receiver for clipboard interception -->
       <textarea
@@ -352,6 +363,7 @@ export default {
     const isConfirmOpen = ref(false)
     const noteToDeleteId = ref(null)
     const isUnsavedChangesOpen = ref(false)
+    const fabMenuOpen = ref(false)
     const sortBy = ref('updatedAt')
     const sortOrder = ref('desc')
     const selectedNoteIds = ref(new Set())
@@ -679,6 +691,20 @@ export default {
     }
 
     // Modal creation/editing triggers
+    const toggleFabMenu = () => {
+      fabMenuOpen.value = !fabMenuOpen.value
+    }
+
+    const fabNewTextNote = () => {
+      fabMenuOpen.value = false
+      openNewNoteModal()
+    }
+
+    const fabNewWhiteboard = () => {
+      fabMenuOpen.value = false
+      openNewCanvas()
+    }
+
     const openNewNoteModal = () => {
       isModalOpen.value = true
       editingId.value = null
@@ -1097,6 +1123,9 @@ export default {
       modalTitleInput,
       modalContentInput,
       openNewNoteModal,
+      toggleFabMenu,
+      fabNewTextNote,
+      fabNewWhiteboard,
       closeModal,
       copyNote,
       // Delete Confirmation Modal
@@ -1106,6 +1135,7 @@ export default {
       confirmDelete,
       // Unsaved Changes Confirmation
       isUnsavedChangesOpen,
+      fabMenuOpen,
       discardChanges,
       saveAndClose,
       cancelDiscardChanges,
@@ -1492,24 +1522,6 @@ main {
   border-color: #1a73e8;
 }
 
-.canvas-btn {
-  padding: 0.5rem 0.75rem;
-  background: #e8f0fe;
-  color: #1a73e8;
-  border: 1px solid #d2e3fc;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  transition: background 0.2s, border-color 0.2s;
-  white-space: nowrap;
-}
-
-.canvas-btn:hover {
-  background: #d2e3fc;
-  border-color: #1a73e8;
-}
-
 /* Canvas note card */
 .note-card.canvas-note {
   cursor: pointer;
@@ -1840,8 +1852,8 @@ main {
   border-radius: 12px;
   padding: 1.5rem;
   width: min(620px, 90vw);
-  min-height: min(500px, 85vh);
-  max-height: 85vh;
+  min-height: min(700px, 90vh);
+  max-height: 90vh;
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
   position: relative;
   animation: slideUp 0.2s ease-out;
@@ -2202,6 +2214,50 @@ main {
 .fab-btn:hover {
   transform: scale(1.05);
   box-shadow: 0 6px 15px rgba(118, 75, 162, 0.6);
+}
+
+.fab-btn.fab-open {
+  transform: rotate(45deg);
+}
+
+.fab-container {
+  position: fixed;
+  bottom: 2rem;
+  right: 2rem;
+  z-index: 100;
+}
+
+.fab-menu {
+  position: absolute;
+  bottom: 68px;
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  animation: slideUp 0.15s ease-out;
+}
+
+.fab-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  transition: background 0.15s;
+}
+
+.fab-menu-item:hover {
+  background: #f5f5f5;
+}
+
+.fab-menu-icon {
+  font-size: 1.125rem;
 }
 
 .paste-receiver {

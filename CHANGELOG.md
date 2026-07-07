@@ -6,6 +6,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- Research docs on Excalidraw internals (pointer/touch/eraser/fullscreen)
+- Practical guide for porting stylus features to another project
+
 ## [0.2.0] — 2026-06-20
 
 ### Added
