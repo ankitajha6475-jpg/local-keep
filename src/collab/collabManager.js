@@ -129,6 +129,11 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus }) {
 
     const msg = { type: 'delta', noteId, elements: deltaElements }
 
+    // Include files if there are any (for image sync)
+    if (currentFiles && Object.keys(currentFiles).length > 0) {
+      msg.files = currentFiles
+    }
+
     try {
       const thumbnail = await generateThumbnail(currentElements, currentAppState, currentFiles)
       if (thumbnail) msg.thumbnail = thumbnail
@@ -183,7 +188,13 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus }) {
         }
       }
 
-      api.updateScene({ elements: mergedElements })
+      const update = { elements: mergedElements }
+      if (msg.files) {
+        // Merge remote files into our local files
+        currentFiles = { ...currentFiles, ...msg.files }
+        update.files = currentFiles
+      }
+      api.updateScene(update)
     }
 
     applyingRemote = false
@@ -199,7 +210,12 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus }) {
     const cleanElements = msg.elements.map(stripTs)
     currentElements = cleanElements
     updateLastCommitted(cleanElements)
-    api.updateScene({ elements: cleanElements })
+    const update = { elements: cleanElements }
+    if (msg.files) {
+      currentFiles = msg.files
+      update.files = msg.files
+    }
+    api.updateScene(update)
     onStatus?.('loaded')
 
     applyingRemote = false

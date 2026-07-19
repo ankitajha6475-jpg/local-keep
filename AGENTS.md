@@ -8,13 +8,15 @@ Google Keep-like notes app with text notes and Excalidraw whiteboard canvas. Vue
 
 ```
 Docker "local-keep" (node:22-alpine)
-├── node --watch server.js    → Express + WS on :5173
-└── npx vite --host 0.0.0.0   → Vite dev server on :5174
+├── node --watch server.js    → Express + WS on :5173 (API only in dev)
+└── npx vite --host 0.0.0.0   → Vite dev server on :5174 (frontend)
 ```
 
 - Host files live-mounted (`.:/app`), `node_modules` is a named volume
 - Vite proxies `/api/*` → `:5173` and `/ws` → `ws://:5173`
 - Browser connects to **:5174** (Vite), which proxies to backend
+- Port 5173 serves only API/WebSocket in development (`NODE_ENV !== 'production'`)
+- Port 5173 serves static frontend only in production mode (`NODE_ENV=production`)
 - `node --watch` auto-restarts on `server.js` changes (no manual restart needed)
 - Vite HMR handles frontend changes automatically
 
@@ -40,6 +42,7 @@ src/
     collabManager.js              # Client-side collab: delta generation, LWW merge, undo/redo
 data/
   local-keep.db                   # SQLite database
+  images/                         # Content-addressed image files (SHA-256 hashed filenames)
 public/
   fonts/                          # Excalidraw fonts (served as static assets)
 index.html                        # Sets window.EXCALIDRAW_ASSET_PATH = "/"
@@ -67,7 +70,7 @@ reactRoot.render(React.createElement(Excalidraw, { ... }))
 - `excalidrawAPI` callback receives the API object → passed to collabManager
 - `onChange` callback receives elements on every change
 - `window.EXCALIDRAW_ASSET_PATH = "/"` set in index.html for font loading
-- Image tool disabled via `UIOptions.tools: { image: false }` + paste interceptor
+- Image tool enabled — images sync via WebSocket `files` field, extracted to `data/images/` on server
 
 ### Real-time Collaboration
 
@@ -102,9 +105,18 @@ Single user, multiple terminals. Same note, same WS endpoint (`/ws?token=`).
 ```sql
 notes (id TEXT PK, title TEXT, content TEXT, type TEXT, canvasData TEXT, thumbnail TEXT, createdAt TEXT, updatedAt TEXT)
 notes_fts (note_id, title, content, canvas_text)  -- FTS5 for search
+image_refs (image_hash TEXT, note_id TEXT, PK(image_hash, note_id))  -- tracks which images are used by which notes
 ```
 
 **Critical**: `canvas_text` column exists ONLY in `notes_fts`, NOT in `notes`. The `persistNoteState()` function must write `canvasData` to `notes` and `canvas_text` to `notes_fts` separately.
+
+### Image Storage
+
+- Images stored in `data/images/<sha256-prefix>.<ext>` (content-addressed, deduped)
+- Text notes: `![alt](/api/images/<hash>.<ext>)` markdown syntax, rendered inline via contentEditable
+- Whiteboard: Excalidraw `files` object with base64 dataURL, extracted to disk on persist
+- `image_refs` table tracks usage; `POST /api/images/cleanup` removes orphaned images
+- Broken images (404): hidden in gallery view, converted to markdown text in editor
 
 ### Touch/Stylus Support (WhiteboardEditor.vue)
 
@@ -131,3 +143,5 @@ All notable changes must be recorded in `CHANGELOG.md`. When making changes:
 5. **Excalidraw `registerAction`**: `perform` must return `false` or `{ elements, appState, captureUpdate }`. Invalid return crashes the action system.
 6. **Safari stylus**: No `keydown` for side button, only `keyup` with `keyCode: 0`.
 7. **`_collab_ts`**: Server-assigned timestamps on elements. Must be stripped before comparing/storing (`stripTs()`).
+8. **Syntax limitations**: Avoid unsupported diagram syntax (for example Mermaid block syntax that the renderer rejects). Prefer broadly supported flowchart syntax when editing docs or architecture notes.
+9. **Port distinction**: In development, port 5173 is API-only (no frontend). Port 5174 is the Vite dev server. Access app at `:5174`, not `:5173`. Backend serves static files only when `NODE_ENV=production`.

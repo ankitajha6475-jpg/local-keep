@@ -196,16 +196,6 @@ export default {
       }
     })
 
-    // ── Block image paste ──
-    function blockImagePaste(e) {
-      const items = e.clipboardData?.items
-      if (items) {
-        for (const item of items) {
-          if (item.type.startsWith('image/')) { e.preventDefault(); return }
-        }
-      }
-    }
-
     // ── Stylus button pen/eraser toggle (via keyup: Unidentified, keyCode=0) ──
     function handleStylusKeyUp(e) {
       if (e.key === 'Unidentified' && e.keyCode === 0) {
@@ -414,8 +404,7 @@ export default {
               saveToActiveFile: false,
               toggleTheme: true,
               changeViewBackgroundColor: true
-            },
-            tools: { image: false }
+            }
           }
         })
       )
@@ -426,7 +415,7 @@ export default {
       el.addEventListener('touchstart', handleTouchStart, { passive: false })
       el.addEventListener('touchend', handleTouchEnd)
       el.addEventListener('touchcancel', handleTouchEnd)
-      el.addEventListener('paste', blockImagePaste)
+
       // Debug: capture at document level so we see events Excalidraw might swallow
       document.addEventListener('pointerdown', handleDebugPointer, true)
       document.addEventListener('pointerup', handleDebugPointer, true)
@@ -459,7 +448,7 @@ export default {
         el.removeEventListener('touchstart', handleTouchStart)
         el.removeEventListener('touchend', handleTouchEnd)
         el.removeEventListener('touchcancel', handleTouchEnd)
-        el.removeEventListener('paste', blockImagePaste)
+
       }
       document.removeEventListener('pointerdown', handleDebugPointer, true)
       document.removeEventListener('pointerup', handleDebugPointer, true)

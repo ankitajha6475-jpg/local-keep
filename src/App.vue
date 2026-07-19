@@ -66,6 +66,7 @@
             <button v-if="!wsConnected && !wsConnecting" @click="manualReconnect" class="reconnect-btn" title="Reconnect now">🔌 Connect</button>
             <button @click="loadNotes" class="refresh-btn" title="Refresh notes">↻</button>
             <button @click="openSearch" class="search-toggle-btn" title="Search (Ctrl+I)">🔍</button>
+            <button @click="cleanupImages" class="cleanup-btn" :disabled="cleanupRunning" title="Clean unused images">🧹</button>
             <button @click="logout" class="logout-btn">Lock</button>
           </div>
         </template>
@@ -163,14 +164,29 @@
             }"
             @click="handleCardClick(note)"
           >
-            <!-- Checkbox for Selection -->
-            <div class="card-checkbox-container" @click.stop>
-              <input 
-                type="checkbox" 
-                :checked="selectedNoteIds.has(note.id)" 
-                @change="toggleSelect(note.id)"
-                class="card-checkbox"
+            <!-- Toolbar row: checkbox + copy + delete -->
+            <div class="card-toolbar">
+              <div class="card-checkbox-container" @click.stop>
+                <input 
+                  type="checkbox" 
+                  :checked="selectedNoteIds.has(note.id)" 
+                  @change="toggleSelect(note.id)"
+                  class="card-checkbox"
+                >
+              </div>
+              <div class="toolbar-spacer"></div>
+              <!-- Copy button (text notes only) -->
+              <button
+                v-if="note.type !== 'canvas'"
+                @click.stop="copyNote(note)"
+                class="copy-btn"
+                :class="{ copied: copiedId === note.id }"
+                :title="copiedId === note.id ? 'Copied!' : 'Copy note'"
               >
+                <svg v-if="copiedId === note.id" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-check"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-copy"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+              </button>
+              <button @click.stop="triggerDeleteConfirm(note.id)" class="delete-btn" title="Delete note">×</button>
             </div>
 
             <div class="note-content">
@@ -189,21 +205,9 @@
               </div>
               <h3 v-if="note.title">{{ note.title }}</h3>
               <h3 v-else-if="note.type === 'canvas'" class="canvas-untitled">Untitled Whiteboard</h3>
-              <p v-if="note.type !== 'canvas'">{{ note.content }}</p>
+              <p v-if="note.type !== 'canvas'" v-html="renderContent(note.content)"></p>
               <small class="note-date">{{ formatDate(note.updatedAt) }}</small>
             </div>
-            <!-- Copy button (text notes only) -->
-            <button
-              v-if="note.type !== 'canvas'"
-              @click.stop="copyNote(note)"
-              class="copy-btn"
-              :class="{ copied: copiedId === note.id }"
-              :title="copiedId === note.id ? 'Copied!' : 'Copy note'"
-            >
-              <svg v-if="copiedId === note.id" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-check"><polyline points="20 6 9 17 4 12"></polyline></svg>
-              <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-copy"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-            </button>
-            <button @click.stop="triggerDeleteConfirm(note.id)" class="delete-btn" title="Delete note">×</button>
           </div>
         </div>
       </main>
@@ -229,22 +233,35 @@
               @keydown.ctrl.enter.stop.prevent="editingId ? saveEdit() : addNote()"
               @keydown.meta.enter.stop.prevent="editingId ? saveEdit() : addNote()"
             >
-            <textarea
-              ref="modalContentInput"
-              v-model="newNoteContent"
-              placeholder="Take a note..."
-              rows="15"
-              required
-              @keydown.ctrl.enter.stop.prevent="editingId ? saveEdit() : addNote()"
-              @keydown.meta.enter.stop.prevent="editingId ? saveEdit() : addNote()"
-            ></textarea>
+            <div
+              ref="imageEditor"
+              class="note-editor"
+              contenteditable="true"
+              data-placeholder="Take a note..."
+              @input="onEditorInput"
+              @keydown="onEditorKeydown"
+              @paste="onEditorPaste"
+              @focus="onEditorFocus"
+              @blur="onEditorBlur"
+              @click="onEditorClick"
+            ></div>
             <div class="note-form-actions">
               <div class="action-buttons">
                 <button type="submit" class="save-btn">{{ editingId ? 'Save' : 'Add Note' }}</button>
+                <button type="button" @click="triggerImageUpload" class="image-btn" :disabled="imageUploading" title="Insert image">
+                  {{ imageUploading ? '⏳' : '🖼️' }}
+                </button>
                 <button type="button" @click="closeModal" class="cancel-btn">Cancel</button>
               </div>
               <small>{{ editingId ? `${modKey}+Enter to save` : `${modKey}+Enter to add` }}</small>
             </div>
+            <input
+              ref="imageUploadInput"
+              type="file"
+              accept="image/png,image/jpeg,image/gif,image/webp,image/svg+xml"
+              style="display: none"
+              @change="onImageFileSelected"
+            >
           </form>
           <div class="modal-resize-handle" @mousedown.prevent="startResize"></div>
         </div>
@@ -312,7 +329,7 @@
 </template>
 
 <script>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import debug from 'debug'
 import WhiteboardEditor from './components/WhiteboardEditor.vue'
 
@@ -394,6 +411,11 @@ export default {
     const modalTitleInput = ref(null)
     const modalContentInput = ref(null)
     const searchInput = ref(null)
+    const imageUploadInput = ref(null)
+    const imageUploading = ref(false)
+    const imageEditor = ref(null)
+    const selectedImageForResize = ref(null)
+    const cleanupRunning = ref(false)
 
     // WebSocket state
     let ws = null
@@ -705,6 +727,56 @@ export default {
       openNewCanvas()
     }
 
+    // ── Image editor helpers ──
+    function markdownToHTML(text) {
+      if (!text) return ''
+      const parts = []
+      let lastIndex = 0
+      const imgRegex = /!\[([^\]]*)\]\(([^)]+)\)(?:\{width=(\d+)\})?/g
+      let match
+      while ((match = imgRegex.exec(text)) !== null) {
+        if (match.index > lastIndex) {
+          parts.push(document.createTextNode(text.slice(lastIndex, match.index)))
+        }
+        const img = document.createElement('img')
+        img.src = match[2]
+        img.alt = match[1]
+        // Parse optional width: ![alt](url){width=N}
+        const widthMatch = match[0].match(/\{width=(\d+)\}$/)
+        if (widthMatch) {
+          img.setAttribute('data-width', widthMatch[1])
+          img.style.width = widthMatch[1] + 'px'
+        }
+        img.setAttribute('data-md', match[0])
+        // Broken image → convert to editable markdown text
+        img.onerror = function() {
+          if (this.parentNode) {
+            const md = this.getAttribute('data-md') || ''
+            const textNode = document.createTextNode(md)
+            this.parentNode.replaceChild(textNode, this)
+            newNoteContent.value = serializeEditorToMarkdown()
+          }
+        }
+        parts.push(img)
+        lastIndex = match.index + match[0].length
+      }
+      if (lastIndex < text.length) {
+        parts.push(document.createTextNode(text.slice(lastIndex)))
+      }
+      if (parts.length === 0) return ''
+      const fragment = document.createDocumentFragment()
+      parts.forEach(p => fragment.appendChild(p))
+      const temp = document.createElement('div')
+      temp.appendChild(fragment)
+      return temp.innerHTML
+    }
+
+    function renderEditorContent() {
+      const el = imageEditor.value
+      if (!el) return
+      el.innerHTML = markdownToHTML(newNoteContent.value)
+    }
+
     const openNewNoteModal = () => {
       isModalOpen.value = true
       editingId.value = null
@@ -937,18 +1009,16 @@ export default {
     }
 
     const startEditing = (note) => {
-      console.log('[DEBUG] startEditing called for note:', note.id)
       pendingNotes.value = null
       editingId.value = note.id
       newNoteTitle.value = note.title
       newNoteContent.value = note.content
       isModalOpen.value = true
       modalSize.value = { width: null, height: null }
-      setTimeout(() => {
-        if (modalTitleInput.value) {
-          modalTitleInput.value.focus()
-        }
-      }, 50)
+      nextTick(() => {
+        renderEditorContent()
+        if (modalTitleInput.value) modalTitleInput.value.focus()
+      })
     }
 
     const saveEdit = async () => {
@@ -1172,7 +1242,371 @@ export default {
       wsRef,
       openNewCanvas,
       openCanvasNote,
-      closeCanvasEditor
+      closeCanvasEditor,
+      // Image insertion
+      imageUploadInput,
+      imageUploading,
+      imageEditor,
+      selectedImageForResize,
+      cleanupRunning,
+      cleanupImages,
+      triggerImageUpload,
+      onImageFileSelected,
+      onEditorInput,
+      onEditorKeydown,
+      onEditorPaste,
+      onEditorFocus,
+      onEditorBlur,
+      onEditorClick,
+      renderContent
+    }
+
+    // ── ContentEditable editor functions (after return) ──
+    function serializeEditorToMarkdown() {
+      const el = imageEditor.value
+      if (!el) return newNoteContent.value
+
+      function serialize(node) {
+        if (node.nodeType === 3) return node.textContent
+        if (node.nodeType !== 1) return ''
+        const tag = node.tagName
+
+        if (tag === 'IMG') {
+          const md = node.getAttribute('data-md') || `![${node.alt || 'image'}](${node.src || ''})`
+          const w = node.getAttribute('data-width')
+          return w ? md.replace(/\{width=\d+\}$/, '') + `{width=${w}}` : md
+        }
+        if (tag === 'BR') return '\n'
+        if (tag === 'DIV') {
+          let result = ''
+          for (const child of node.childNodes) result += serialize(child)
+          return result + '\n'
+        }
+        if (tag === 'B' || tag === 'STRONG') {
+          let inner = ''
+          for (const child of node.childNodes) inner += serialize(child)
+          return `**${inner}**`
+        }
+        if (tag === 'I' || tag === 'EM') {
+          let inner = ''
+          for (const child of node.childNodes) inner += serialize(child)
+          return `*${inner}*`
+        }
+        if (tag === 'A') {
+          let inner = ''
+          for (const child of node.childNodes) inner += serialize(child)
+          return `[${inner}](${node.href || ''})`
+        }
+        let result = ''
+        for (const child of node.childNodes) result += serialize(child)
+        return result
+      }
+
+      let md = ''
+      for (const child of el.childNodes) md += serialize(child)
+      return md.replace(/^\n+/, '').replace(/\n+$/, '')
+    }
+
+    function isCursorBeforeImage() {
+      const sel = window.getSelection()
+      if (!sel || !sel.isCollapsed) return false
+      const range = sel.getRangeAt(0)
+      const container = range.startContainer
+      const offset = range.startOffset
+      const editor = imageEditor.value
+      if (!editor) return false
+
+      // Case 1: cursor is at editor level, first child is an image
+      if (container === editor && offset === 0) {
+        const el = editor.firstChild
+        return el && el.tagName === 'IMG'
+      }
+      // Case 2: cursor is in a text node, right before a sibling image
+      if (container.nodeType === 3 && offset === container.textContent.length) {
+        const next = container.nextSibling
+        if (next && next.tagName === 'IMG') return true
+      }
+      // Case 3: cursor is at editor level, before a non-first image child
+      if (container === editor && offset > 0) {
+        const child = editor.childNodes[offset]
+        return child && child.tagName === 'IMG'
+      }
+      return false
+    }
+
+    // ── Editor event handlers ──
+    function onEditorInput() {
+      const el = imageEditor.value
+      if (!el) return
+
+      // Auto-convert completed markdown image: ![...](...)  →  <img>
+      const sel = window.getSelection()
+      if (sel && sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0)
+        let node = range.startContainer
+        if (node.nodeType === 3) {
+          const text = node.textContent
+          const imgMatch = text.match(/!\[([^\]]*)\]\(([^)]+)\)(?:\{width=(\d+)\})?/)
+          if (imgMatch) {
+            const before = text.slice(0, imgMatch.index)
+            const after = text.slice(imgMatch.index + imgMatch[0].length)
+            const parent = node.parentNode
+            const img = document.createElement('img')
+            img.src = imgMatch[2]
+            img.alt = imgMatch[1]
+            img.setAttribute('data-md', imgMatch[0])
+            if (imgMatch[3]) {
+              img.setAttribute('data-width', imgMatch[3])
+              img.style.width = imgMatch[3] + 'px'
+            }
+            const frag = document.createDocumentFragment()
+            if (before) frag.appendChild(document.createTextNode(before))
+            frag.appendChild(img)
+            const afterNode = document.createTextNode(after || '')
+            frag.appendChild(afterNode)
+            parent.replaceChild(frag, node)
+            // Place cursor after the image
+            const newRange = document.createRange()
+            newRange.setStart(afterNode, 0)
+            newRange.collapse(true)
+            sel.removeAllRanges()
+            sel.addRange(newRange)
+          }
+        }
+      }
+
+      newNoteContent.value = serializeEditorToMarkdown()
+    }
+
+    function onEditorKeydown(e) {
+      // Cmd/Ctrl+Enter to save
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        e.preventDefault()
+        editingId.value ? saveEdit() : addNote()
+        return
+      }
+      // Backspace on image → convert to editable markdown text
+      if (e.key === 'Backspace' && isCursorBeforeImage()) {
+        e.preventDefault()
+        hideResizeHandles()
+        const sel = window.getSelection()
+        const range = sel.getRangeAt(0)
+        const container = range.startContainer
+        const offset = range.startOffset
+        const editor = imageEditor.value
+
+        let img
+        if (container === editor) {
+          img = editor.childNodes[offset] || editor.firstChild
+        } else if (container.nodeType === 3 && container.nextSibling?.tagName === 'IMG') {
+          img = container.nextSibling
+        }
+        if (!img || img.tagName !== 'IMG') return
+
+        const md = img.getAttribute('data-md') || `![${img.alt || 'image'}](${img.src || ''})`
+        const textNode = document.createTextNode(md)
+        img.parentNode.replaceChild(textNode, img)
+        // Place cursor at start of the markdown text
+        const newRange = document.createRange()
+        newRange.setStart(textNode, 0)
+        newRange.collapse(true)
+        sel.removeAllRanges()
+        sel.addRange(newRange)
+        newNoteContent.value = serializeEditorToMarkdown()
+      }
+    }
+
+    function onEditorFocus() {
+      // Re-render any remaining markdown images when editor gains focus
+      const text = newNoteContent.value
+      if (text && text.includes('![')) {
+        requestAnimationFrame(() => renderEditorContent())
+      }
+    }
+
+    // ── Image click-to-select and resize ──
+    function onEditorClick(e) {
+      const img = e.target.closest('img')
+      if (img && imageEditor.value?.contains(img)) {
+        e.preventDefault()
+        showResizeHandles(img)
+      } else if (selectedImageForResize.value) {
+        hideResizeHandles()
+      }
+    }
+
+    function showResizeHandles(img) {
+      hideResizeHandles()
+      selectedImageForResize.value = img
+      img.classList.add('img-selected')
+      const wrapper = document.createElement('span')
+      wrapper.className = 'img-resize-wrapper'
+      img.parentNode.insertBefore(wrapper, img)
+      wrapper.appendChild(img)
+      const handle = document.createElement('span')
+      handle.className = 'img-resize-handle'
+      handle.addEventListener('mousedown', (e) => onResizeStart(e, img))
+      wrapper.appendChild(handle)
+    }
+
+    function hideResizeHandles() {
+      if (!selectedImageForResize.value) return
+      const img = selectedImageForResize.value
+      img.classList.remove('img-selected')
+      const wrapper = img.closest('.img-resize-wrapper')
+      if (wrapper && wrapper.parentNode) {
+        wrapper.parentNode.insertBefore(img, wrapper)
+        wrapper.remove()
+      }
+      selectedImageForResize.value = null
+      newNoteContent.value = serializeEditorToMarkdown()
+    }
+
+    function onResizeStart(e, img) {
+      e.preventDefault()
+      e.stopPropagation()
+      // Allow image to grow beyond container during resize
+      img.style.maxWidth = 'none'
+      const startWidth = img.offsetWidth
+      const startHeight = img.offsetHeight
+      const aspectRatio = startWidth / startHeight
+      const startX = e.clientX
+
+      function onMouseMove(e) {
+        const newWidth = Math.max(50, Math.round(startWidth + (e.clientX - startX)))
+        img.style.width = newWidth + 'px'
+        img.style.height = Math.round(newWidth / aspectRatio) + 'px'
+      }
+
+      function onMouseUp() {
+        document.removeEventListener('mousemove', onMouseMove)
+        document.removeEventListener('mouseup', onMouseUp)
+        const finalWidth = img.offsetWidth
+        img.setAttribute('data-width', String(finalWidth))
+        // Update data-md to include width
+        const oldMd = img.getAttribute('data-md') || ''
+        const baseMd = oldMd.replace(/\{width=\d+\}$/, '')
+        img.setAttribute('data-md', baseMd + `{width=${finalWidth}}`)
+        newNoteContent.value = serializeEditorToMarkdown()
+      }
+
+      document.addEventListener('mousemove', onMouseMove)
+      document.addEventListener('mouseup', onMouseUp)
+    }
+
+    function onEditorBlur() {
+      newNoteContent.value = serializeEditorToMarkdown()
+    }
+
+    // ── Image upload ──
+    function triggerImageUpload() {
+      imageUploadInput.value?.click()
+    }
+
+    async function uploadImageFile(file) {
+      imageUploading.value = true
+      try {
+        const token = sessionStorage.getItem('local-keep-token')
+        const formData = new FormData()
+        formData.append('image', file)
+        const res = await fetch(`${API_BASE}/api/images`, {
+          method: 'POST',
+          headers: { 'X-Auth-Token': token },
+          body: formData
+        })
+        if (!res.ok) throw new Error('Upload failed')
+        const data = await res.json()
+        return `![image](${data.url})`
+      } catch (e) {
+        console.error('Image upload failed:', e)
+        return null
+      } finally {
+        imageUploading.value = false
+      }
+    }
+
+    function insertImageInEditor(mdRef) {
+      const el = imageEditor.value
+      if (!el) return
+      el.focus()
+      const sel = window.getSelection()
+      if (!sel) return
+      const imgHTML = markdownToHTML(mdRef)
+      const temp = document.createElement('div')
+      temp.innerHTML = imgHTML
+      const imgNode = temp.firstChild
+      if (!imgNode) return
+      const range = sel.getRangeAt(0)
+      range.deleteContents()
+      range.insertNode(imgNode)
+      // Place cursor after the image
+      const afterRange = document.createRange()
+      afterRange.setStartAfter(imgNode)
+      afterRange.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(afterRange)
+      newNoteContent.value = serializeEditorToMarkdown()
+    }
+
+    async function onImageFileSelected(e) {
+      const file = e.target.files?.[0]
+      if (!file) return
+      const mdRef = await uploadImageFile(file)
+      if (mdRef) insertImageInEditor(mdRef)
+      e.target.value = ''
+    }
+
+    async function onEditorPaste(e) {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault()
+          const file = item.getAsFile()
+          if (file) {
+            const mdRef = await uploadImageFile(file)
+            if (mdRef) insertImageInEditor(mdRef)
+          }
+          return
+        }
+      }
+    }
+
+    // Gallery rendering (skip broken images)
+    function renderContent(content) {
+      if (!content) return ''
+      const escaped = content
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+      return escaped.replace(
+        /!\[([^\]]*)\]\(([^)]+)\)(?:\{width=(\d+)\})?/g,
+        (match, alt, src, width) => {
+          const style = width
+            ? `max-width:none;width:${width}px;border-radius:4px;margin:4px 0`
+            : 'max-width:100%;border-radius:4px;margin:4px 0'
+          return `<img src="${src}" alt="${alt}" style="${style}" onerror="this.style.display='none'">`
+        }
+      ).replace(/\n/g, '<br>')
+    }
+
+    // Image garbage collection
+    async function cleanupImages() {
+      cleanupRunning.value = true
+      try {
+        const res = await api('/api/images/cleanup', { method: 'POST' })
+        if (res.deleted > 0) {
+          alert(`Cleaned up ${res.deleted} unused image(s)`)
+        } else {
+          alert('No unused images found')
+        }
+      } catch (e) {
+        console.error('Image cleanup failed:', e)
+        alert('Cleanup failed: ' + e.message)
+      } finally {
+        cleanupRunning.value = false
+      }
     }
   }
 }
@@ -1309,6 +1743,25 @@ header h1 {
 
 .search-toggle-btn:hover {
   background: #e8eaed;
+}
+
+.cleanup-btn {
+  border: none;
+  background: transparent;
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+
+.cleanup-btn:hover:not(:disabled) {
+  background: #e8eaed;
+}
+
+.cleanup-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .search-input {
@@ -1657,6 +2110,17 @@ main {
   outline: 2px solid #1a73e8;
 }
 
+.card-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.toolbar-spacer {
+  flex: 1;
+}
+
 .note-content {
   flex: 1;
   display: flex;
@@ -1707,9 +2171,6 @@ main {
 }
 
 .delete-btn {
-  position: absolute;
-  top: 0.5rem;
-  right: 0.5rem;
   width: 24px;
   height: 24px;
   border: none;
@@ -1717,8 +2178,7 @@ main {
   color: #80868b;
   font-size: 1.25rem;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.2s, color 0.2s;
+  transition: color 0.2s;
   line-height: 1;
   display: flex;
   align-items: center;
@@ -1726,25 +2186,16 @@ main {
 }
 
 .copy-btn {
-  position: absolute;
-  top: 0.5rem;
-  right: 2.25rem;
   width: 24px;
   height: 24px;
   border: none;
   background: transparent;
   color: #80868b;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.2s, color 0.2s;
+  transition: color 0.2s;
   display: flex;
   align-items: center;
   justify-content: center;
-}
-
-.note-card:hover .delete-btn,
-.note-card:hover .copy-btn {
-  opacity: 1;
 }
 
 .copy-btn.copied {
@@ -1927,22 +2378,79 @@ main {
   min-height: 0;
 }
 
-.note-form-modal textarea {
+.note-form-modal textarea,
+.note-form-modal .note-editor {
   width: 100%;
   padding: 0.75rem;
   border: 1px solid #dadce0;
   border-radius: 6px;
   font-size: 1rem;
   font-family: inherit;
-  resize: none;
   margin-bottom: 0.75rem;
   box-sizing: border-box;
   flex: 1;
   min-height: 100px;
+  overflow-y: auto;
+}
+
+.note-form-modal textarea {
+  resize: none;
+}
+
+.note-form-modal .note-editor {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  outline: none;
+  cursor: text;
+  line-height: 1.5;
+}
+
+.note-form-modal .note-editor:empty::before {
+  content: attr(data-placeholder);
+  color: #9aa0a6;
+  pointer-events: none;
+}
+
+.note-form-modal .note-editor img[data-md] {
+  max-width: 100%;
+  border-radius: 4px;
+  margin: 4px 0;
+  cursor: default;
+  vertical-align: middle;
+}
+
+.note-form-modal .note-editor img[data-width] {
+  max-width: none;
+}
+
+.note-form-modal .note-editor img.img-selected {
+  outline: 2px solid #1a73e8;
+  outline-offset: 2px;
+  cursor: nwse-resize;
+}
+
+.note-form-modal .note-editor .img-resize-wrapper {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+}
+
+.note-form-modal .note-editor .img-resize-handle {
+  position: absolute;
+  bottom: 4px;
+  right: 4px;
+  width: 12px;
+  height: 12px;
+  background: #1a73e8;
+  border: 2px solid white;
+  border-radius: 2px;
+  cursor: nwse-resize;
+  z-index: 1;
 }
 
 .note-form-modal .note-title-input:focus,
-.note-form-modal textarea:focus {
+.note-form-modal textarea:focus,
+.note-form-modal .note-editor:focus {
   outline: none;
   border-color: #1a73e8;
 }
@@ -1977,6 +2485,26 @@ main {
 .action-buttons {
   display: flex;
   gap: 0.5rem;
+}
+
+.image-btn {
+  padding: 0.5rem 0.75rem;
+  background: #f8f9fa;
+  color: #5f6368;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 1rem;
+  transition: background 0.2s;
+}
+
+.image-btn:hover:not(:disabled) {
+  background: #e8eaed;
+}
+
+.image-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .save-btn {
@@ -2146,20 +2674,11 @@ main {
 
 /* Card Selection Checkboxes */
 .card-checkbox-container {
-  position: absolute;
-  top: 0.5rem;
-  left: 0.5rem;
   width: 24px;
   height: 24px;
-  border-radius: 50%;
-  background: white;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
   display: flex;
   align-items: center;
   justify-content: center;
-  opacity: 0;
-  transition: opacity 0.2s;
-  z-index: 5;
 }
 
 .card-checkbox {
@@ -2173,20 +2692,6 @@ main {
   border-color: #1a73e8 !important;
   background-color: #f8fafd !important;
   outline: 2px solid #1a73e8;
-}
-
-.note-card:hover .card-checkbox-container,
-.note-card.selected .card-checkbox-container,
-.notes-grid-selection-active .card-checkbox-container {
-  opacity: 1;
-}
-
-/* When selections exist, copy/delete individual buttons shift a bit to accommodate check */
-.notes-grid-selection-active .copy-btn {
-  right: 2.5rem;
-}
-.notes-grid-selection-active .delete-btn {
-  right: 0.5rem;
 }
 
 /* Floating Action Button */

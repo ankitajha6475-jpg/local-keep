@@ -7,6 +7,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Image insertion in whiteboard: Excalidraw image tool enabled, paste support, real-time sync via WebSocket
+- Image insertion in text notes: upload button, clipboard paste, markdown image rendering
+- Content-addressed image storage (`data/images/`) with SHA-256 hashed filenames for deduplication
+- `POST /api/images` upload endpoint and `GET /api/images/:filename` serve endpoint
+- Server-side extraction of base64 image data to disk during whiteboard persist
+- Shared image store between whiteboard and text notes
+- Image garbage collection: 🧹 button in header to clean orphaned images not referenced by any note
+- `image_refs` database table tracking which images are used by which notes
+- `POST /api/images/cleanup` endpoint for garbage collection
+- Startup migration to populate `image_refs` for existing notes
+- Broken image handling: non-existent images hidden in gallery, converted to markdown text in editor
+
+### Changed
+- Whiteboard delta sync now includes `files` alongside `elements` for image synchronization
+- `canvasData` stores file hash references instead of inline base64 after persist
+
+### Removed
+- Image paste blocker (`blockImagePaste`) in whiteboard editor
+- `UIOptions.tools.image = false` — image tool now enabled
+
+### Added (earlier)
 - Research docs on Excalidraw internals (pointer/touch/eraser/fullscreen)
 - Practical guide for porting stylus features to another project
 

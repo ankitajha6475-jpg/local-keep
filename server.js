@@ -2,10 +2,12 @@ import express from 'express'
 import cors from 'cors'
 import fs from 'fs'
 import path from 'path'
+import crypto from 'crypto'
 import { fileURLToPath } from 'url'
 import { WebSocketServer, WebSocket } from 'ws'
 import { createServer } from 'http'
 import { DatabaseSync } from 'node:sqlite'
+import multer from 'multer'
 
 import debugLib from 'debug'
 const log = debugLib('local-keep:server')
@@ -19,6 +21,7 @@ const server = createServer(app)
 // Always use port 5173
 const PORT = 5173
 const DATA_DIR = path.join(__dirname, 'data')
+const IMAGES_DIR = path.join(DATA_DIR, 'images')
 const NOTES_FILE = path.join(DATA_DIR, 'notes.json')
 const PASSWORD_FILE = path.join(DATA_DIR, 'password.json')
 const DB_FILE = path.join(DATA_DIR, 'local-keep.db')
@@ -60,6 +63,16 @@ function loadNoteState(noteId) {
   if (note && note.thumbnail) {
     state._thumbnail = note.thumbnail
   }
+  // Resolve hash references to serveable URLs for clients
+  for (const [fileId, fileData] of Object.entries(state.files)) {
+    if (fileData && fileData.hash && !fileData.dataURL) {
+      const ext = fileData.ext || MIME_TO_EXT[fileData.mimeType] || 'bin'
+      state.files[fileId] = {
+        ...fileData,
+        url: `/api/images/${fileData.hash}.${ext}`
+      }
+    }
+  }
   return state
 }
 
@@ -80,11 +93,64 @@ function applyDelta(state, deltaElements, serverTs) {
   return changed
 }
 
+// Accepted image MIME types
+const ALLOWED_IMAGE_TYPES = new Set([
+  'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml'
+])
+const MIME_TO_EXT = {
+  'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif',
+  'image/webp': 'webp', 'image/svg+xml': 'svg'
+}
+
+// Store an image file from base64 dataURL to disk, return { hash, ext, mimeType }
+function storeImageFromDataURL(dataURL) {
+  const match = dataURL.match(/^data:([^;]+);base64,(.+)$/)
+  if (!match) return null
+  const mimeType = match[1]
+  const b64 = match[2]
+  if (!ALLOWED_IMAGE_TYPES.has(mimeType)) return null
+  const ext = MIME_TO_EXT[mimeType] || 'bin'
+  const buffer = Buffer.from(b64, 'base64')
+  const hash = crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 16)
+  const filename = `${hash}.${ext}`
+  const filePath = path.join(IMAGES_DIR, filename)
+  if (!fs.existsSync(filePath)) {
+    fs.writeFileSync(filePath, buffer)
+  }
+  return { hash, ext, mimeType }
+}
+
+// Merge incoming files from a delta into note state, extracting base64 to disk
+function mergeFiles(state, incomingFiles) {
+  if (!incomingFiles || typeof incomingFiles !== 'object') return
+  for (const [fileId, fileData] of Object.entries(incomingFiles)) {
+    if (fileData && fileData.dataURL) {
+      // Client sent raw Excalidraw file with dataURL — extract to disk
+      const stored = storeImageFromDataURL(fileData.dataURL)
+      if (stored) {
+        state.files[fileId] = stored
+      }
+    } else if (fileData && fileData.hash) {
+      // Already a hash reference (from another server session)
+      state.files[fileId] = fileData
+    }
+  }
+}
+
 function persistNoteState(noteId) {
   const state = noteStates.get(noteId)
   if (!state) return
   const elements = [...state.elements.values()]
   const cleanElements = elements.map(({ _collab_ts, ...el }) => el)
+
+  // Extract any remaining base64 dataURLs in files to disk
+  for (const [fileId, fileData] of Object.entries(state.files || {})) {
+    if (fileData && fileData.dataURL) {
+      const stored = storeImageFromDataURL(fileData.dataURL)
+      if (stored) state.files[fileId] = stored
+    }
+  }
+
   const data = JSON.stringify({ elements: cleanElements, files: state.files || {} })
   const canvasText = elements
     .filter(el => el.type === 'text' && !el.isDeleted)
@@ -96,6 +162,10 @@ function persistNoteState(noteId) {
 
   db.prepare('UPDATE notes SET canvasData = ?, thumbnail = ?, updatedAt = ? WHERE id = ?')
     .run(data, thumbnail, updatedAt, noteId)
+
+  // Sync image references for this canvas note
+  const note = db.prepare('SELECT content FROM notes WHERE id = ?').get(noteId)
+  syncImageRefs(noteId, note?.content || '', data)
 
   try {
     db.prepare('DELETE FROM notes_fts WHERE note_id = ?').run(noteId)
@@ -126,6 +196,9 @@ function broadcastToNote(noteId, message, excludeWs = null) {
 // Ensure data directory exists
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { mode: 0o700 })
+}
+if (!fs.existsSync(IMAGES_DIR)) {
+  fs.mkdirSync(IMAGES_DIR, { mode: 0o700 })
 }
 
 // Open SQLite Database connection
@@ -168,6 +241,18 @@ db.exec(`
   );
 `)
 
+// Image reference tracking table
+// Tracks which images are referenced by which notes, for garbage collection
+// NOTE: canvas notes store image refs via canvasData.files (hash references)
+// Text notes store image refs via content markdown: ![...](/api/images/<hash>.ext)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS image_refs (
+    image_hash TEXT NOT NULL,
+    note_id TEXT NOT NULL,
+    PRIMARY KEY (image_hash, note_id)
+  );
+`)
+
 // Migration: add canvas_text column to FTS if missing
 try {
   const ftsColumns = db.prepare("PRAGMA table_info('notes_fts')").all().map(c => c.name)
@@ -197,6 +282,47 @@ function extractCanvasText(canvasData) {
       .map(el => el.text || '')
       .join(' ')
   } catch { return '' }
+}
+
+// Helper: extract image hash references from note content and canvasData
+function extractImageRefs(noteId, content, canvasData) {
+  const hashes = new Set()
+  // From markdown content: ![...](/api/images/<hash>.ext)
+  if (content) {
+    const mdImgRegex = /!\[[^\]]*\]\(\/api\/images\/([a-f0-9]{16})\.[a-z]+\)/g
+    let match
+    while ((match = mdImgRegex.exec(content)) !== null) {
+      hashes.add(match[1])
+    }
+  }
+  // From canvas data: files with hash references
+  if (canvasData) {
+    try {
+      const data = typeof canvasData === 'string' ? JSON.parse(canvasData) : canvasData
+      for (const fileData of Object.values(data.files || {})) {
+        if (fileData && fileData.hash && /^[a-f0-9]{16}$/.test(fileData.hash)) {
+          hashes.add(fileData.hash)
+        }
+      }
+    } catch { /* ignore parse errors */ }
+  }
+  return hashes
+}
+
+// Sync image references for a note (delete old refs, insert new ones)
+function syncImageRefs(noteId, content, canvasData) {
+  try {
+    db.prepare('DELETE FROM image_refs WHERE note_id = ?').run(noteId)
+    const hashes = extractImageRefs(noteId, content, canvasData)
+    if (hashes.size > 0) {
+      const insert = db.prepare('INSERT OR IGNORE INTO image_refs (image_hash, note_id) VALUES (?, ?)')
+      for (const hash of hashes) {
+        insert.run(hash, noteId)
+      }
+    }
+  } catch (e) {
+    console.error('Image ref sync error:', e.message)
+  }
 }
 
 // Automatic Data Migration from JSON to SQLite
@@ -253,6 +379,23 @@ try {
   console.error('⚠️ FTS index error:', e.message)
 }
 
+// Ensure image_refs table is populated for existing notes
+try {
+  const refCount = db.prepare('SELECT COUNT(*) as count FROM image_refs').get()
+  const noteCount = db.prepare('SELECT COUNT(*) as count FROM notes').get()
+  if (refCount.count === 0 && noteCount.count > 0) {
+    console.log(`🔍 Populating image_refs for ${noteCount.count} existing notes...`)
+    const notes = db.prepare('SELECT id, content, canvasData FROM notes').all()
+    for (const note of notes) {
+      syncImageRefs(note.id, note.content || '', note.canvasData)
+    }
+    const newRefCount = db.prepare('SELECT COUNT(*) as count FROM image_refs').get()
+    console.log(`✓ image_refs populated: ${newRefCount.count} references`)
+  }
+} catch (e) {
+  console.error('⚠️ image_refs migration error:', e.message)
+}
+
 // Helper functions for database operations
 function getPasswordHash() {
   const row = db.prepare('SELECT hash FROM password WHERE id = 1').get()
@@ -266,6 +409,82 @@ function getAllNotes() {
 // Middleware
 app.use(cors())
 app.use(express.json())
+
+// Image upload middleware (max 20MB)
+const imageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (ALLOWED_IMAGE_TYPES.has(file.mimetype)) {
+      cb(null, true)
+    } else {
+      cb(new Error('Unsupported image type'))
+    }
+  }
+})
+
+// Image routes
+app.post('/api/images', checkAuth, imageUpload.single('image'), (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No image provided' })
+    const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex').slice(0, 16)
+    const ext = MIME_TO_EXT[req.file.mimetype] || 'bin'
+    const filename = `${hash}.${ext}`
+    const filePath = path.join(IMAGES_DIR, filename)
+    if (!fs.existsSync(filePath)) {
+      fs.writeFileSync(filePath, req.file.buffer)
+    }
+    res.json({ hash, url: `/api/images/${filename}`, mimeType: req.file.mimetype })
+  } catch (e) {
+    console.error('Image upload error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+app.get('/api/images/:filename', (req, res) => {
+  const filename = req.params.filename
+  // Validate filename to prevent path traversal
+  if (!/^[a-f0-9]{16}\.[a-z]+$/.test(filename)) {
+    return res.status(400).json({ error: 'Invalid filename' })
+  }
+  const filePath = path.join(IMAGES_DIR, filename)
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Image not found' })
+  }
+  const ext = path.extname(filename).slice(1)
+  const mimeMap = { png: 'image/png', jpg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' }
+  res.setHeader('Content-Type', mimeMap[ext] || 'application/octet-stream')
+  res.sendFile(filePath)
+})
+
+// Image garbage collection: remove orphaned images not referenced by any note
+app.post('/api/images/cleanup', checkAuth, (req, res) => {
+  try {
+    // Build set of all referenced image hashes
+    const referencedHashes = new Set()
+    const rows = db.prepare('SELECT DISTINCT image_hash FROM image_refs').all()
+    for (const row of rows) referencedHashes.add(row.image_hash)
+
+    // Scan image files on disk
+    const files = fs.readdirSync(IMAGES_DIR)
+    let deletedCount = 0
+    const deletedFiles = []
+    for (const file of files) {
+      const match = file.match(/^([a-f0-9]{16})\.[a-z]+$/)
+      if (!match) continue
+      const hash = match[1]
+      if (!referencedHashes.has(hash)) {
+        fs.unlinkSync(path.join(IMAGES_DIR, file))
+        deletedCount++
+        deletedFiles.push(file)
+      }
+    }
+    res.json({ success: true, deleted: deletedCount, files: deletedFiles })
+  } catch (e) {
+    console.error('Image cleanup error:', e)
+    res.status(500).json({ error: e.message })
+  }
+})
 
 // Simple hash function (same as client-side)
 function simpleHash(str) {
@@ -376,6 +595,7 @@ app.post('/api/notes', checkAuth, (req, res) => {
     // Index in FTS (content for text notes, canvas_text for canvas notes)
     db.prepare('INSERT INTO notes_fts(note_id, title, content, canvas_text) VALUES (?, ?, ?, ?)')
       .run(newNote.id, newNote.title, newNote.content, canvasText)
+    syncImageRefs(newNote.id, newNote.content, newNote.canvasData)
     console.log('➕ Note saved, sending response...')
     res.json(newNote)
     console.log('➕ Response sent, broadcasting...')
@@ -416,6 +636,7 @@ app.put('/api/notes/:id', checkAuth, (req, res) => {
   } catch (e) {
     console.error('FTS reindex error:', e.message)
   }
+  syncImageRefs(req.params.id, content, canvasData)
 
   const updatedNote = db.prepare('SELECT * FROM notes WHERE id = ?').get(req.params.id)
   res.json(updatedNote)
@@ -429,8 +650,9 @@ app.delete('/api/notes/:id', checkAuth, (req, res) => {
     return res.status(404).json({ error: 'Note not found' })
   }
 
-  // Deindex from FTS
+  // Deindex from FTS and image refs
   try { db.prepare('DELETE FROM notes_fts WHERE note_id = ?').run(req.params.id) } catch (e) {}
+  try { db.prepare('DELETE FROM image_refs WHERE note_id = ?').run(req.params.id) } catch (e) {}
 
   res.json({ success: true })
   broadcastNotes()
@@ -449,10 +671,14 @@ app.post('/api/notes/batch-delete', checkAuth, (req, res) => {
     const info = stmt.run(...ids)
 
     console.log(`✓ Deleted ${info.changes} notes from SQLite`)
-    // Deindex from FTS
+    // Deindex from FTS and image refs
     try {
       const delStmt = db.prepare(`DELETE FROM notes_fts WHERE note_id IN (${placeholders})`)
       delStmt.run(...ids)
+    } catch (e) {}
+    try {
+      const delRefStmt = db.prepare(`DELETE FROM image_refs WHERE note_id IN (${placeholders})`)
+      delRefStmt.run(...ids)
     } catch (e) {}
     res.json({ success: true, count: info.changes })
     broadcastNotes()
@@ -578,16 +804,30 @@ wss.on('connection', (ws, req) => {
           const state = noteStates.get(msg.noteId)
           if (!state) break
           const serverTs = Date.now()
+          // Merge any incoming files (extract base64 to disk)
+          if (msg.files) mergeFiles(state, msg.files)
           const changed = applyDelta(state, msg.elements, serverTs)
-          console.log(`📝 Delta ${msg.noteId}: ${msg.elements.length}el, changed=${changed}`)
-          if (changed) {
+          const filesChanged = msg.files && Object.keys(msg.files).length > 0
+          console.log(`📝 Delta ${msg.noteId}: ${msg.elements.length}el, changed=${changed}, files=${filesChanged}`)
+          if (changed || filesChanged) {
             if (msg.thumbnail) state._thumbnail = msg.thumbnail
             schedulePersist(msg.noteId)
             const stampedElements = msg.elements.map(el => ({ ...el, _collab_ts: serverTs }))
+            // Resolve file hash references to URLs for broadcast
+            const resolvedFiles = {}
+            for (const [fileId, fileData] of Object.entries(state.files)) {
+              if (fileData && fileData.hash) {
+                const ext = fileData.ext || MIME_TO_EXT[fileData.mimeType] || 'bin'
+                resolvedFiles[fileId] = { ...fileData, url: `/api/images/${fileData.hash}.${ext}` }
+              } else {
+                resolvedFiles[fileId] = fileData
+              }
+            }
             broadcastToNote(msg.noteId, {
               type: 'delta',
               noteId: msg.noteId,
               elements: stampedElements,
+              files: resolvedFiles,
               serverTs
             })
           }
@@ -608,12 +848,15 @@ function countClients() {
   return count
 }
 
-// Serve static files from dist in production, or use Vite dev in development
-if (fs.existsSync(path.join(__dirname, 'dist'))) {
+// Serve static files from dist ONLY in production mode
+// In development, use Vite dev server on port 5174 instead
+if (process.env.NODE_ENV === 'production' && fs.existsSync(path.join(__dirname, 'dist'))) {
   app.use(express.static(path.join(__dirname, 'dist')))
   app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'dist', 'index.html'))
   })
+} else if (process.env.NODE_ENV !== 'production') {
+  console.log('ℹ️  Development mode: backend on :5173, frontend served by Vite on :5174')
 } else {
   console.log('⚠️  dist/ not found. Run "npm run build" first, or use "npm run dev" for development.')
 }
