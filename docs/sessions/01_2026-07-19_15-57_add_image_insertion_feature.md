@@ -1,7 +1,7 @@
 # Session Log: Add Image Insertion Feature
 
 - **Date**: 2026-07-19 15:57
-- **Commit**: _pending_
+- **Commit**: `0cba16c5028fa41b727eb204b15996732e21fe19` — feat(images): add image insertion support for text notes and whiteboard
 
 ## Changed Files
 
