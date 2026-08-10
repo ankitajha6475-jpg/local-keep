@@ -47,12 +47,29 @@
     <!-- Whiteboard Editor (full-screen) -->
     <WhiteboardEditor
       v-else-if="isAuthenticated && currentView === 'canvas'"
+      ref="whiteboardEditorRef"
       :noteId="editingCanvasId"
       :canvasData="editingCanvasData"
       :initialTitle="editingCanvasTitle"
       :ws="wsRef"
       @back="closeCanvasEditor"
+      @note-gone="handleNoteDeletedElsewhere"
     />
+
+    <!-- Canvas deletion-elsewhere mask (no alert; inline prompt) -->
+    <div
+      v-if="currentView === 'canvas' && deletedMask && deletedMask.noteId === editingCanvasId"
+      class="deleted-mask"
+    >
+      <div class="deleted-mask-panel">
+        <h3>⚠️ This whiteboard was deleted on another client</h3>
+        <p>Your local edits are still here. Save them as a new note, or discard.</p>
+        <div class="deleted-mask-actions">
+          <button type="button" class="save-btn" @click="saveDeletedAsNew">Save as new note</button>
+          <button type="button" class="cancel-btn" @click="discardDeleted">Discard</button>
+        </div>
+      </div>
+    </div>
 
     <!-- Main App -->
     <div v-else-if="isAuthenticated" class="main-app">
@@ -203,8 +220,7 @@
                   <span>Whiteboard</span>
                 </div>
               </div>
-              <h3 v-if="note.title">{{ note.title }}</h3>
-              <h3 v-else-if="note.type === 'canvas'" class="canvas-untitled">Untitled Whiteboard</h3>
+              <h3>{{ getDisplayTitle(note, { fallback: note.type === 'canvas' ? 'Untitled Whiteboard' : 'Untitled' }) }}</h3>
               <p v-if="note.type !== 'canvas'" v-html="renderContent(note.content)"></p>
               <small class="note-date">{{ formatDate(note.updatedAt) }}</small>
             </div>
@@ -233,6 +249,16 @@
               @keydown.ctrl.enter.stop.prevent="editingId ? saveEdit() : addNote()"
               @keydown.meta.enter.stop.prevent="editingId ? saveEdit() : addNote()"
             >
+            <div class="note-editor-toolbar">
+              <button type="button" @click="formatBold" class="toolbar-btn" title="Bold (Ctrl+B)" aria-label="Bold"><b>B</b></button>
+              <button type="button" @click="formatItalic" class="toolbar-btn" title="Italic (Ctrl+I)" aria-label="Italic"><i>I</i></button>
+              <button type="button" @click="insertLink" class="toolbar-btn" title="Insert link" aria-label="Insert link">🔗</button>
+              <button type="button" @click="insertCheckbox" class="toolbar-btn" title="Checkbox (to-do item)" aria-label="Checkbox">☑</button>
+              <span class="toolbar-spacer"></span>
+              <button type="button" @click="triggerImageUpload" class="image-btn" :disabled="imageUploading" title="Insert image">
+                {{ imageUploading ? '⏳' : '🖼️' }}
+              </button>
+            </div>
             <div
               ref="imageEditor"
               class="note-editor"
@@ -248,9 +274,6 @@
             <div class="note-form-actions">
               <div class="action-buttons">
                 <button type="submit" class="save-btn">{{ editingId ? 'Save' : 'Add Note' }}</button>
-                <button type="button" @click="triggerImageUpload" class="image-btn" :disabled="imageUploading" title="Insert image">
-                  {{ imageUploading ? '⏳' : '🖼️' }}
-                </button>
                 <button type="button" @click="closeModal" class="cancel-btn">Cancel</button>
               </div>
               <small>{{ editingId ? `${modKey}+Enter to save` : `${modKey}+Enter to add` }}</small>
@@ -264,6 +287,21 @@
             >
           </form>
           <div class="modal-resize-handle" @mousedown.prevent="startResize"></div>
+
+          <!-- Text-note deletion-elsewhere mask (no alert; inline prompt) -->
+          <div
+            v-if="deletedMask && editingId === deletedMask.noteId"
+            class="deleted-mask deleted-mask--in-modal"
+          >
+            <div class="deleted-mask-panel">
+              <h3>⚠️ This note was deleted on another client</h3>
+              <p>Your local edits are still here. Save them as a new note, or discard.</p>
+              <div class="deleted-mask-actions">
+                <button type="button" class="save-btn" @click="saveDeletedAsNew">Save as new note</button>
+                <button type="button" class="cancel-btn" @click="discardDeleted">Discard</button>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -332,15 +370,15 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import debug from 'debug'
 import WhiteboardEditor from './components/WhiteboardEditor.vue'
+import { getDisplayTitle } from './utils/notes.js'
 
 const log = debug('local-keep:client')
 const API_BASE = window.location.origin
 
 // API helper
 async function api(url, options = {}) {
-  const token = sessionStorage.getItem('local-keep-token')
   const headers = { 'Content-Type': 'application/json' }
-  if (token) headers['X-Auth-Token'] = token
+  if (runtimeToken) headers['X-Auth-Token'] = runtimeToken
 
   const res = await fetch(`${API_BASE}${url}`, {
     ...options,
@@ -353,6 +391,11 @@ async function api(url, options = {}) {
   }
   return res.json()
 }
+
+// In-memory session token (NOT persisted to storage). Used for the WebSocket
+// `?token=` query string and as a redundant X-Auth-Token header. REST auth
+// relies on the httpOnly cookie the server sets on verify/setup.
+let runtimeToken = null
 
 // Platform detection
 const isMac = /Mac/.test(navigator.userAgent)
@@ -398,6 +441,12 @@ export default {
     const editingCanvasData = ref(null)
     const editingCanvasTitle = ref('')
 
+    // Deletion-elsewhere mask state: { noteId, deletedAt } | null.
+    // When set AND the user is viewing/editing that note, an inline overlay
+    // (NOT an alert) is shown with Save-as / Discard actions.
+    const deletedMask = ref(null)
+    const whiteboardEditorRef = ref(null)
+
     // Modal resize state
     const modalSize = ref({ width: null, height: null })
     const isResizing = ref(false)
@@ -428,14 +477,13 @@ export default {
 
     // Create WebSocket connection
     const connectWebSocket = () => {
-      const token = sessionStorage.getItem('local-keep-token')
-      if (!token || wsConnecting.value) return
+      if (!runtimeToken || wsConnecting.value) return
 
       wsConnecting.value = true
 
       // Build WebSocket URL - use ws:// or wss:// based on current protocol
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const wsUrl = `${wsProtocol}//${window.location.host}/ws?token=${token}`
+      const wsUrl = `${wsProtocol}//${window.location.host}/ws?token=${runtimeToken}`
 
       try {
         ws = new WebSocket(wsUrl)
@@ -475,6 +523,8 @@ export default {
                 console.log(`[${now}] 📨 Skipping - modal open. Buffering update.`)
                 pendingNotes.value = [...data.notes]
               }
+            } else if (data.type === 'note-deleted' && data.noteId) {
+              handleNoteDeletedElsewhere(data.noteId)
             }
           } catch (e) {
             console.error('Failed to parse WebSocket message:', e)
@@ -634,8 +684,10 @@ export default {
         if (!data.hasPassword) {
           showSetup.value = true
         } else {
-          const token = sessionStorage.getItem('local-keep-token')
-          if (token) {
+          // Cookie is sent automatically; check auth status to skip the
+          // password screen if a valid session cookie is present.
+          const status = await api('/api/auth/status')
+          if (status.authenticated) {
             isAuthenticated.value = true
             await loadNotes()
             connectWebSocket()
@@ -664,18 +716,13 @@ export default {
           return
         }
 
-        // First setup, then verify to get token
-        await api('/api/password/setup', {
+        // Setup issues a session cookie + session token directly
+        const data = await api('/api/password/setup', {
           method: 'POST',
           body: JSON.stringify({ password: setupForm.value.password })
         })
 
-        const verifyData = await api('/api/password/verify', {
-          method: 'POST',
-          body: JSON.stringify({ password: setupForm.value.password })
-        })
-
-        sessionStorage.setItem('local-keep-token', verifyData.token)
+        runtimeToken = data.token || null
         isAuthenticated.value = true
         showSetup.value = false
         setupError.value = ''
@@ -693,7 +740,7 @@ export default {
           body: JSON.stringify({ password: loginForm.value.password })
         })
 
-        sessionStorage.setItem('local-keep-token', data.token)
+        runtimeToken = data.token || null
         isAuthenticated.value = true
         loginError.value = ''
         await loadNotes()
@@ -703,9 +750,15 @@ export default {
       }
     }
 
-    const logout = () => {
+    const logout = async () => {
+      // Revoke the session server-side (also clears the cookie)
+      try {
+        await api('/api/auth/logout', { method: 'POST' })
+      } catch (e) {
+        console.error('Logout failed', e)
+      }
+      runtimeToken = null
       isAuthenticated.value = false
-      sessionStorage.removeItem('local-keep-token')
       loginForm.value.password = ''
       loginError.value = ''
       disconnectWebSocket()
@@ -922,7 +975,6 @@ export default {
     }
 
     const addNote = async () => {
-      if (!newNoteContent.value.trim()) return
       try {
         const note = await api('/api/notes', {
           method: 'POST',
@@ -1022,7 +1074,6 @@ export default {
     }
 
     const saveEdit = async () => {
-      if (!newNoteContent.value.trim()) return
       try {
         const updated = await api(`/api/notes/${editingId.value}`, {
           method: 'PUT',
@@ -1123,6 +1174,87 @@ export default {
       editingCanvasId.value = null
       editingCanvasData.value = null
       editingCanvasTitle.value = ''
+      // If the canvas was masked because of an external deletion, drop it now.
+      if (deletedMask.value) deletedMask.value = null
+    }
+
+    // ── Deletion-elsewhere detection (no alert/confirm; mask + Save-as / Discard) ──
+
+    // Called when a WS `note-deleted` arrives. If the user is currently editing
+    // or viewing that note, enter the masked state. Otherwise ignore (gallery
+    // refresh happens via the bulk `notes` broadcast).
+    const handleNoteDeletedElsewhere = (noteId) => {
+      if (!noteId) return
+      const isOpenTextNote = isModalOpen.value && editingId.value === noteId
+      const isOpenCanvas = currentView.value === 'canvas' && editingCanvasId.value === noteId
+      if (!isOpenTextNote && !isOpenCanvas) return
+      // Idempotent: if already masked for this note, no-op.
+      if (deletedMask.value && deletedMask.value.noteId === noteId) return
+      deletedMask.value = { noteId, deletedAt: Date.now() }
+    }
+
+    // Save-as: create a NEW note from the current local buffer, then switch to it.
+    const saveDeletedAsNew = async () => {
+      const mask = deletedMask.value
+      if (!mask) return
+      try {
+        const isOpenTextNote = isModalOpen.value && editingId.value === mask.noteId
+        const isOpenCanvas = currentView.value === 'canvas' && editingCanvasId.value === mask.noteId
+
+        if (isOpenTextNote) {
+          const note = await api('/api/notes', {
+            method: 'POST',
+            body: JSON.stringify({
+              title: newNoteTitle.value.trim(),
+              content: newNoteContent.value.trim()
+            })
+          })
+          notes.value.unshift(note)
+          closeModal(true)
+          deletedMask.value = null
+        } else if (isOpenCanvas) {
+          // Gather the current Excalidraw scene to save as a new canvas note.
+          const scene = whiteboardEditorRef.value?.getCurrentScene?.() || { elements: [], files: {} }
+          const canvasData = JSON.stringify({
+            elements: (scene.elements || []).map(({ _collab_ts, ...el }) => el),
+            files: scene.files || {}
+          })
+          const note = await api('/api/notes', {
+            method: 'POST',
+            body: JSON.stringify({
+              title: '',
+              content: '',
+              type: 'canvas',
+              canvasData
+            })
+          })
+          notes.value.unshift(note)
+          // Close the masked canvas and open the freshly-saved note.
+          // Toggling the view off then on unmounts the old editor (calling
+          // its collab.detach via onUnmounted) and remounts onto the new id.
+          deletedMask.value = null
+          editingCanvasData.value = null
+          editingCanvasId.value = note.id
+          editingCanvasTitle.value = ''
+          currentView.value = 'list'
+          await nextTick()
+          currentView.value = 'canvas'
+        }
+      } catch (e) {
+        console.error('Save-as failed', e)
+      }
+    }
+
+    // Discard: close the editor without saving.
+    const discardDeleted = () => {
+      deletedMask.value = null
+      if (currentView.value === 'canvas') {
+        closeCanvasEditor()
+      } else if (isModalOpen.value) {
+        newNoteTitle.value = ''
+        newNoteContent.value = ''
+        closeModal(true)
+      }
     }
 
     // Computed
@@ -1185,6 +1317,7 @@ export default {
       startEditing,
       saveEdit,
       formatDate,
+      getDisplayTitle,
       // Modal/Shortcuts
       isModalOpen,
       modalSize,
@@ -1243,6 +1376,12 @@ export default {
       openNewCanvas,
       openCanvasNote,
       closeCanvasEditor,
+      // Deletion-elsewhere mask
+      deletedMask,
+      whiteboardEditorRef,
+      handleNoteDeletedElsewhere,
+      saveDeletedAsNew,
+      discardDeleted,
       // Image insertion
       imageUploadInput,
       imageUploading,
@@ -1251,6 +1390,11 @@ export default {
       cleanupRunning,
       cleanupImages,
       triggerImageUpload,
+      // Text formatting toolbar
+      formatBold,
+      formatItalic,
+      insertLink,
+      insertCheckbox,
       onImageFileSelected,
       onEditorInput,
       onEditorKeydown,
@@ -1503,15 +1647,94 @@ export default {
       imageUploadInput.value?.click()
     }
 
+    // ── Text formatting toolbars ──
+    // The editor uses document.execCommand on the contentEditable body; the
+    // resulting <b>/<i>/<a> nodes are serialized to markdown by
+    // serializeEditorToMarkdown(). Checkbox inserts a markdown "- [ ] " prefix.
+
+    function focusEditorAtSelection() {
+      const el = imageEditor.value
+      if (!el) return null
+      // Make sure the editor is focused; if the selection isn't inside it,
+      // place the caret at the end so we have a stable anchor.
+      const sel = window.getSelection()
+      if (!sel || !sel.rangeCount || !el.contains(sel.anchorNode)) {
+        el.focus()
+        const range = document.createRange()
+        range.selectNodeContents(el)
+        range.collapse(false)
+        sel.removeAllRanges()
+        sel.addRange(range)
+      }
+      return sel
+    }
+
+    function formatBold() {
+      const sel = focusEditorAtSelection()
+      if (!sel) return
+      document.execCommand('bold', false, null)
+      newNoteContent.value = serializeEditorToMarkdown()
+    }
+
+    function formatItalic() {
+      const sel = focusEditorAtSelection()
+      if (!sel) return
+      document.execCommand('italic', false, null)
+      newNoteContent.value = serializeEditorToMarkdown()
+    }
+
+    function insertLink() {
+      const sel = focusEditorAtSelection()
+      if (!sel) return
+      const hasSelection = sel.rangeCount && !sel.getRangeAt(0).collapsed
+      const url = window.prompt('Link URL:', 'https://')
+      if (!url) return
+      const ok = document.execCommand('createLink', false, url)
+      if (!ok) {
+        // Fallback: insert "<url>" as plain text link
+        const range = sel.getRangeAt(0)
+        range.deleteContents()
+        range.insertNode(document.createTextNode(url))
+      }
+      newNoteContent.value = serializeEditorToMarkdown()
+    }
+
+    function insertCheckbox() {
+      const el = imageEditor.value
+      if (!el) return
+      const sel = focusEditorAtSelection()
+      if (!sel) return
+      const range = sel.getRangeAt(0)
+      // Find the start of the current line so we can prefix it.
+      let node = range.startContainer
+      let lineStart = 0
+      if (node.nodeType === 3) {
+        const textBefore = node.textContent.slice(0, range.startOffset)
+        const nl = textBefore.lastIndexOf('\n')
+        lineStart = nl === -1 ? 0 : nl + 1
+      }
+      // Insert "- [ ] " at the caret; the content is preserved on serialize.
+      const marker = document.createTextNode('- [ ] ')
+      range.insertNode(marker)
+      // Move caret after the marker
+      const newRange = document.createRange()
+      newRange.setStartAfter(marker)
+      newRange.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(newRange)
+      newNoteContent.value = serializeEditorToMarkdown()
+    }
+
     async function uploadImageFile(file) {
       imageUploading.value = true
       try {
-        const token = sessionStorage.getItem('local-keep-token')
         const formData = new FormData()
         formData.append('image', file)
+        const headers = {}
+        if (runtimeToken) headers['X-Auth-Token'] = runtimeToken
         const res = await fetch(`${API_BASE}/api/images`, {
           method: 'POST',
-          headers: { 'X-Auth-Token': token },
+          headers,
           body: formData
         })
         if (!res.ok) throw new Error('Upload failed')
@@ -1580,15 +1803,28 @@ export default {
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;')
-      return escaped.replace(
-        /!\[([^\]]*)\]\(([^)]+)\)(?:\{width=(\d+)\})?/g,
-        (match, alt, src, width) => {
-          const style = width
-            ? `max-width:none;width:${width}px;border-radius:4px;margin:4px 0`
-            : 'max-width:100%;border-radius:4px;margin:4px 0'
-          return `<img src="${src}" alt="${alt}" style="${style}" onerror="this.style.display='none'">`
-        }
-      ).replace(/\n/g, '<br>')
+      return escaped
+        // Images: ![alt](url){width=N}
+        .replace(
+          /!\[([^\]]*)\]\(([^)]+)\)(?:\{width=(\d+)\})?/g,
+          (match, alt, src, width) => {
+            const style = width
+              ? `max-width:none;width:${width}px;border-radius:4px;margin:4px 0`
+              : 'max-width:100%;border-radius:4px;margin:4px 0'
+            return `<img src="${src}" alt="${alt}" style="${style}" onerror="this.style.display='none'">`
+          }
+        )
+        // Checkboxes: "- [ ] " → unchecked ☐, "- [x] " → checked ☑
+        .replace(/(^|\n)[ \t]*- \[ \] /g, '$1☐ ')
+        .replace(/(^|\n)[ \t]*- \[[xX]\] /g, '$1☑ ')
+        // Bold
+        .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+        // Italic (avoid eating image alt's already consumed above)
+        .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+        // Links: [text](url)
+        .replace(/\[([^\]]+)\]\(([^)]+)\)/g,
+          '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+        .replace(/\n/g, '<br>')
     }
 
     // Image garbage collection
@@ -2505,6 +2741,81 @@ main {
 .image-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.note-editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.25rem 0;
+  margin-bottom: 0.25rem;
+  border-bottom: 1px solid #ededed;
+}
+
+.toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+.toolbar-btn {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 0.5rem;
+  background: #f8f9fa;
+  color: #3c4043;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.95rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, border-color 0.15s;
+}
+.toolbar-btn:hover {
+  background: #e8eaed;
+}
+.toolbar-btn:active {
+  background: #dadce0;
+}
+
+/* Deletion-elsewhere mask (no alert; inline overlay + prompt) */
+.deleted-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(32, 33, 36, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.deleted-mask--in-modal {
+  position: absolute;
+  inset: 0;
+  border-radius: 8px;
+}
+.deleted-mask-panel {
+  background: #fff;
+  border-radius: 8px;
+  padding: 1.5rem 1.75rem;
+  max-width: 420px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+  text-align: center;
+}
+.deleted-mask-panel h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+  color: #b3261e;
+}
+.deleted-mask-panel p {
+  margin: 0 0 1.25rem;
+  color: #5f6368;
+  font-size: 0.9rem;
+}
+.deleted-mask-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
 }
 
 .save-btn {

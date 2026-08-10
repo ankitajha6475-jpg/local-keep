@@ -193,6 +193,10 @@ export default {
         if (status === 'saved') {
           setTimeout(() => { if (syncStatus.value === 'saved') syncStatus.value = '' }, 1500)
         }
+      },
+      onNoteGone(goneNoteId) {
+        // Server says the note we're editing no longer exists. Surface to parent.
+        emit('note-gone', goneNoteId)
       }
     })
 
@@ -360,6 +364,24 @@ export default {
       collab.handleChange(elements, appState, files)
     }
 
+    // Return the current scene (elements + files) for save-as / export flows.
+    function getCurrentScene() {
+      // Prefer the live Excalidraw API if available; fall back to collab state.
+      if (excalidrawAPI) {
+        try {
+          return {
+            elements: excalidrawAPI.getSceneElementsIncludingDeleted
+              ? excalidrawAPI.getSceneElementsIncludingDeleted()
+              : (excalidrawAPI.getSceneElements ? excalidrawAPI.getSceneElements() : []),
+            files: typeof excalidrawAPI.getFiles === 'function' ? (excalidrawAPI.getFiles() || {}) : {}
+          }
+        } catch (e) {
+          console.error('Failed to read scene from Excalidraw API', e)
+        }
+      }
+      return collab.getCurrentScene ? collab.getCurrentScene() : { elements: [], files: {} }
+    }
+
     onMounted(async () => {
       await nextTick()
       let initialData = null
@@ -480,7 +502,8 @@ export default {
       copyLog,
       copyStatus,
       goBack,
-      toggleFullscreen
+      toggleFullscreen,
+      getCurrentScene
     }
   }
 }

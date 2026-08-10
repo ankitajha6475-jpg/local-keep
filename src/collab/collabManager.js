@@ -6,7 +6,7 @@ const DEBOUNCE_MS = 500
 const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform)
 const CTRL_OR_CMD = isMac ? 'metaKey' : 'ctrlKey'
 
-export function createCollabManager({ noteId, generateThumbnail, onStatus }) {
+export function createCollabManager({ noteId, generateThumbnail, onStatus, onNoteGone }) {
   // ── State ──
   let ws = null
   let api = null
@@ -21,8 +21,26 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus }) {
   const redoStack = []
   let actionsRegistered = false
   let joined = false
+  let detached = false                  // true after server told us the note is gone
 
   // ── Internal helpers ──
+
+  // Merge remote files defensively: never clobber a local entry that still has
+  // a renderable `dataURL` with an incoming entry that lacks one. This protects
+  // against out-of-order or in-flight messages (and partial legacy data).
+  function mergeFilesDefensively(incomingFiles) {
+    if (!incomingFiles || typeof incomingFiles !== 'object') return currentFiles
+    const merged = { ...currentFiles }
+    for (const [id, incoming] of Object.entries(incomingFiles)) {
+      const local = merged[id]
+      if (local && local.dataURL && !(incoming && incoming.dataURL)) {
+        // Keep our renderable entry; ignore a URL-only/legacy incoming one
+        continue
+      }
+      merged[id] = incoming
+    }
+    return merged
+  }
 
   function stripTs(el) {
     if (!el) return el
@@ -91,6 +109,7 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus }) {
       needsFlush = true
       return
     }
+    if (detached) return  // note is gone on server; do not flush
 
     const elements = currentElements.filter(el => !el.isDeleted)
     const diff = computeDiff(lastCommitted, elements)
@@ -189,12 +208,16 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus }) {
       }
 
       const update = { elements: mergedElements }
-      if (msg.files) {
-        // Merge remote files into our local files
-        currentFiles = { ...currentFiles, ...msg.files }
-        update.files = currentFiles
-      }
+      // Merge remote files into our local files (defensively — see helper)
+      currentFiles = mergeFilesDefensively(msg.files)
+      update.files = currentFiles
       api.updateScene(update)
+    } else if (msg.files) {
+      // Files changed but no element-level diff was accepted — still apply files
+      applyingRemote = true
+      currentFiles = mergeFilesDefensively(msg.files)
+      api.updateScene({ files: currentFiles })
+      applyingRemote = false
     }
 
     applyingRemote = false
@@ -212,8 +235,8 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus }) {
     updateLastCommitted(cleanElements)
     const update = { elements: cleanElements }
     if (msg.files) {
-      currentFiles = msg.files
-      update.files = msg.files
+      currentFiles = mergeFilesDefensively(msg.files)
+      update.files = currentFiles
     }
     api.updateScene(update)
     onStatus?.('loaded')
@@ -364,6 +387,19 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus }) {
         handleRemoteDelta(data)
       } else if (data.type === 'snapshot') {
         handleSnapshot(data)
+      } else if (data.type === 'note-gone') {
+        // Note no longer exists on the server (deleted elsewhere). Stop the
+        // persistence loop so we don't keep firing failing deltas. Surface to
+        // the host via onNoteGone; idempotent if already detached.
+        if (!detached) {
+          detached = true
+          clearTimeout(changeTimer)
+          changeTimer = null
+          needsFlush = false
+        }
+        if (typeof onNoteGone === 'function') {
+          try { onNoteGone(data.noteId) } catch (_) { /* best-effort */ }
+        }
       }
     } catch (e) { /* ignore non-collab messages */ }
   }
@@ -416,6 +452,9 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus }) {
     handleChange,
     handleRemoteDelta,
     handleSnapshot,
+    getCurrentScene() {
+      return { elements: currentElements, files: currentFiles }
+    },
     get undoStack() { return undoStack },
     get redoStack() { return redoStack }
   }

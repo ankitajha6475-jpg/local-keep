@@ -18,10 +18,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - `POST /api/images/cleanup` endpoint for garbage collection
 - Startup migration to populate `image_refs` for existing notes
 - Broken image handling: non-existent images hidden in gallery, converted to markdown text in editor
+- Persistent signed-cookie login (~30 days): sessions stored server-side and validated via cookie for REST and via session token for WebSocket
+- `GET /api/auth/status` and `POST /api/auth/logout` endpoints; `sessions` table for session persistence across server restarts
+- Cross-client deletion detection: targeted `{type:'note-deleted'}` broadcast on note deletion; clients editing/viewing the deleted note get an inline overlay (no alert/confirm) offering Save-as / Discard; server rejects further deltas for deleted notes with `{type:'note-gone'}`
 
 ### Changed
 - Whiteboard delta sync now includes `files` alongside `elements` for image synchronization
 - `canvasData` stores file hash references instead of inline base64 after persist
+- Moved text-note image insertion button out of the Save/Cancel action row into an editor toolbar above the body
+- Text-note editor toolbar now also includes Bold / Italic / Link / Checkbox formatting actions; bold/italic/link/checkbox markdown is rendered in the gallery preview as well
+- Notes can be saved with title only (no body required); gallery/list/headers now derive a display title from leading content when a note has no explicit title
+- Whiteboard file storage now preserves Excalidraw's required `dataURL`/`id`/`created` alongside the content hash (was discarding them, leaving images unable to render)
+
+### Fixed
+- Pasted/inserted whiteboard images now render correctly on all clients and on reload (server no longer strips Excalidraw's required dataURL; sender excluded from its own delta echo)
+- Legacy whiteboard entries stored without `dataURL` are hydrated from disk on next load
 
 ### Removed
 - Image paste blocker (`blockImagePaste`) in whiteboard editor

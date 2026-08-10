@@ -8,6 +8,7 @@ import { WebSocketServer, WebSocket } from 'ws'
 import { createServer } from 'http'
 import { DatabaseSync } from 'node:sqlite'
 import multer from 'multer'
+import { createSessionStore } from './src/server/sessionStore.js'
 
 import debugLib from 'debug'
 const log = debugLib('local-keep:server')
@@ -63,14 +64,25 @@ function loadNoteState(noteId) {
   if (note && note.thumbnail) {
     state._thumbnail = note.thumbnail
   }
-  // Resolve hash references to serveable URLs for clients
+  // Resolve hash references to serveable URLs for clients. Also hydrate any
+  // legacy entries that pre-date this fix (which stored only {hash, ext,
+  // mimeType}) by reconstituting the dataURL Excalidraw needs to render.
   for (const [fileId, fileData] of Object.entries(state.files)) {
-    if (fileData && fileData.hash && !fileData.dataURL) {
+    if (!fileData) continue
+    if (fileData.hash && !fileData.dataURL) {
       const ext = fileData.ext || MIME_TO_EXT[fileData.mimeType] || 'bin'
-      state.files[fileId] = {
-        ...fileData,
-        url: `/api/images/${fileData.hash}.${ext}`
-      }
+      const filePath = path.join(IMAGES_DIR, `${fileData.hash}.${ext}`)
+      try {
+        if (fs.existsSync(filePath)) {
+          const buf = fs.readFileSync(filePath)
+          const mimeType = fileData.mimeType || EXT_TO_MIME[ext] || 'application/octet-stream'
+          fileData.dataURL = `data:${mimeType};base64,${buf.toString('base64')}`
+        }
+      } catch (e) { /* leave entry as-is if disk read fails */ }
+    }
+    if (fileData.hash) {
+      const ext = fileData.ext || MIME_TO_EXT[fileData.mimeType] || 'bin'
+      state.files[fileId] = { ...fileData, url: `/api/images/${fileData.hash}.${ext}` }
     }
   }
   return state
@@ -101,6 +113,10 @@ const MIME_TO_EXT = {
   'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif',
   'image/webp': 'webp', 'image/svg+xml': 'svg'
 }
+const EXT_TO_MIME = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', svg: 'image/svg+xml'
+}
 
 // Store an image file from base64 dataURL to disk, return { hash, ext, mimeType }
 function storeImageFromDataURL(dataURL) {
@@ -120,7 +136,9 @@ function storeImageFromDataURL(dataURL) {
   return { hash, ext, mimeType }
 }
 
-// Merge incoming files from a delta into note state, extracting base64 to disk
+// Merge incoming files from a delta into note state, extracting base64 to disk.
+// Preserves Excalidraw-required fields (id, mimeType, dataURL, created) and
+// augments with hash/ext for content-addressed deduplication and serving.
 function mergeFiles(state, incomingFiles) {
   if (!incomingFiles || typeof incomingFiles !== 'object') return
   for (const [fileId, fileData] of Object.entries(incomingFiles)) {
@@ -128,7 +146,7 @@ function mergeFiles(state, incomingFiles) {
       // Client sent raw Excalidraw file with dataURL — extract to disk
       const stored = storeImageFromDataURL(fileData.dataURL)
       if (stored) {
-        state.files[fileId] = stored
+        state.files[fileId] = { ...fileData, ...stored }
       }
     } else if (fileData && fileData.hash) {
       // Already a hash reference (from another server session)
@@ -143,11 +161,13 @@ function persistNoteState(noteId) {
   const elements = [...state.elements.values()]
   const cleanElements = elements.map(({ _collab_ts, ...el }) => el)
 
-  // Extract any remaining base64 dataURLs in files to disk
+  // Ensure any file entries still carrying only a dataURL are extracted to disk.
+  // file entries already extracted at delta time keep their dataURL (needed by
+  // Excalidraw to render), so we augment without dropping it.
   for (const [fileId, fileData] of Object.entries(state.files || {})) {
-    if (fileData && fileData.dataURL) {
+    if (fileData && fileData.dataURL && !fileData.hash) {
       const stored = storeImageFromDataURL(fileData.dataURL)
-      if (stored) state.files[fileId] = stored
+      if (stored) state.files[fileId] = { ...fileData, ...stored }
     }
   }
 
@@ -213,6 +233,14 @@ db.exec(`
 `)
 
 db.exec(`
+  CREATE TABLE IF NOT EXISTS sessions (
+    sessionId TEXT PRIMARY KEY,
+    hash TEXT NOT NULL,
+    expiresAt INTEGER NOT NULL
+  );
+`)
+
+db.exec(`
   CREATE TABLE IF NOT EXISTS notes (
     id TEXT PRIMARY KEY,
     title TEXT,
@@ -270,6 +298,12 @@ try {
 } catch (e) {
   console.error('⚠️ FTS migration error:', e.message)
 }
+
+// Session store: opaque, server-stored sessions signed via HMAC. Used for
+// persistent auth (cookie) and validated for both REST (cookie/X-Auth-Token)
+// and WebSocket (?token=) flows.
+const sessions = createSessionStore({ db, dataDir: DATA_DIR })
+sessions.hydrate()
 
 // Helper: extract text from canvasData JSON for FTS indexing
 function extractCanvasText(canvasData) {
@@ -521,6 +555,36 @@ function broadcastNotes(excludeWs = null) {
   console.log(`📢 Broadcast complete, sent to ${sent} clients`)
 }
 
+// Broadcast an arbitrary message to all connected WS clients.
+function broadcastToAllClients(message) {
+  const str = typeof message === 'string' ? message : JSON.stringify(message)
+  let sent = 0
+  for (const wsSet of clients.values()) {
+    for (const ws of wsSet) {
+      if (ws.readyState === WebSocket.OPEN) {
+        try { ws.send(str); sent++ } catch (_) {}
+      }
+    }
+  }
+  return sent
+}
+
+// Purge in-memory collab state for a deleted note so further deltas to it are
+// rejected (the delta handler replies with `note-gone`).
+function clearNoteState(noteId) {
+  const state = noteStates.get(noteId)
+  if (state) {
+    clearTimeout(state.pendingPersist)
+    noteStates.delete(noteId)
+  }
+}
+
+// Broadcast a per-note deletion event to all clients.
+function broadcastNoteDeleted(noteId) {
+  clearNoteState(noteId)
+  broadcastToAllClients({ type: 'note-deleted', noteId, deletedAt: Date.now() })
+}
+
 // Password routes
 app.get('/api/password', (req, res) => {
   const hash = getPasswordHash()
@@ -535,7 +599,9 @@ app.post('/api/password/setup', (req, res) => {
 
   const hash = simpleHash(password)
   db.prepare('INSERT OR REPLACE INTO password (id, hash) VALUES (1, ?)').run(hash)
-  res.json({ success: true })
+  const { sessionId, expiresAt } = sessions.issue(hash)
+  res.setHeader('Set-Cookie', sessions.cookieHeader(sessionId))
+  res.json({ success: true, token: sessionId, expiresAt })
 })
 
 app.post('/api/password/verify', (req, res) => {
@@ -548,22 +614,49 @@ app.post('/api/password/verify', (req, res) => {
 
   const hash = simpleHash(password)
   if (hash === currentHash) {
-    res.json({ success: true, token: hash })
+    const { sessionId, expiresAt } = sessions.issue(hash)
+    res.setHeader('Set-Cookie', sessions.cookieHeader(sessionId))
+    res.json({ success: true, token: sessionId, expiresAt })
   } else {
     res.status(401).json({ error: 'Incorrect password' })
   }
 })
 
-// Notes routes (protected by token in header)
+// Returns whether the caller is currently authenticated via cookie or header.
+// Does NOT require auth; used by the client to skip the password screen on reload.
+app.get('/api/auth/status', (req, res) => {
+  const sessionId = sessions.sessionIdFromRequest(req) || req.headers['x-auth-token']
+  const entry = sessions.validate(sessionId)
+  if (entry) {
+    res.json({ authenticated: true, expiresAt: entry.expiresAt })
+  } else {
+    res.json({ authenticated: false, expiresAt: null })
+  }
+})
+
+// Logout: revoke the caller's session and clear the cookie.
+app.post('/api/auth/logout', (req, res) => {
+  const sessionId = sessions.sessionIdFromRequest(req) || req.headers['x-auth-token']
+  if (sessionId) {
+    sessions.revoke(sessionId)
+  }
+  res.setHeader('Set-Cookie', sessions.cookieHeader('', { clear: true }))
+  res.json({ success: true })
+})
+
+// Notes routes (protected by session cookie OR X-Auth-Token header)
 function checkAuth(req, res, next) {
-  const token = req.headers['x-auth-token']
+  const sessionId = sessions.sessionIdFromRequest(req) || req.headers['x-auth-token']
   const currentHash = getPasswordHash()
 
   if (!currentHash) {
     return res.status(400).json({ error: 'Password not set up' })
   }
 
-  if (token === currentHash) {
+  const entry = sessions.validate(sessionId)
+  if (entry) {
+    // Bind the matching password hash onto req for downstream consumers if needed
+    req.passwordHash = entry.hash
     next()
   } else {
     res.status(401).json({ error: 'Unauthorized' })
@@ -656,6 +749,7 @@ app.delete('/api/notes/:id', checkAuth, (req, res) => {
 
   res.json({ success: true })
   broadcastNotes()
+  broadcastNoteDeleted(req.params.id)
 })
 
 app.post('/api/notes/batch-delete', checkAuth, (req, res) => {
@@ -682,6 +776,7 @@ app.post('/api/notes/batch-delete', checkAuth, (req, res) => {
     } catch (e) {}
     res.json({ success: true, count: info.changes })
     broadcastNotes()
+    for (const id of ids) broadcastNoteDeleted(id)
   } catch (e) {
     console.error('🗑️ ERROR in POST /api/notes/batch-delete:', e)
     if (!res.headersSent) {
@@ -719,7 +814,7 @@ app.get('/api/search', checkAuth, (req, res) => {
 const wss = new WebSocketServer({ server, path: '/ws' })
 
 wss.on('connection', (ws, req) => {
-  // Extract token from URL query params: ws://host/ws?token=xyz
+  // Extract token from URL query params: ws://host/ws?token=<sessionId>
   const url = new URL(req.url, `http://${req.headers.host}`)
   const token = url.searchParams.get('token')
 
@@ -728,9 +823,9 @@ wss.on('connection', (ws, req) => {
     return
   }
 
-  // Verify token
-  const currentHash = getPasswordHash()
-  if (!currentHash || token !== currentHash) {
+  // Verify token against the session store (session ID, not raw password hash)
+  const entry = sessions.validate(token)
+  if (!entry) {
     ws.close(1008, 'Invalid token')
     return
   }
@@ -802,7 +897,11 @@ wss.on('connection', (ws, req) => {
         case 'delta': {
           if (!msg.noteId || !Array.isArray(msg.elements)) break
           const state = noteStates.get(msg.noteId)
-          if (!state) break
+          if (!state) {
+            // Note no longer exists on server (deleted elsewhere); tell the sender.
+            ws.send(JSON.stringify({ type: 'note-gone', noteId: msg.noteId }))
+            break
+          }
           const serverTs = Date.now()
           // Merge any incoming files (extract base64 to disk)
           if (msg.files) mergeFiles(state, msg.files)
@@ -829,7 +928,7 @@ wss.on('connection', (ws, req) => {
               elements: stampedElements,
               files: resolvedFiles,
               serverTs
-            })
+            }, ws)
           }
           break
         }
