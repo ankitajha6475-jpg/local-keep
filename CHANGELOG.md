@@ -29,6 +29,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Text-note editor toolbar now also includes Bold / Italic / Link / Checkbox formatting actions; bold/italic/link/checkbox markdown is rendered in the gallery preview as well
 - Notes can be saved with title only (no body required); gallery/list/headers now derive a display title from leading content when a note has no explicit title
 - Whiteboard file storage now preserves Excalidraw's required `dataURL`/`id`/`created` alongside the content hash (was discarding them, leaving images unable to render)
+- Whiteboard touch handling now allows single-finger pan in drawing tools while keeping stylus input free, instead of requiring a two-finger gesture to switch to hand mode
 
 ### Fixed
 - Pasted/inserted whiteboard images now render correctly on all clients and on reload (server no longer strips Excalidraw's required dataURL; sender excluded from its own delta echo)

@@ -86,6 +86,7 @@ import { createRoot } from 'react-dom/client'
 import { Excalidraw, exportToBlob } from '@excalidraw/excalidraw'
 import '@excalidraw/excalidraw/index.css'
 import { createCollabManager } from '../collab/collabManager.js'
+import { DRAWING_TOOLS, isFingerTouch, shouldUseHandTool } from '../utils/whiteboardTouch.js'
 
 export default {
   name: 'WhiteboardEditor',
@@ -214,35 +215,33 @@ export default {
       }
     }
 
-    // ── Touch: two-finger zoom/pan in drawing mode ──
-    const DRAWING_TOOLS = new Set(['freedraw', 'text', 'eraser', 'rectangle', 'diamond', 'ellipse', 'arrow', 'line'])
+    // ── Pointer-based touch pan: switch before Excalidraw's pointerdown pan logic runs. ──
     let touchFingerCount = 0
     let fingerToolRestore = null
 
-    function isFingerTouch(touch) {
-      // touchType 'stylus' means Apple Pencil / active pen — exclude those
-      if (touch.touchType === 'stylus') return false
-      return true
+    function isFingerPointer(event) {
+      const pointerType = event?.pointerType || event?.touchType
+      return pointerType === 'touch' || pointerType === 'direct' || pointerType === 'fine'
     }
 
-    function handleTouchStart(e) {
-      for (const touch of e.changedTouches) {
-        if (isFingerTouch(touch)) touchFingerCount++
-      }
-      if (touchFingerCount >= 2 && excalidrawAPI && fingerToolRestore === null) {
+    function handlePointerDown(e) {
+      if (!isFingerPointer(e)) return
+
+      touchFingerCount += 1
+      if (touchFingerCount >= 1 && excalidrawAPI && fingerToolRestore === null) {
         const tool = excalidrawAPI.getAppState().activeTool.type
-        if (DRAWING_TOOLS.has(tool)) {
+        if (shouldUseHandTool(tool, { touchType: 'direct' })) {
           fingerToolRestore = tool
           excalidrawAPI.setActiveTool({ type: 'hand' })
         }
       }
     }
 
-    function handleTouchEnd(e) {
-      for (const touch of e.changedTouches) {
-        if (isFingerTouch(touch)) touchFingerCount = Math.max(0, touchFingerCount - 1)
-      }
-      if (touchFingerCount < 2 && fingerToolRestore && excalidrawAPI) {
+    function handlePointerUp(e) {
+      if (!isFingerPointer(e)) return
+
+      touchFingerCount = Math.max(0, touchFingerCount - 1)
+      if (touchFingerCount === 0 && fingerToolRestore && excalidrawAPI) {
         excalidrawAPI.setActiveTool({ type: fingerToolRestore })
         fingerToolRestore = null
       }
@@ -431,12 +430,12 @@ export default {
         })
       )
 
-      // Wire up stylus, touch, debug, and fullscreen listeners
+      // Wire up stylus, finger/touch, debug, and fullscreen listeners
       const el = canvasContainer.value
       window.addEventListener('keyup', handleStylusKeyUp)
-      el.addEventListener('touchstart', handleTouchStart, { passive: false })
-      el.addEventListener('touchend', handleTouchEnd)
-      el.addEventListener('touchcancel', handleTouchEnd)
+      el.addEventListener('pointerdown', handlePointerDown, true)
+      el.addEventListener('pointerup', handlePointerUp, true)
+      el.addEventListener('pointercancel', handlePointerUp, true)
 
       // Debug: capture at document level so we see events Excalidraw might swallow
       document.addEventListener('pointerdown', handleDebugPointer, true)
@@ -467,10 +466,9 @@ export default {
       window.removeEventListener('keyup', handleStylusKeyUp)
       const el = canvasContainer.value
       if (el) {
-        el.removeEventListener('touchstart', handleTouchStart)
-        el.removeEventListener('touchend', handleTouchEnd)
-        el.removeEventListener('touchcancel', handleTouchEnd)
-
+        el.removeEventListener('pointerdown', handlePointerDown, true)
+        el.removeEventListener('pointerup', handlePointerUp, true)
+        el.removeEventListener('pointercancel', handlePointerUp, true)
       }
       document.removeEventListener('pointerdown', handleDebugPointer, true)
       document.removeEventListener('pointerup', handleDebugPointer, true)

@@ -1,7 +1,7 @@
 # Session Log: Authentication, Deletion Sync, and UI Improvements
 
 - **Date**: 2026-08-10 13:13
-- **Commit**: _pending_
+- **Commit**: `7ff5fb08172ee06721bbf58c177ba593bb0a97aa` — feat(auth,ui,whiteboard): persistent cookie auth, deletion sync, and UI improvements
 
 ## Changed Files
 
