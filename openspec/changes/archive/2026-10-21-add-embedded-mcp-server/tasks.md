@@ -26,4 +26,4 @@
 - [x] 4.2 Add `mcp-stdio.js` adapter and npm script; verify startup
 - [x] 4.3 Add `doc/mcp.md` with HTTP/stdio config examples and security notes; update README/AGENTS/CHANGELOG/plan
 - [x] 4.4 Run `npm test` and `npm run build`; verify pass
-- [ ] 4.5 Manually test search timestamps, thread tree, whiteboard images, concurrent branch notice via MCP Inspector/client
+- [x] 4.5 Manually test search timestamps, thread tree, whiteboard images, concurrent branch notice via MCP Inspector/client

@@ -65,5 +65,5 @@
 - [x] 8.1 Update `CHANGELOG.md` under `[Unreleased]`
 - [x] 8.2 Update `AGENTS.md` with the head+revision model, stable-identity invariant, archive semantics, new modules, tests, and gotchas
 - [x] 8.3 Update the architecture plan status to reflect the implemented first slice
-- [ ] 8.4 Manually verify the browser flows: open/edit/save/reopen, history drawer, branch notice, archived filter/restore, whiteboard checkpoint on back
+- [x] 8.4 Manually verify the browser flows: open/edit/save/reopen, history drawer, branch notice, archived filter/restore, whiteboard checkpoint on back
 - [x] 8.5 Keep the real migration backup and document its path in the changelog/rollout notes

@@ -26,5 +26,5 @@
 
 - [x] 5.1 Run `npm test` and `npm run build`; verify pass
 - [x] 5.2 Update `CHANGELOG.md`, `AGENTS.md`, and the architecture plan status
-- [ ] 5.3 Manually render a multi-cluster board; verify order, multiple pages, reload persistence, copy markdown, stale badge
-- [ ] 5.4 Check legacy canvas thumbnails still display before re-render
+- [x] 5.3 Manually render a multi-cluster board; verify order, multiple pages, reload persistence, copy markdown, stale badge
+- [x] 5.4 Check legacy canvas thumbnails still display before re-render

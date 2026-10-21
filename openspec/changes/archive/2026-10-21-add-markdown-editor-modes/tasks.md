@@ -35,5 +35,5 @@
 
 - [x] 6.1 Run `npm test` and `npm run build`; verify pass
 - [x] 6.2 Update `CHANGELOG.md`, `AGENTS.md`, and the architecture plan status
-- [ ] 6.3 Manually paste styled HTML, a table, an image, and plain text in all three modes; verify no rich context or data loss
-- [ ] 6.4 Check existing notes (headings/code/images) in gallery and preview; verify no regressions
+- [x] 6.3 Manually paste styled HTML, a table, an image, and plain text in all three modes; verify no rich context or data loss
+- [x] 6.4 Check existing notes (headings/code/images) in gallery and preview; verify no regressions

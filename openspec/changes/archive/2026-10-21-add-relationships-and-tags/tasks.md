@@ -37,5 +37,5 @@
 
 - [x] 6.1 Run `npm test` and `npm run build`; verify pass
 - [x] 6.2 Update `CHANGELOG.md`, `AGENTS.md`, and the architecture plan status
-- [ ] 6.3 Manually create links/tags, check backlinks, graph, tag tree/filter, and archived target behavior
-- [ ] 6.4 Check existing notes for false tags/links from code blocks
+- [x] 6.3 Manually create links/tags, check backlinks, graph, tag tree/filter, and archived target behavior
+- [x] 6.4 Check existing notes for false tags/links from code blocks
