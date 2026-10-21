@@ -43,4 +43,6 @@ test('markdownToText keeps readable text and drops syntax noise', () => {
   assert.match(text, /label/)
   assert.equal(text.includes('```'), false)
   assert.equal(text.includes('# Heading'), false)
+  assert.equal(text.includes('/api/images'), false)
+  assert.equal(text.includes('data:image'), false)
 })

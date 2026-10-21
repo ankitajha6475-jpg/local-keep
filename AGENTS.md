@@ -245,9 +245,14 @@ Single user, multiple terminals. Same note, same WS endpoint (`/ws?token=`).
 - Canonical text content is markdown. The client renderer lives in
   `src/utils/markdown.js`: `marked` (GFM, breaks) + `DOMPurify`; HTML paste conversion
   uses `Turndown` + `turndown-plugin-gfm`.
-- Three modes: **Write** (contentEditable), **Plain** (raw markdown source textarea),
-  and **Preview** (read-only sanitised render). `Ctrl/Cmd+Shift+M` cycles modes.
-  Switching out of Write serialises **only when the editor is dirty**; switching back
+- Two modes: **Visual** (contentEditable, rendered markdown, images displayed) and
+  **Source** (raw markdown textarea, image references shown as URLs). `Ctrl/Cmd+Shift+M`
+  toggles them. Preview was removed because Visual already renders the note; the gallery
+  and detail view are the read-only surfaces.
+- Images: Visual renders them; Source shows `![alt](/api/images/...)`; image insertion
+  and paste insert an `<img>` in Visual and a markdown reference in Source. Switching
+  modes never rewrites images or URLs.
+- Switching out of Visual serialises **only when the editor is dirty**; switching back
   re-renders from markdown. Merely opening a note or toggling modes must not rewrite
   canonical markdown or trigger the unsaved-changes prompt.
 - `src/utils/editorSerialize.js` converts the rich editor to markdown: headings,
@@ -396,7 +401,7 @@ All notable changes must be recorded in `CHANGELOG.md`. When making changes:
 13. **Migration backup**: never delete `data/backups/pre-migration-*.db` (the first live run used `pre-note-threads-*.db`) until the migrated database has been accepted. Migration runs in one transaction and fails closed.
 14. **Tests use temp data**: `npm test` starts ephemeral servers with `LOCAL_KEEP_DATA_DIR` and `PORT`; never point tests at the real `data/` directory.
 15. **Markdown renderer**: always use `renderMarkdown()` from `src/utils/markdown.js`; never render note HTML directly. Raw HTML is escaped; wiki links use a placeholder replaced after `marked` parsing.
-16. **Editor modes**: `newNoteContent` is the single canonical string. Serialise before leaving Write; never keep a separate copy per mode. Save normalises/upload `data:image` refs before `POST`/`PUT`.
+16. **Editor modes**: `newNoteContent` is the single canonical string. Visual is contentEditable; Source is a raw markdown textarea. Serialise before leaving Visual only when dirty; never keep a separate copy per mode. Save normalises/upload `data:image` refs before `POST`/`PUT`.
 17. **Wiki links**: `note:<id>` is the stable form; title links can become ambiguous. Parsing is code-aware; do not regex the raw content without `transformOutsideCode`.
 18. **Tag filtering**: the UI keeps all active+archived notes in memory and filters tags client-side so link resolution stays complete. The server also supports `tag`/`exactTag` for API/MCP; descendants are included by default.
 19. **Whiteboard page rendering is browser-only**: `exportToBlob` needs DOM/fonts. If no browser is open, the API returns the last manifest with `stale`; MCP will need to request a render rather than synthesize one.

@@ -295,7 +295,7 @@
                 </div>
                 <div class="shortcut-row">
                   <span class="shortcut-keys"><kbd>{{ modKey }}</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd></span>
-                  <span class="shortcut-desc">Cycle Write / Plain / Preview</span>
+                  <span class="shortcut-desc">Cycle Visual / Source</span>
                 </div>
               </div>
             </div>
@@ -739,22 +739,15 @@
                   class="mode-btn"
                   :class="{ active: editorMode === 'write' }"
                   @click="setEditorMode('write')"
-                  title="Rich write mode"
-                >✍️ Write</button>
+                  title="Rendered markdown; images displayed"
+                >Visual</button>
                 <button
                   type="button"
                   class="mode-btn"
                   :class="{ active: editorMode === 'plain' }"
                   @click="setEditorMode('plain')"
-                  title="Edit plain markdown source"
-                >Plain</button>
-                <button
-                  type="button"
-                  class="mode-btn"
-                  :class="{ active: editorMode === 'preview' }"
-                  @click="setEditorMode('preview')"
-                  title="Preview rendered markdown"
-                >👁 Preview</button>
+                  title="Raw markdown source; images shown as URLs"
+                >Source</button>
               </div>
               <span class="toolbar-divider"></span>
               <template v-if="editorMode === 'write'">
@@ -782,22 +775,16 @@
               @click="onEditorClick"
             ></div>
             <textarea
-              v-else-if="editorMode === 'plain'"
+              v-else
               ref="markdownTextarea"
               v-model="newNoteContent"
               class="note-editor markdown-source"
               spellcheck="false"
-              placeholder="Plain markdown source..."
+              placeholder="Markdown source (images shown as URLs)..."
               @keydown.ctrl.enter.stop.prevent="editingId ? saveEdit() : addNote()"
               @keydown.meta.enter.stop.prevent="editingId ? saveEdit() : addNote()"
               @paste="onMarkdownPaste"
             ></textarea>
-            <div
-              v-else
-              class="note-editor markdown-preview"
-              @click="onPreviewClick"
-              v-html="renderedPreview"
-            ></div>
             <div class="note-form-actions">
               <div class="action-buttons">
                 <button type="submit" class="save-btn">{{ editingId ? 'Save' : 'Add Note' }}</button>
@@ -1064,7 +1051,7 @@ export default {
     // The base revision is only used for optimistic concurrency.
     const editingBaseRevisionId = ref(null)
     const editingRevisionNo = ref(1)
-    const editorMode = ref('write') // 'write' | 'plain' | 'preview'
+    const editorMode = ref('write') // 'write' (Visual) | 'plain' (Source)
     let editorDirty = false
     const revisionNotice = ref('')
     let revisionNoticeTimer = null
@@ -1767,7 +1754,7 @@ export default {
     }
 
     function setEditorMode(mode) {
-      if (!['write', 'plain', 'preview'].includes(mode)) return
+      if (!['write', 'plain'].includes(mode)) return
       if (editorMode.value === mode) return
       if (editorMode.value === 'write') {
         // Only serialise when the user actually edited. Merely opening a note
@@ -1789,7 +1776,7 @@ export default {
     }
 
     function cycleEditorMode() {
-      const modes = ['write', 'plain', 'preview']
+      const modes = ['write', 'plain']
       const index = modes.indexOf(editorMode.value)
       setEditorMode(modes[(index + 1) % modes.length])
     }
@@ -2809,11 +2796,6 @@ export default {
       }
     }
 
-    const renderedPreview = computed(() => renderMarkdown(
-      newNoteContent.value,
-      { resolveLink: resolveWikiLink }
-    ))
-
     function renderContent(content) {
       return renderMarkdown(content || '', { resolveLink: resolveWikiLink })
     }
@@ -2850,13 +2832,6 @@ export default {
       const link = event.target.closest('.note-link')
       if (!link) return
       event.stopPropagation()
-      event.preventDefault()
-      openNoteLink(link)
-    }
-
-    function onPreviewClick(event) {
-      const link = event.target.closest('.note-link')
-      if (!link) return
       event.preventDefault()
       openNoteLink(link)
     }
@@ -3078,7 +3053,6 @@ export default {
       // Text formatting toolbar
       editorMode,
       markdownTextarea,
-      renderedPreview,
       setEditorMode,
       formatBold,
       formatItalic,
@@ -3093,7 +3067,6 @@ export default {
       onEditorBlur,
       onEditorClick,
       onContentClick,
-      onPreviewClick,
       renderContent
     }
 
@@ -3475,11 +3448,6 @@ export default {
       if (!mdRef) return
       if (editorMode.value === 'plain') {
         insertMarkdownAtCursor(mdRef)
-        return
-      }
-      if (editorMode.value === 'preview') {
-        setEditorMode('write')
-        nextTick(() => insertImageInEditor(mdRef))
         return
       }
       const el = imageEditor.value
