@@ -20,6 +20,7 @@ import { migration007LiveTextCollab } from '../src/server/migrations/007-live-te
 import { migration008EmbeddingVariants } from '../src/server/migrations/008-embedding-variants.js'
 import { migration009EmbeddingTuning } from '../src/server/migrations/009-embedding-tuning.js'
 import { migration010TokenAdmin } from '../src/server/migrations/010-token-admin.js'
+import { migration011McpSessionLimits } from '../src/server/migrations/011-mcp-session-limits.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const dataDir = process.env.LOCAL_KEEP_DATA_DIR
@@ -30,7 +31,7 @@ const db = openDatabase(path.join(dataDir, 'local-keep.db'))
 createBaseSchema(db)
 runMigrations({
   db,
-  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin],
+  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits],
   backupDir: path.join(dataDir, 'backups'),
   context: { imageStore: createImageStore({ imagesDir: path.join(dataDir, 'images') }) }
 })

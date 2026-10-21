@@ -23,6 +23,25 @@ test('admin tokens manage client tokens but cannot mint another admin token', as
     const sessionToken = await server.setupAuth()
     const request = server.client(sessionToken)
 
+    const defaults = await request('GET', '/api/mcp/settings')
+    assert.equal(defaults.maxWriteSessions, 5)
+    assert.equal(defaults.maxReadSessions, 8)
+
+    const updatedLimits = await request('PUT', '/api/mcp/settings', {
+      maxWriteSessions: 3,
+      maxReadSessions: 4
+    })
+    assert.equal(updatedLimits.maxWriteSessions, 3)
+    assert.equal(updatedLimits.maxReadSessions, 4)
+
+    let invalidLimitStatus = null
+    try {
+      await request('PUT', '/api/mcp/settings', { maxWriteSessions: 0 })
+    } catch (error) {
+      invalidLimitStatus = error.status
+    }
+    assert.equal(invalidLimitStatus, 400)
+
     const adminCreated = await request('POST', '/api/mcp/tokens', {
       name: 'Admin Agent',
       scopes: ['read', 'write', 'admin']
@@ -52,6 +71,11 @@ test('admin tokens manage client tokens but cannot mint another admin token', as
     const clientToken = clientCreated.data.token
     const clientList = await bearer(server.baseUrl, clientToken, 'GET', '/api/mcp/tokens')
     assert.equal(clientList.status, 403)
+    const clientSettings = await bearer(server.baseUrl, clientToken, 'GET', '/api/mcp/settings')
+    assert.equal(clientSettings.status, 403)
+    const adminSettings = await bearer(server.baseUrl, adminToken, 'GET', '/api/mcp/settings')
+    assert.equal(adminSettings.status, 200)
+    assert.equal(adminSettings.data.maxWriteSessions, 3)
 
     const adminConfig = await bearer(server.baseUrl, adminToken, 'GET', '/api/admin/embeddings')
     assert.equal(adminConfig.status, 200)

@@ -45,16 +45,25 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
 
   function sessionState() {
     try {
-      return mcpEditing?.getState ? mcpEditing.getState(clientKey) : { write: null, reads: [] }
+      return mcpEditing?.getState
+        ? mcpEditing.getState(clientKey)
+        : { write: null, writes: [], reads: [], limits: { max_write_sessions: 5, max_read_sessions: 8 } }
     } catch (_) {
-      return { write: null, reads: [] }
+      return { write: null, writes: [], reads: [], limits: { max_write_sessions: 5, max_read_sessions: 8 } }
     }
+  }
+
+  function writeSessionsFor(state) {
+    if (Array.isArray(state?.writes)) return state.writes
+    return state?.write ? [state.write] : []
   }
 
   function allowedActionsFor(state) {
     const actions = ['open_read']
-    if (canWrite() && !state.write) actions.push('open_write')
-    if (state.write) {
+    const writes = writeSessionsFor(state)
+    const maxWrites = state?.limits?.max_write_sessions ?? 5
+    if (canWrite() && writes.length < maxWrites) actions.push('open_write')
+    if (writes.length) {
       actions.push('read')
       if (canWrite()) actions.push('replace', 'insert', 'delete', 'append', 'set_title', 'save')
       actions.push('close')
@@ -66,8 +75,14 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
   function guideFor(state, error = null) {
     if (error?.guide) return error.guide
     const code = error?.code
-    if (code === 'write_session_exists' && state.write) {
-      return `A write session is already open on note ${state.write.note_id}. Call note_session action=close with session_id ${state.write.session_id} (or action=save first), then open the other note.`
+    const writes = writeSessionsFor(state)
+    if (code === 'too_many_writes' && writes.length) {
+      const ids = writes.map(session => `${session.session_id} (${session.note_id})`).join(', ')
+      return `Write sessions open: ${ids}. Save or close one with note_session action=close before opening another note.`
+    }
+    if (code === 'write_session_exists' && writes.length) {
+      const ids = writes.map(session => `${session.session_id} (${session.note_id})`).join(', ')
+      return `Write sessions are already open: ${ids}. Close one with note_session action=close (or action=save first), then open the other note.`
     }
     if (code === 'session_mode_mismatch') {
       return 'This action requires a write session. Call note_session action=open_write for the note, then retry.'
@@ -89,8 +104,13 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
         ? 'This token is read-only. Use note_session action=read; ask an admin for a write token to edit.'
         : 'This token is read-only. Use note_session action=open_read to read; ask an admin for a write token to edit.'
     }
-    if (state.write) {
-      return `Write session ${state.write.session_id} is open on note ${state.write.note_id}. Use note_session action=read/replace/insert/delete/append/set_title, then action=save or action=close.`
+    if (writes.length === 1) {
+      const session = writes[0]
+      return `Write session ${session.session_id} is open on note ${session.note_id}. Use note_session action=read/replace/insert/delete/append/set_title, then action=save or action=close.`
+    }
+    if (writes.length > 1) {
+      const ids = writes.map(session => `${session.session_id} (${session.note_id})`).join(', ')
+      return `Write sessions open: ${ids}. Pass the matching session_id to read/replace/insert/delete/append/set_title, then action=save or action=close.`
     }
     if (state.reads?.length) {
       const ids = state.reads.map(session => `${session.session_id} (${session.note_id})`).join(', ')
@@ -159,10 +179,12 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
 
   function assertNoWriteSession() {
     const state = sessionState()
-    if (!state.write) return
-    const error = new Error(`A write session is already open on note ${state.write.note_id}`)
+    const writes = writeSessionsFor(state)
+    if (!writes.length) return
+    const ids = writes.map(session => `${session.session_id} (${session.note_id})`).join(', ')
+    const error = new Error(`A write session is already open on note ${writes[0].note_id}`)
     error.code = 'active_write_session'
-    error.guide = `Use note_session action=read/replace/insert/delete/append/set_title, then action=save or action=close. For a one-shot edit, close the session first.`
+    error.guide = `Open write sessions: ${ids}. Use note_session with the matching session_id for edits, then action=save or action=close. For a one-shot edit, close the session(s) first.`
     throw error
   }
 
@@ -421,7 +443,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
   })
 
   server.registerTool('note_session', {
-    description: 'Manage persistent note sessions. State is explicit: one write session and multiple read sessions per token. Every result includes state, allowed_actions, and a guide.',
+    description: 'Manage persistent note sessions. State is explicit: multiple write sessions (default limit 5) and read sessions per token. Every result includes state, allowed_actions, and a guide.',
     inputSchema: z.object({
       action: z.enum([
         'status',

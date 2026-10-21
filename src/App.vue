@@ -156,7 +156,6 @@
             <button @click="loadNotes" class="refresh-btn" title="Refresh notes">↻</button>
             <button @click="tagSidebarOpen = !tagSidebarOpen" class="search-toggle-btn" :class="{ active: tagSidebarOpen }" title="Toggle tags">🏷</button>
             <button @click="openGraph()" class="search-toggle-btn" title="Relationship graph">🕸</button>
-            <button v-if="isAdmin" @click="openMcpSettings" class="search-toggle-btn" title="MCP access tokens">🔌</button>
             <button @click="openSearch" class="search-toggle-btn" title="Search (Ctrl+I)">🔍</button>
             <button @click="cleanupImages" class="cleanup-btn" :disabled="cleanupRunning" title="Clean unused images">🧹</button>
             <div class="account-menu-wrap" @click.stop>
@@ -425,6 +424,28 @@
             admin tokens can also manage tokens and configuration. Tokens are shown once and
             stored hashed. Only a human admin session can create another admin token.
           </p>
+          <div class="mcp-limit-settings">
+            <h3>Session limits</h3>
+            <p class="mcp-hint">
+              Limits apply per MCP token. Raise the write limit when several sub-agents share
+              one token and need different notes open at the same time.
+            </p>
+            <form class="mcp-limit-form" @submit.prevent="saveMcpLimits">
+              <label>
+                Max open write notes per token
+                <input v-model.number="mcpLimitsForm.maxWriteSessions" type="number" min="1" max="64" required>
+              </label>
+              <label>
+                Max read sessions per token
+                <input v-model.number="mcpLimitsForm.maxReadSessions" type="number" min="1" max="64" required>
+              </label>
+              <button type="submit" class="save-btn" :disabled="mcpLimitsSaving || mcpLimitsLoading">
+                {{ mcpLimitsSaving ? 'Saving…' : 'Save limits' }}
+              </button>
+            </form>
+            <p v-if="mcpLimitsError" class="error">{{ mcpLimitsError }}</p>
+            <p v-if="mcpLimitsNotice" class="account-success">{{ mcpLimitsNotice }}</p>
+          </div>
           <form class="mcp-token-form" @submit.prevent="createMcpToken">
             <input v-model="mcpTokenName" type="text" placeholder="Token name (e.g. Claude Desktop)">
             <select v-model="mcpTokenScopes" aria-label="Token scopes">
@@ -1169,6 +1190,12 @@ export default {
     const mcpNewToken = ref('')
     const mcpTokenError = ref('')
     const mcpTokenLoading = ref(false)
+    const mcpLimits = ref({ maxWriteSessions: 5, maxReadSessions: 8, updatedAt: null })
+    const mcpLimitsForm = ref({ maxWriteSessions: 5, maxReadSessions: 8 })
+    const mcpLimitsLoading = ref(false)
+    const mcpLimitsSaving = ref(false)
+    const mcpLimitsError = ref('')
+    const mcpLimitsNotice = ref('')
     const mcpEndpoint = computed(() => `${window.location.origin}/mcp`)
 
     // Search state
@@ -2697,6 +2724,49 @@ export default {
       }
     }
 
+    const loadMcpLimits = async () => {
+      mcpLimitsLoading.value = true
+      mcpLimitsError.value = ''
+      try {
+        const data = await api('/api/mcp/settings')
+        mcpLimits.value = data
+        mcpLimitsForm.value = {
+          maxWriteSessions: data.maxWriteSessions,
+          maxReadSessions: data.maxReadSessions
+        }
+      } catch (e) {
+        mcpLimitsError.value = e.message || 'Failed to load session limits'
+      } finally {
+        mcpLimitsLoading.value = false
+      }
+    }
+
+    const saveMcpLimits = async () => {
+      mcpLimitsSaving.value = true
+      mcpLimitsError.value = ''
+      mcpLimitsNotice.value = ''
+      try {
+        const data = await api('/api/mcp/settings', {
+          method: 'PUT',
+          body: JSON.stringify({
+            maxWriteSessions: Number(mcpLimitsForm.value.maxWriteSessions),
+            maxReadSessions: Number(mcpLimitsForm.value.maxReadSessions)
+          })
+        })
+        mcpLimits.value = data
+        mcpLimitsForm.value = {
+          maxWriteSessions: data.maxWriteSessions,
+          maxReadSessions: data.maxReadSessions
+        }
+        mcpLimitsNotice.value = 'Session limits saved.'
+        setTimeout(() => { mcpLimitsNotice.value = '' }, 3000)
+      } catch (e) {
+        mcpLimitsError.value = e.message || 'Failed to save session limits'
+      } finally {
+        mcpLimitsSaving.value = false
+      }
+    }
+
     const openMcpSettings = async () => {
       accountMenuOpen.value = false
       mcpSettingsOpen.value = true
@@ -2704,7 +2774,8 @@ export default {
       mcpTokenName.value = ''
       mcpTokenScopes.value = 'read,write'
       mcpTokenExpiresDays.value = null
-      await loadMcpTokens()
+      mcpLimitsNotice.value = ''
+      await Promise.all([loadMcpTokens(), loadMcpLimits()])
     }
 
     const createMcpToken = async () => {
@@ -3383,11 +3454,18 @@ export default {
       mcpNewToken,
       mcpTokenError,
       mcpTokenLoading,
+      mcpLimits,
+      mcpLimitsForm,
+      mcpLimitsLoading,
+      mcpLimitsSaving,
+      mcpLimitsError,
+      mcpLimitsNotice,
       mcpEndpoint,
       openMcpSettings,
       createMcpToken,
       revokeMcpToken,
       copyMcpToken,
+      saveMcpLimits,
       // Semantic search / embedding settings
       embeddingSettingsOpen,
       embeddingSettings,
@@ -6386,6 +6464,47 @@ main {
   color: #5f6368;
   font-size: 0.8rem;
   line-height: 1.5;
+}
+
+.mcp-limit-settings {
+  border: 1px solid #e8eaed;
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  margin: 0.75rem 0;
+  background: #fafafa;
+}
+
+.mcp-limit-settings h3 {
+  margin: 0 0 0.25rem;
+  font-size: 0.9rem;
+}
+
+.mcp-limit-settings .mcp-hint {
+  margin: 0.2rem 0 0.5rem;
+}
+
+.mcp-limit-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+
+.mcp-limit-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  flex: 1 1 190px;
+  color: #3c4043;
+  font-size: 0.75rem;
+}
+
+.mcp-limit-form input {
+  padding: 0.4rem 0.55rem;
+  border: 1px solid #dadce0;
+  border-radius: 5px;
+  font-size: 0.85rem;
+  background: #fff;
 }
 
 .mcp-token-form {

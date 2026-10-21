@@ -1,7 +1,15 @@
 import crypto from 'node:crypto'
 
 const DEFAULT_TTL_MS = 30 * 60 * 1000
+const DEFAULT_MAX_WRITES = 5
 const DEFAULT_MAX_READS = 8
+const MAX_SESSIONS = 64
+
+function clampLimit(value, fallback) {
+  const numeric = Number(value)
+  if (!Number.isInteger(numeric)) return fallback
+  return Math.max(1, Math.min(MAX_SESSIONS, numeric))
+}
 
 function fail(status, message, code, data = null, guide = null) {
   const error = new Error(message)
@@ -43,11 +51,13 @@ function lineStartOffset(text, line) {
  * Persistent MCP editing sessions.
  *
  * State is held per MCP token (clientKey):
- *   - at most one write session
- *   - any number of read sessions (bounded by maxReads)
+ *   - up to maxWrites write sessions (default 5)
+ *   - up to maxReads read sessions (default 8)
  *
- * The state is advisory. It never locks other tokens out; every write uses
- * optimistic versions against the shared Yjs draft.
+ * Limits can be supplied dynamically via getLimits(), so admin changes apply to
+ * new session opens without restarting the server. The state is advisory. It
+ * never locks other tokens out; every write uses optimistic versions against the
+ * shared Yjs draft.
  */
 export function createMcpEditingService({
   db,
@@ -59,18 +69,42 @@ export function createMcpEditingService({
   onSaved,
   onDraftChange,
   ttlMs = DEFAULT_TTL_MS,
-  maxReads = DEFAULT_MAX_READS
+  maxWrites = DEFAULT_MAX_WRITES,
+  maxReads = DEFAULT_MAX_READS,
+  getLimits = null
 }) {
-  const states = new Map() // clientKey -> { write: session|null, reads: Map<sessionId, session> }
+  const states = new Map() // clientKey -> { writes: Map<sessionId, session>, reads: Map<sessionId, session> }
   const sessionsById = new Map()
   const timers = new Map()
-  const readLimit = Math.max(1, Math.min(64, Number(maxReads) || DEFAULT_MAX_READS))
+  const fallbackLimits = {
+    maxWrites: clampLimit(maxWrites, DEFAULT_MAX_WRITES),
+    maxReads: clampLimit(maxReads, DEFAULT_MAX_READS)
+  }
   const sessionTtl = Math.max(1000, Number(ttlMs) || DEFAULT_TTL_MS)
 
   const selectHead = db.prepare('SELECT id, type, archived_at FROM notes WHERE id = ?')
 
+  function currentLimits() {
+    let configured = null
+    try {
+      configured = typeof getLimits === 'function' ? getLimits() : null
+    } catch (_) { /* fall back to constructor limits */ }
+    return {
+      maxWrites: clampLimit(configured?.maxWriteSessions ?? configured?.maxWrites, fallbackLimits.maxWrites),
+      maxReads: clampLimit(configured?.maxReadSessions ?? configured?.maxReads, fallbackLimits.maxReads)
+    }
+  }
+
+  function publicLimits() {
+    const limits = currentLimits()
+    return {
+      max_write_sessions: limits.maxWrites,
+      max_read_sessions: limits.maxReads
+    }
+  }
+
   function emptyState() {
-    return { write: null, reads: new Map() }
+    return { writes: new Map(), reads: new Map() }
   }
 
   function schedule(session) {
@@ -141,9 +175,9 @@ export function createMcpEditingService({
     timers.delete(session.id)
     sessionsById.delete(session.id)
     if (state) {
-      if (state.write?.id === session.id) state.write = null
-      else state.reads.delete(session.id)
-      if (!state.write && state.reads.size === 0) states.delete(session.clientKey)
+      state.writes.delete(session.id)
+      state.reads.delete(session.id)
+      if (state.writes.size === 0 && state.reads.size === 0) states.delete(session.clientKey)
     }
     return onClose?.(session, { discard: !!discard, reason }) || {}
   }
@@ -172,7 +206,7 @@ export function createMcpEditingService({
     const state = states.get(clientKey)
     if (!state) return null
     const sessions = [
-      ...(state.write ? [state.write] : []),
+      ...state.writes.values(),
       ...state.reads.values()
     ]
     for (const session of sessions) {
@@ -185,7 +219,7 @@ export function createMcpEditingService({
       }
     }
     const current = states.get(clientKey)
-    if (!current || (!current.write && current.reads.size === 0)) {
+    if (!current || (current.writes.size === 0 && current.reads.size === 0)) {
       states.delete(clientKey)
       return null
     }
@@ -204,18 +238,25 @@ export function createMcpEditingService({
 
   function getState(clientKey) {
     const state = cleanupState(clientKey)
-    if (!state) return { write: null, reads: [] }
+    const limits = publicLimits()
+    if (!state) return { write: null, writes: [], reads: [], limits }
+    const writes = [...state.writes.values()]
+      .sort((left, right) => left.openedAt - right.openedAt)
+      .map(publicSession)
     return {
-      write: state.write ? publicSession(state.write) : null,
+      // Keep `write` for older clients; new clients should use the full `writes` list.
+      write: writes[0] || null,
+      writes,
       reads: [...state.reads.values()]
         .sort((left, right) => left.openedAt - right.openedAt)
-        .map(publicSession)
+        .map(publicSession),
+      limits
     }
   }
 
   function get(clientKey) {
     const state = cleanupState(clientKey)
-    return state?.write || null
+    return state?.writes.values().next().value || null
   }
 
   function newSession({ clientKey, noteId, mode, actor, snapshot }) {
@@ -238,7 +279,7 @@ export function createMcpEditingService({
 
   function attachSession(state, session) {
     sessionsById.set(session.id, session)
-    if (session.mode === 'write') state.write = session
+    if (session.mode === 'write') state.writes.set(session.id, session)
     else state.reads.set(session.id, session)
     schedule(session)
     onOpen?.(session)
@@ -268,22 +309,25 @@ export function createMcpEditingService({
 
     const state = stateFor(clientKey)
 
+    const limits = currentLimits()
+
     if (mode === 'read') {
-      if (state.write?.noteId === noteId) {
-        touch(state.write)
-        return openResult(state.write, snapshot, { mode: 'write', existing: true, read_included: true })
+      const writeSame = [...state.writes.values()].find(session => session.noteId === noteId)
+      if (writeSame) {
+        touch(writeSame)
+        return openResult(writeSame, snapshot, { mode: 'write', existing: true, read_included: true })
       }
       const existing = [...state.reads.values()].find(session => session.noteId === noteId)
       if (existing) {
         touch(existing)
         return openResult(existing, snapshot, { mode: 'read', existing: true })
       }
-      if (state.reads.size >= readLimit) {
+      if (state.reads.size >= limits.maxReads) {
         throw fail(
           429,
-          `This MCP token already has ${readLimit} read sessions open`,
+          `This MCP token already has ${limits.maxReads} read sessions open`,
           'too_many_reads',
-          { max_reads: readLimit },
+          { max_reads: limits.maxReads, limits: publicLimits() },
           'Close an existing read session with note_session action=close before opening another.'
         )
       }
@@ -292,17 +336,21 @@ export function createMcpEditingService({
       return openResult(session, snapshot, { mode: 'read', existing: false })
     }
 
-    if (state.write) {
-      if (state.write.noteId === noteId) {
-        touch(state.write)
-        return openResult(state.write, snapshot, { mode: 'write', existing: true })
-      }
+    const writeSame = [...state.writes.values()].find(session => session.noteId === noteId)
+    if (writeSame) {
+      touch(writeSame)
+      return openResult(writeSame, snapshot, { mode: 'write', existing: true })
+    }
+    if (state.writes.size >= limits.maxWrites) {
+      const writes = [...state.writes.values()]
+        .sort((left, right) => left.openedAt - right.openedAt)
+        .map(publicSession)
       throw fail(
-        409,
-        `This MCP token already has a write session on note ${state.write.noteId}`,
-        'write_session_exists',
-        { write: publicSession(state.write) },
-        `Call note_session action=close with session_id ${state.write.id} (or action=save first), then open the other note.`
+        429,
+        `This MCP token already has ${limits.maxWrites} write sessions open`,
+        'too_many_writes',
+        { max_write_sessions: limits.maxWrites, writes, limits: publicLimits() },
+        `Open write sessions: ${writes.map(session => `${session.session_id} (${session.note_id})`).join(', ')}. Save or close one with note_session action=close before opening another note.`
       )
     }
 

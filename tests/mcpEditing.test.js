@@ -51,7 +51,7 @@ function toolNames(result) {
   return result.tools.map(tool => tool.name).sort()
 }
 
-test('MCP sessions use stable tools, explicit state, one write, and multiple reads', async () => {
+test('MCP sessions use stable tools, explicit state, multiple writes, and reads', async () => {
   const server = await startTestServer()
   let clientA
   let clientB
@@ -81,7 +81,10 @@ test('MCP sessions use stable tools, explicit state, one write, and multiple rea
 
     const initial = jsonResult(await clientA.callTool({ name: 'get_note_state', arguments: {} }))
     assert.equal(initial.state.write, null)
+    assert.deepEqual(initial.state.writes, [])
     assert.deepEqual(initial.state.reads, [])
+    assert.equal(initial.state.limits.max_write_sessions, 5)
+    assert.equal(initial.state.limits.max_read_sessions, 8)
     assert.ok(initial.guide)
 
     const opened = jsonResult(await clientA.callTool({
@@ -111,10 +114,17 @@ test('MCP sessions use stable tools, explicit state, one write, and multiple rea
       arguments: { action: 'open_write', note_id: other.id }
     })
     const secondWritePayload = jsonResult(secondWrite)
-    assert.equal(secondWrite.isError, true)
-    assert.equal(secondWritePayload.error.code, 'write_session_exists')
+    assert.equal(secondWrite.isError, undefined)
+    assert.equal(secondWritePayload.session.note_id, other.id)
     assert.equal(secondWritePayload.state.write.note_id, note.id)
-    assert.match(secondWritePayload.guide, /close/i)
+    assert.equal(secondWritePayload.state.writes.length, 2)
+    assert.match(secondWritePayload.guide, /Write sessions open/i)
+
+    const closedSecond = jsonResult(await clientA.callTool({
+      name: 'note_session',
+      arguments: { action: 'close', session_id: secondWritePayload.session.session_id, discard: true }
+    }))
+    assert.equal(closedSecond.state.writes.length, 1)
 
     const readOther = jsonResult(await clientA.callTool({
       name: 'note_session',
@@ -402,6 +412,7 @@ test('MCP session state enforces one write, multiple reads, upgrade, close, and 
       revisions: ctx.revisions,
       textCollab,
       ttlMs: 1000,
+      maxWrites: 1,
       maxReads: 2,
       onClose() { closed += 1; return { discarded: false, remaining: 0 } }
     })
@@ -427,7 +438,7 @@ test('MCP session state enforces one write, multiple reads, upgrade, close, and 
 
     assert.throws(
       () => editing.open({ clientKey: 'token:one', noteId: first.id, actor: 'mcp:one' }),
-      error => error.code === 'write_session_exists' && error.data.write.note_id === second.id
+      error => error.code === 'too_many_writes' && error.data.max_write_sessions === 1
     )
 
     editing.close({ clientKey: 'token:one', sessionId: upgrade.session.session_id, discard: true })
@@ -437,13 +448,80 @@ test('MCP session state enforces one write, multiple reads, upgrade, close, and 
     const tokenTwo = editing.open({ clientKey: 'token:two', noteId: second.id, mode: 'read', actor: 'mcp:two' })
     assert.equal(editing.getState('token:two').reads.length, 1)
     editing.closeForToken('token:two')
-    assert.deepEqual(editing.getState('token:two'), { write: null, reads: [] })
+    const emptyTwo = editing.getState('token:two')
+    assert.equal(emptyTwo.write, null)
+    assert.deepEqual(emptyTwo.writes, [])
+    assert.deepEqual(emptyTwo.reads, [])
     assert.ok(tokenTwo.session.session_id)
 
     await new Promise(resolve => setTimeout(resolve, 1150))
-    assert.deepEqual(editing.getState('token:one'), { write: null, reads: [] })
+    const emptyOne = editing.getState('token:one')
+    assert.equal(emptyOne.write, null)
+    assert.deepEqual(emptyOne.writes, [])
+    assert.deepEqual(emptyOne.reads, [])
     assert.equal(closed >= 3, true)
     assert.ok(reopened.session.session_id)
+  } finally {
+    ctx.cleanup()
+  }
+})
+
+test('multiple write sessions are allowed up to the configured limit', async () => {
+  const { createFreshContext } = await import('./helpers/testDb.js')
+  const { createTextCollabService } = await import('../src/server/services/textCollab.js')
+  const { createMcpEditingService } = await import('../src/server/services/mcpEditing.js')
+  const { createMcpSettingsService } = await import('../src/server/services/mcpSettings.js')
+  const ctx = createFreshContext()
+  try {
+    const notes = Array.from({ length: 7 }, (_, index) =>
+      ctx.notes.createNote({ title: `Note ${index + 1}`, content: `body ${index + 1}` })
+    )
+    const textCollab = createTextCollabService({ db: ctx.db, persistDelay: 10 })
+    const settings = createMcpSettingsService({ db: ctx.db })
+    const editing = createMcpEditingService({
+      db: ctx.db,
+      notes: ctx.notes,
+      revisions: ctx.revisions,
+      textCollab,
+      getLimits: () => settings.get(),
+      onClose() { return { discarded: false, remaining: 0 } }
+    })
+
+    const initial = editing.getState('token:multi')
+    assert.equal(initial.limits.max_write_sessions, 5)
+    assert.equal(initial.limits.max_read_sessions, 8)
+
+    const opened = notes.slice(0, 5).map(note =>
+      editing.open({ clientKey: 'token:multi', noteId: note.id, actor: 'mcp:multi' })
+    )
+    const state = editing.getState('token:multi')
+    assert.equal(state.writes.length, 5)
+    assert.equal(state.write.session_id, opened[0].session.session_id)
+
+    assert.throws(
+      () => editing.open({ clientKey: 'token:multi', noteId: notes[5].id, actor: 'mcp:multi' }),
+      error => error.code === 'too_many_writes' &&
+        error.data.max_write_sessions === 5 &&
+        error.data.writes.length === 5
+    )
+
+    editing.close({
+      clientKey: 'token:multi',
+      sessionId: opened[0].session.session_id,
+      discard: true
+    })
+    const sixth = editing.open({ clientKey: 'token:multi', noteId: notes[5].id, actor: 'mcp:multi' })
+    assert.equal(sixth.session.note_id, notes[5].id)
+    assert.equal(editing.getState('token:multi').writes.length, 5)
+
+    settings.update({ maxWriteSessions: 2, maxReadSessions: 3 })
+    const updated = editing.getState('token:multi')
+    assert.equal(updated.limits.max_write_sessions, 2)
+    assert.equal(updated.limits.max_read_sessions, 3)
+    assert.throws(
+      () => editing.open({ clientKey: 'token:multi', noteId: notes[6].id, actor: 'mcp:multi' }),
+      error => error.code === 'too_many_writes' && error.data.max_write_sessions === 2
+    )
   } finally {
     ctx.cleanup()
   }

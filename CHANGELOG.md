@@ -13,7 +13,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Migration 8 resets the embedding index for the variant-aware table scheme and queues a rebuild
 - Embedding indexing now sends chunk arrays in batches and runs bounded parallel requests/notes; tuning lives in `embedding_settings` and `429`/`5xx` retries honor `Retry-After`
 - Persistent MCP sessions with a stable tool list: `get_note_state` plus `note_session` actions for open/read/replace/insert/delete/append/title/save/close; session and mutation results include `state`, `allowed_actions`, and `guide`
-- Per-token session state: one write session and multiple read sessions, read-to-write upgrade, TTL, and structured `write_session_exists`/`session_mode_mismatch` errors with recovery guides
+- Per-token session state: multiple write sessions (default 5) and read sessions (default 8), read-to-write upgrade, TTL, and structured `too_many_writes`/`session_mode_mismatch` errors with recovery guides
+- Admin-editable MCP session limits in the MCP access dialog; limits live in `mcp_settings` and apply to new opens without restart
+- Migration 11 creates `mcp_settings` with 5 write / 8 read session defaults
 - `expected_version` conflict detection for MCP edits and `source: mcp-open` revision saves that update the live draft base
 - MCP read/write sessions appear in dashboard presence as `MCP (<token name> · read|write>)`
 - Admin MCP tokens with `admin` scope can manage client tokens and use `/api/admin/*`; only a human admin session can mint another admin token
@@ -100,7 +102,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - MCP end-to-end/token tests (`@modelcontextprotocol/client`) and `docs/mcp.md`
 
 ### Changed
-- MCP access is now also available from the account menu (not only the header 🔌 button), and the token list shows each token's creation time
+- MCP token management now lives in the account menu only (the header 🔌 button was removed), and the token list shows each token's creation time
 - Editor simplified to **Visual** (rendered markdown, images displayed) and **Source** (raw markdown, images shown as URLs); the redundant Preview mode was removed
 - Source mode inserts/pastes markdown image references; Visual mode inserts/pastes rendered images
 - Editor mode label **Markdown** renamed to **Plain** to avoid confusion with the canonical markdown format

@@ -19,6 +19,7 @@ import { createSearchService } from './src/server/services/search.js'
 import { createEmbeddingService } from './src/server/services/embeddings.js'
 import { createTextCollabService } from './src/server/services/textCollab.js'
 import { createMcpEditingService } from './src/server/services/mcpEditing.js'
+import { createMcpSettingsService } from './src/server/services/mcpSettings.js'
 import { createMcpServer } from './src/mcp/createServer.js'
 import { migration001NoteThreads } from './src/server/migrations/001-note-threads.js'
 import { migration002RelationshipsAndTags } from './src/server/migrations/002-relationships-and-tags.js'
@@ -30,6 +31,7 @@ import { migration007LiveTextCollab } from './src/server/migrations/007-live-tex
 import { migration008EmbeddingVariants } from './src/server/migrations/008-embedding-variants.js'
 import { migration009EmbeddingTuning } from './src/server/migrations/009-embedding-tuning.js'
 import { migration010TokenAdmin } from './src/server/migrations/010-token-admin.js'
+import { migration011McpSessionLimits } from './src/server/migrations/011-mcp-session-limits.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const dataDir = process.env.LOCAL_KEEP_DATA_DIR
@@ -41,7 +43,7 @@ createBaseSchema(db)
 const imageStore = createImageStore({ imagesDir: path.join(dataDir, 'images') })
 runMigrations({
   db,
-  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin],
+  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits],
   backupDir: path.join(dataDir, 'backups'),
   context: { imageStore }
 })
@@ -56,6 +58,7 @@ const notes = createNoteService({ db, revisions, imageRefs, bus, tags, links, em
 const renders = createRenderService({ db, imageRefs, bus })
 const search = createSearchService({ db, notes, revisions, tags, renders, embeddings })
 const textCollab = createTextCollabService({ db })
+const mcpSettings = createMcpSettingsService({ db })
 embeddings.initialize()
 
 const mcpEditing = createMcpEditingService({
@@ -63,7 +66,7 @@ const mcpEditing = createMcpEditingService({
   notes,
   revisions,
   textCollab,
-  maxReads: Number(process.env.LOCAL_KEEP_MCP_MAX_READS || 8),
+  getLimits: () => mcpSettings.get(),
   onOpen() {},
   onClose(session, { discard }) {
     // stdio cannot see browser/HTTP presence, so never erase a dirty shared

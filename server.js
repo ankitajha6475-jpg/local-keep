@@ -28,6 +28,7 @@ import { createLinkService } from './src/server/services/links.js'
 import { createSearchService } from './src/server/services/search.js'
 import { createEmbeddingService } from './src/server/services/embeddings.js'
 import { createTokenService } from './src/server/services/tokens.js'
+import { createMcpSettingsService } from './src/server/services/mcpSettings.js'
 import { createUserService } from './src/server/services/users.js'
 import { validatePassword, temporaryPassword } from './src/server/auth/passwords.js'
 import { createMcpServer } from './src/mcp/createServer.js'
@@ -50,6 +51,7 @@ import { migration007LiveTextCollab } from './src/server/migrations/007-live-tex
 import { migration008EmbeddingVariants } from './src/server/migrations/008-embedding-variants.js'
 import { migration009EmbeddingTuning } from './src/server/migrations/009-embedding-tuning.js'
 import { migration010TokenAdmin } from './src/server/migrations/010-token-admin.js'
+import { migration011McpSessionLimits } from './src/server/migrations/011-mcp-session-limits.js'
 
 import debugLib from 'debug'
 const log = debugLib('local-keep:server')
@@ -336,7 +338,7 @@ try {
 try {
   const migration = runMigrations({
     db,
-    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin],
+    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits],
     backupDir: BACKUPS_DIR,
     context: { imageStore }
   })
@@ -364,6 +366,7 @@ const imageRefs = createImageRefService({ db, imageStore })
 const tags = createTagService({ db })
 const links = createLinkService({ db })
 const tokens = createTokenService({ db })
+const mcpSettings = createMcpSettingsService({ db })
 const embeddings = createEmbeddingService({ db, dataDir: DATA_DIR, tags })
 const revisions = createRevisionService({ db, imageStore, imageRefs, bus, tags, links, embeddings })
 const textCollab = createTextCollabService({ db })
@@ -375,7 +378,7 @@ const mcpEditing = createMcpEditingService({
   revisions,
   textCollab,
   ttlMs: Number(process.env.LOCAL_KEEP_MCP_EDIT_TTL_MS || 30 * 60 * 1000),
-  maxReads: Number(process.env.LOCAL_KEEP_MCP_MAX_READS || 8),
+  getLimits: () => mcpSettings.get(),
   onOpen(session) {
     addMcpPresence(session.noteId, session)
   },
@@ -1169,6 +1172,19 @@ app.delete('/api/mcp/tokens/:id', checkAuth, requireAdmin, (req, res) => {
     const result = tokens.revoke(req.params.id)
     if (token) mcpEditing?.closeForToken(token.id, { discard: false, reason: 'token-revoked' })
     res.json(result)
+  } catch (e) { sendServiceError(res, e) }
+})
+
+app.get('/api/mcp/settings', checkAuth, requireAdmin, (req, res) => {
+  try { res.json(mcpSettings.get()) } catch (e) { sendServiceError(res, e) }
+})
+
+app.put('/api/mcp/settings', checkAuth, requireAdmin, (req, res) => {
+  try {
+    res.json(mcpSettings.update({
+      maxWriteSessions: req.body?.maxWriteSessions,
+      maxReadSessions: req.body?.maxReadSessions
+    }))
   } catch (e) { sendServiceError(res, e) }
 })
 

@@ -121,7 +121,12 @@ Session and mutation results include:
 {
   "state": {
     "write": null,
-    "reads": []
+    "writes": [],
+    "reads": [],
+    "limits": {
+      "max_write_sessions": 5,
+      "max_read_sessions": 8
+    }
   },
   "allowed_actions": ["open_read", "open_write"],
   "guide": "No session is open for this token. Use note_session action=open_write to edit or action=open_read to read."
@@ -143,10 +148,15 @@ A session has this shape:
 }
 ```
 
-`state.write` holds at most one write session; `state.reads` holds zero or more read
-sessions. `get_note_state` returns the full state; session/mutation tools include the same
-block. Plain list/text tools keep their native array/text shape so existing clients can
-still parse them.
+`state.writes` holds up to the configured write-session limit (default **5**);
+`state.reads` holds up to the configured read limit (default **8**). `state.write` remains
+as the first write session for older clients. `state.limits` reports the active limits.
+`get_note_state` returns the full state; session/mutation tools include the same block.
+Plain list/text tools keep their native array/text shape so existing clients can still
+parse them.
+
+Admins change the limits in **avatar → 🔌 MCP access → Session limits**. Values are stored
+in SQLite (`mcp_settings`) and apply to newly opened sessions without a restart.
 
 Errors use the same envelope plus `ok: false` and a structured error:
 
@@ -154,19 +164,21 @@ Errors use the same envelope plus `ok: false` and a structured error:
 {
   "ok": false,
   "error": {
-    "code": "write_session_exists",
-    "message": "This MCP token already has a write session on note A"
+    "code": "too_many_writes",
+    "message": "This MCP token already has 5 write sessions open"
   },
   "state": {
     "write": { "session_id": "sess_A", "note_id": "note_A", "...": "..." },
-    "reads": []
+    "writes": [{ "session_id": "sess_A", "note_id": "note_A", "...": "..." }],
+    "reads": [],
+    "limits": { "max_write_sessions": 5, "max_read_sessions": 8 }
   },
   "allowed_actions": ["read", "save", "close"],
-  "guide": "Call note_session action=close with session_id sess_A (or action=save first), then open the other note."
+  "guide": "Save or close one of the open write sessions with note_session action=close before opening another note."
 }
 ```
 
-Common error codes: `write_session_exists`, `too_many_reads`,
+Common error codes: `too_many_writes`, `too_many_reads`,
 `session_mode_mismatch`, `session_not_found`, `session_id_required`, `stale_version`,
 `note_archived`, `ttl_expired`, `forbidden`.
 
@@ -276,20 +288,25 @@ Open write returns the shared draft plus state:
   "mode": "write",
   "state": {
     "write": { "...": "..." },
-    "reads": []
+    "writes": [{ "...": "..." }],
+    "reads": [],
+    "limits": { "max_write_sessions": 5, "max_read_sessions": 8 }
   },
-  "allowed_actions": ["read", "replace", "insert", "delete", "append", "set_title", "save", "close", "open_read"],
+  "allowed_actions": ["read", "replace", "insert", "delete", "append", "set_title", "save", "close", "open_read", "open_write"],
   "guide": "Write session ... is open. Use note_session ... then action=save or action=close."
 }
 ```
 
 ### Session rules
 
-- A token may hold **one write session** and up to `LOCAL_KEEP_MCP_MAX_READS`
-  (default 8) read sessions.
-- One read session per note per token. Opening the same read note again is idempotent.
-- Opening a second write note returns `write_session_exists` with the current write
-  session and a guide to close/save it first.
+- A token may hold up to `max_write_sessions` write sessions (default **5**) and up to
+  `max_read_sessions` read sessions (default **8**). Admins configure both limits; the
+  defaults can be raised for multiple sub-agents sharing one token.
+- One session per note per mode. Opening the same write/read note again is idempotent.
+- Opening another write note after the write limit is reached returns
+  `too_many_writes` with the open sessions and a guide to save/close one first.
+- Multiple write sessions on different notes are supported; each operation identifies
+  its session with `session_id`.
 - Opening write on a note that already has a read session upgrades it
   (`upgraded_from_read: true`).
 - Opening read on a note that already has a write session returns the write session with
@@ -306,7 +323,7 @@ Open write returns the shared draft plus state:
 | Action | Required session | What it does |
 |---|---|---|
 | `open_read` | none | Open a read session for `note_id` |
-| `open_write` | none | Open the token's write session for `note_id` |
+| `open_write` | none | Open a write session for `note_id` (up to the configured limit) |
 | `read` | read or write | Return title, content, line count, version, and state |
 | `replace` | write | Replace exact `old_text` with `new_text`; unique match unless `replace_all` |
 | `insert` | write | Insert at a 1-based line; `line_count + 1` appends |
@@ -328,7 +345,7 @@ MCP edits live. `note_session action=save` creates a normal revision with source
 `close` releases the session but keeps the draft by default. `discard: true` removes it
 only if no browser or other MCP session is still editing the note.
 
-### Example: already-open write
+### Example: write-session limit reached
 
 ```json
 {
@@ -344,15 +361,17 @@ only if no browser or other MCP session is still editing the note.
 {
   "ok": false,
   "error": {
-    "code": "write_session_exists",
-    "message": "This MCP token already has a write session on note note_A"
+    "code": "too_many_writes",
+    "message": "This MCP token already has 5 write sessions open"
   },
   "state": {
     "write": { "session_id": "sess_A", "note_id": "note_A" },
-    "reads": []
+    "writes": [{ "session_id": "sess_A", "note_id": "note_A" }],
+    "reads": [],
+    "limits": { "max_write_sessions": 5, "max_read_sessions": 8 }
   },
   "allowed_actions": ["read", "save", "close"],
-  "guide": "Call note_session action=close with session_id sess_A (or action=save first), then open the other note."
+  "guide": "Save or close one of the open write sessions with note_session action=close before opening another note."
 }
 ```
 

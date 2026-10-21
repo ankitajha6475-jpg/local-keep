@@ -385,11 +385,13 @@ corresponding card while any session has that note open.
 - The MCP tool list is **stable**. `edit_note` is one-shot only; persistent sessions use
   `get_note_state` + `note_session`. Do not reintroduce dynamic open/close tool
   registration or rely on `tools/list_changed` for FSM correctness.
-- Session state is per token: one write session and up to `LOCAL_KEEP_MCP_MAX_READS`
-  (default 8) read sessions. Opening write on a note with a read session upgrades it;
-  opening another write while one is open returns `write_session_exists` with the current
-  state and guide. Opening read for a note that already has a write returns the write
-  session (`read_included`).
+- Session state is per token: up to `max_write_sessions` write sessions (default 5) and
+  `max_read_sessions` read sessions (default 8). Limits live in `mcp_settings` and are
+  admin-editable in **MCP access → Session limits**; changes apply to new opens without a
+  restart. Opening write on a note with a read session upgrades it; opening another write
+  after the limit returns `too_many_writes` with the open sessions and guide. Opening read
+  for a note that already has a write returns that write session (`read_included`).
+  `state.writes` lists all writes; `state.write` remains the first for compatibility.
 - `mcpEditing` (`src/server/services/mcpEditing.js`) holds write/read sessions and applies
   edits to `note_text_docs`. Sessions are advisory, TTL-based
   (`LOCAL_KEEP_MCP_EDIT_TTL_MS`, default 30m), and never a hard lock. `get_note_state`
@@ -450,6 +452,7 @@ whiteboard_renders (id, note_id, revision_id, scene_hash, ...)
 whiteboard_tiles (render_id, page_index, image_hash, ...)
 api_tokens (id, name, token_hash, scopes, created_at, last_used_at, revoked_at,
             expires_at, created_by)
+mcp_settings (id=1, max_write_sessions, max_read_sessions, updated_at)
 ```
 
 **Critical**: `canvas_text` column exists ONLY in `notes_fts`, NOT in `notes`. The
@@ -516,6 +519,6 @@ All notable changes must be recorded in `CHANGELOG.md`. When making changes:
 31. **Live text is draft-only**: `note_text_docs` must never update `notes.content`, `head_revision_id`, tags, or links. Only an explicit Save commits a revision. Do not make live typing bypass optimistic concurrency.
 32. **Text presence and canvas presence share `notePresence`**: add/remove both kinds on join/leave/close so dashboard dots never stick. Only text sessions use `textSessions`; canvas sessions remain in `noteStates`.
 33. **Remote text re-render and caret**: the Visual editor must capture/restore the caret around a remote re-render and defer during IME composition. Without this, two clients typing makes the local caret jump or the editor goes stale.
-34. **MCP sessions are per token, not per process**: `authInfo.clientId` is the stable token id in the stateless transport. Use one token per agent. A shared token intentionally shares one write session and its read sessions; do not use a global note lock.
+34. **MCP sessions are per token, not per process**: `authInfo.clientId` is the stable token id in the stateless transport. A token may hold several write sessions (default 5) so multiple sub-agents can share it; `state.writes` is authoritative and `state.write` is the first write for older clients. Do not use a global note lock.
 35. **MCP tools stay stable**: `get_note_state` and `note_session` are always registered. Every result/error includes `state`, `allowed_actions`, and `guide`; do not derive FSM state from `tools/list` or dynamic tool visibility.
 36. **MCP session save source**: `note_session action=save` commits with `source: 'mcp-open'` so the draft base moves and browsers get `text-saved`. One-shot `edit_note`/`append_to_note` use `source: 'mcp'` and must not move a live draft base.
