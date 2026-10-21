@@ -14,6 +14,10 @@ export default defineConfig({
         target: 'http://localhost:5173',
         changeOrigin: true
       },
+      '/mcp': {
+        target: 'http://localhost:5173',
+        changeOrigin: true
+      },
       '/ws': {
         target: 'ws://localhost:5173',
         ws: true

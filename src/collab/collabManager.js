@@ -6,7 +6,7 @@ const DEBOUNCE_MS = 500
 const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform)
 const CTRL_OR_CMD = isMac ? 'metaKey' : 'ctrlKey'
 
-export function createCollabManager({ noteId, generateThumbnail, onStatus, onNoteGone }) {
+export function createCollabManager({ noteId, generateThumbnail, onStatus, onNoteGone, onRenderRequest, onRenderUpdated }) {
   // ── State ──
   let ws = null
   let api = null
@@ -400,8 +400,28 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus, onNot
         if (typeof onNoteGone === 'function') {
           try { onNoteGone(data.noteId) } catch (_) { /* best-effort */ }
         }
+      } else if (data.type === 'render-request') {
+        if (typeof onRenderRequest === 'function') {
+          try { onRenderRequest(data) } catch (e) { console.error('[collab] render request failed:', e) }
+        }
+      } else if (data.type === 'render-updated') {
+        if (typeof onRenderUpdated === 'function') {
+          try { onRenderUpdated(data) } catch (e) { console.error('[collab] render update failed:', e) }
+        }
       }
     } catch (e) { /* ignore non-collab messages */ }
+  }
+
+  // ── Public: checkpoint (used when leaving a whiteboard) ──
+
+  async function checkpoint() {
+    if (!joined || detached) return
+    clearTimeout(changeTimer)
+    changeTimer = null
+    try {
+      await flushChanges()
+    } catch (_) { /* best effort */ }
+    sendMessage({ type: 'checkpoint', noteId })
   }
 
   // ── Lifecycle ──
@@ -452,6 +472,7 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus, onNot
     handleChange,
     handleRemoteDelta,
     handleSnapshot,
+    checkpoint,
     getCurrentScene() {
       return { elements: currentElements, files: currentFiles }
     },

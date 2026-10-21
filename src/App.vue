@@ -82,6 +82,9 @@
             </span>
             <button v-if="!wsConnected && !wsConnecting" @click="manualReconnect" class="reconnect-btn" title="Reconnect now">🔌 Connect</button>
             <button @click="loadNotes" class="refresh-btn" title="Refresh notes">↻</button>
+            <button @click="tagSidebarOpen = !tagSidebarOpen" class="search-toggle-btn" :class="{ active: tagSidebarOpen }" title="Toggle tags">🏷</button>
+            <button @click="openGraph()" class="search-toggle-btn" title="Relationship graph">🕸</button>
+            <button @click="openMcpSettings" class="search-toggle-btn" title="MCP access tokens">🔌</button>
             <button @click="openSearch" class="search-toggle-btn" title="Search (Ctrl+I)">🔍</button>
             <button @click="cleanupImages" class="cleanup-btn" :disabled="cleanupRunning" title="Clean unused images">🧹</button>
             <button @click="logout" class="logout-btn">Lock</button>
@@ -104,7 +107,23 @@
         </template>
       </header>
 
+      <!-- Revision / conflict notice -->
+      <div v-if="revisionNotice" class="revision-toast" role="status">
+        <span>{{ revisionNotice }}</span>
+        <button type="button" @click="dismissRevisionNotice" title="Dismiss">×</button>
+      </div>
+
       <main @click="fabMenuOpen = false">
+        <div class="workspace">
+          <TagSidebar
+            v-if="tagSidebarOpen"
+            :tree="tagsTree"
+            :active-tag="activeTag"
+            :untagged-only="untaggedOnly"
+            @select="selectTag"
+            @close="tagSidebarOpen = false"
+          />
+          <div class="workspace-content">
         <!-- Selection Action Bar -->
         <div v-if="selectedNoteIds.size > 0" class="selection-bar">
           <div class="selection-info">
@@ -122,11 +141,25 @@
         <!-- Sort / Control Bar -->
         <div v-else class="control-bar">
           <div class="control-left">
-            <span class="notes-count" v-if="!searchQuery">{{ notes.length }} notes</span>
+            <span class="notes-count" v-if="!searchQuery">{{ sortedNotes.length }} notes</span>
             <span class="notes-count" v-else-if="searchLoading">Searching...</span>
             <span class="notes-count" v-else>{{ sortedNotes.length }} results</span>
+            <span v-if="activeTag" class="tag-filter-chip">
+              #{{ activeTag }}
+              <button type="button" @click="clearTag" title="Clear tag filter">×</button>
+            </span>
+            <span v-else-if="untaggedOnly" class="tag-filter-chip">
+              Untagged
+              <button type="button" @click="clearTag" title="Clear tag filter">×</button>
+            </span>
           </div>
           <div class="control-right">
+            <button
+              @click="toggleShowArchived"
+              class="archived-toggle-btn"
+              :class="{ active: showArchived }"
+              :title="showArchived ? 'Hide archived notes' : 'Show archived notes'"
+            >{{ showArchived ? '📥 Hide archived' : '📥 Archived' }}</button>
             <span class="sort-label">Sort by:</span>
             <select v-model="sortBy" class="sort-select">
               <option value="updatedAt">Last Modified</option>
@@ -165,6 +198,10 @@
                   <span class="shortcut-keys"><kbd>{{ modKey }}</kbd> + <kbd>I</kbd></span>
                   <span class="shortcut-desc">Open search</span>
                 </div>
+                <div class="shortcut-row">
+                  <span class="shortcut-keys"><kbd>{{ modKey }}</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd></span>
+                  <span class="shortcut-desc">Cycle Write / Markdown / Preview</span>
+                </div>
               </div>
             </div>
           </div>
@@ -177,7 +214,8 @@
             :class="{ 
               editing: note.id === editingId,
               selected: selectedNoteIds.has(note.id),
-              'canvas-note': note.type === 'canvas'
+              'canvas-note': note.type === 'canvas',
+              archived: !!note.archivedAt
             }"
             @click="handleCardClick(note)"
           >
@@ -194,7 +232,7 @@
               <div class="toolbar-spacer"></div>
               <!-- Copy button (text notes only) -->
               <button
-                v-if="note.type !== 'canvas'"
+                v-if="note.type !== 'canvas' && !note.archivedAt"
                 @click.stop="copyNote(note)"
                 class="copy-btn"
                 :class="{ copied: copiedId === note.id }"
@@ -203,7 +241,18 @@
                 <svg v-if="copiedId === note.id" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-check"><polyline points="20 6 9 17 4 12"></polyline></svg>
                 <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-copy"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
               </button>
-              <button @click.stop="triggerDeleteConfirm(note.id)" class="delete-btn" title="Delete note">×</button>
+              <button
+                v-if="note.archivedAt"
+                @click.stop="restoreArchivedNote(note)"
+                class="restore-btn"
+                title="Restore archived note"
+              >Restore</button>
+              <button
+                v-else
+                @click.stop="triggerDeleteConfirm(note.id)"
+                class="delete-btn"
+                title="Archive note"
+              >×</button>
             </div>
 
             <div class="note-content">
@@ -220,13 +269,102 @@
                   <span>Whiteboard</span>
                 </div>
               </div>
-              <h3>{{ getDisplayTitle(note, { fallback: note.type === 'canvas' ? 'Untitled Whiteboard' : 'Untitled' }) }}</h3>
-              <p v-if="note.type !== 'canvas'" v-html="renderContent(note.content)"></p>
+              <h3>
+                {{ getDisplayTitle(note, { fallback: note.type === 'canvas' ? 'Untitled Whiteboard' : 'Untitled' }) }}
+                <span v-if="note.archivedAt" class="revision-badge">Archived</span>
+              </h3>
+              <div v-if="note.tags && note.tags.length" class="card-tags">
+                <button
+                  v-for="tag in note.tags"
+                  :key="tag"
+                  type="button"
+                  class="tag-chip"
+                  @click.stop="selectTag({ tag })"
+                  :title="'Filter by #' + tag"
+                >#{{ tag }}</button>
+              </div>
+              <div
+                v-if="note.type !== 'canvas'"
+                class="note-preview"
+                v-html="renderContent(note.content)"
+                @click="onContentClick($event, note)"
+              ></div>
               <small class="note-date">{{ formatDate(note.updatedAt) }}</small>
             </div>
           </div>
         </div>
+          </div>
+        </div>
       </main>
+
+      <GraphView
+        v-if="graphOpen"
+        :nodes="graphData.nodes"
+        :edges="graphData.edges"
+        :center="graphCenter"
+        :depth="graphDepth"
+        :include-unresolved="graphIncludeUnresolved"
+        :loading="graphLoading"
+        :error="graphError"
+        @close="graphOpen = false"
+        @refresh="refreshGraph"
+        @open="openGraphNode"
+      />
+
+      <!-- MCP settings -->
+      <div v-if="mcpSettingsOpen" class="modal-overlay" @mousedown.self="mcpSettingsOpen = false">
+        <div class="modal-content mcp-settings-modal">
+          <div class="modal-header">
+            <h2>🔌 MCP access</h2>
+            <button class="close-modal-btn" @click="mcpSettingsOpen = false">×</button>
+          </div>
+          <p class="mcp-hint">
+            Any MCP client with a token can search, read, create, edit, inspect threads, and
+            recall whiteboards. Tokens are shown once and stored hashed.
+          </p>
+          <form class="mcp-token-form" @submit.prevent="createMcpToken">
+            <input v-model="mcpTokenName" type="text" placeholder="Token name (e.g. Claude Desktop)">
+            <button type="submit" class="save-btn" :disabled="!mcpTokenName.trim()">Create token</button>
+          </form>
+          <div v-if="mcpNewToken" class="mcp-token-reveal">
+            <code>{{ mcpNewToken }}</code>
+            <button type="button" @click="copyMcpToken">Copy</button>
+          </div>
+          <p v-if="mcpTokenError" class="error">{{ mcpTokenError }}</p>
+          <p v-if="mcpTokenLoading" class="mcp-hint">Loading tokens…</p>
+          <div v-else-if="mcpTokens.length === 0" class="mcp-hint">No tokens yet.</div>
+          <div v-else class="mcp-token-list">
+            <div v-for="token in mcpTokens" :key="token.id" class="mcp-token-row">
+              <div>
+                <strong>{{ token.name }}</strong>
+                <small>
+                  {{ token.scopes.join(', ') }}
+                  <template v-if="token.lastUsedAt"> · last used {{ formatDate(token.lastUsedAt) }}</template>
+                  <template v-if="token.revokedAt"> · revoked</template>
+                </small>
+              </div>
+              <button
+                v-if="!token.revokedAt"
+                type="button"
+                class="cancel-btn"
+                @click="revokeMcpToken(token)"
+              >Revoke</button>
+            </div>
+          </div>
+          <details class="mcp-config">
+            <summary>Client configuration</summary>
+            <pre>{
+  "mcpServers": {
+    "local-keep": {
+      "type": "http",
+      "url": "{{ mcpEndpoint }}",
+      "headers": { "Authorization": "Bearer &lt;token&gt;" }
+    }
+  }
+}</pre>
+          </details>
+        </div>
+      </div>
 
       <!-- Modal for Add/Edit Note -->
       <div v-if="isModalOpen" class="modal-overlay" @mousedown.self="closeModal">
@@ -236,8 +374,34 @@
           :style="modalSize.width ? { width: modalSize.width + 'px', height: modalSize.height + 'px', maxWidth: 'none', maxHeight: 'none' } : {}"
         >
           <div class="modal-header">
-            <h2>{{ editingId ? 'Editing Note' : 'New Note' }}</h2>
-            <button @click="closeModal" class="close-modal-btn">×</button>
+            <h2>
+              {{ editingId ? 'Editing Note' : 'New Note' }}
+              <span v-if="editingId" class="revision-badge">v{{ editingRevisionNo }}</span>
+            </h2>
+            <div class="modal-header-actions">
+              <button
+                v-if="editingId"
+                type="button"
+                @click="openGraph(editingId)"
+                class="history-btn"
+                title="Open relationship graph for this note"
+              >🕸 Graph</button>
+              <button
+                v-if="editingId"
+                type="button"
+                @click="openBacklinks"
+                class="history-btn"
+                title="Show notes linking here"
+              >🔗 Backlinks</button>
+              <button
+                v-if="editingId"
+                type="button"
+                @click="openHistory"
+                class="history-btn"
+                title="View revision history"
+              >🕘 History</button>
+              <button @click="closeModal" class="close-modal-btn">×</button>
+            </div>
           </div>
           <form @submit.prevent="editingId ? saveEdit() : addNote()">
             <input
@@ -250,16 +414,43 @@
               @keydown.meta.enter.stop.prevent="editingId ? saveEdit() : addNote()"
             >
             <div class="note-editor-toolbar">
-              <button type="button" @click="formatBold" class="toolbar-btn" title="Bold (Ctrl+B)" aria-label="Bold"><b>B</b></button>
-              <button type="button" @click="formatItalic" class="toolbar-btn" title="Italic (Ctrl+I)" aria-label="Italic"><i>I</i></button>
-              <button type="button" @click="insertLink" class="toolbar-btn" title="Insert link" aria-label="Insert link">🔗</button>
-              <button type="button" @click="insertCheckbox" class="toolbar-btn" title="Checkbox (to-do item)" aria-label="Checkbox">☑</button>
+              <div class="editor-mode-switch">
+                <button
+                  type="button"
+                  class="mode-btn"
+                  :class="{ active: editorMode === 'write' }"
+                  @click="setEditorMode('write')"
+                  title="Rich write mode"
+                >✍️ Write</button>
+                <button
+                  type="button"
+                  class="mode-btn"
+                  :class="{ active: editorMode === 'markdown' }"
+                  @click="setEditorMode('markdown')"
+                  title="Edit raw markdown"
+                >M↓ Markdown</button>
+                <button
+                  type="button"
+                  class="mode-btn"
+                  :class="{ active: editorMode === 'preview' }"
+                  @click="setEditorMode('preview')"
+                  title="Preview rendered markdown"
+                >👁 Preview</button>
+              </div>
+              <span class="toolbar-divider"></span>
+              <template v-if="editorMode === 'write'">
+                <button type="button" @click="formatBold" class="toolbar-btn" title="Bold (Ctrl+B)" aria-label="Bold"><b>B</b></button>
+                <button type="button" @click="formatItalic" class="toolbar-btn" title="Italic (Ctrl+I)" aria-label="Italic"><i>I</i></button>
+                <button type="button" @click="insertLink" class="toolbar-btn" title="Insert link" aria-label="Insert link">🔗</button>
+                <button type="button" @click="insertCheckbox" class="toolbar-btn" title="Checkbox (to-do item)" aria-label="Checkbox">☑</button>
+              </template>
               <span class="toolbar-spacer"></span>
               <button type="button" @click="triggerImageUpload" class="image-btn" :disabled="imageUploading" title="Insert image">
                 {{ imageUploading ? '⏳' : '🖼️' }}
               </button>
             </div>
             <div
+              v-if="editorMode === 'write'"
               ref="imageEditor"
               class="note-editor"
               contenteditable="true"
@@ -270,6 +461,23 @@
               @focus="onEditorFocus"
               @blur="onEditorBlur"
               @click="onEditorClick"
+            ></div>
+            <textarea
+              v-else-if="editorMode === 'markdown'"
+              ref="markdownTextarea"
+              v-model="newNoteContent"
+              class="note-editor markdown-source"
+              spellcheck="false"
+              placeholder="Write markdown..."
+              @keydown.ctrl.enter.stop.prevent="editingId ? saveEdit() : addNote()"
+              @keydown.meta.enter.stop.prevent="editingId ? saveEdit() : addNote()"
+              @paste="onMarkdownPaste"
+            ></textarea>
+            <div
+              v-else
+              class="note-editor markdown-preview"
+              @click="onPreviewClick"
+              v-html="renderedPreview"
             ></div>
             <div class="note-form-actions">
               <div class="action-buttons">
@@ -286,6 +494,61 @@
               @change="onImageFileSelected"
             >
           </form>
+
+          <!-- Revision history overlay -->
+          <div v-if="historyOpen" class="history-overlay" @mousedown.self="closeHistory">
+            <div class="history-panel">
+              <div class="history-header">
+                <h3>Revision history</h3>
+                <button type="button" class="close-modal-btn" @click="closeHistory">×</button>
+              </div>
+              <p v-if="historyLoading" class="history-loading">Loading history…</p>
+              <p v-if="historyError" class="error">{{ historyError }}</p>
+              <div v-if="historyData" class="history-list">
+                <div
+                  v-for="rev in historyRevisionsNewest"
+                  :key="rev.id"
+                  class="history-item"
+                  :class="{ 'history-item-head': rev.isHead }"
+                >
+                  <div class="history-meta">
+                    <strong>v{{ rev.revisionNo }}</strong>
+                    <span>{{ formatDate(rev.createdAt) }}</span>
+                    <span class="history-actor">{{ rev.actor }}</span>
+                    <span v-if="rev.isHead" class="revision-badge">HEAD</span>
+                    <span v-else-if="!rev.onHeadChain" class="revision-badge revision-badge-branch">branch</span>
+                  </div>
+                  <div class="history-title">{{ rev.displayTitle || rev.title || 'Untitled' }}</div>
+                  <div class="history-actions">
+                    <button type="button" @click="viewRevision(rev)">View</button>
+                    <button type="button" v-if="!rev.isHead" @click="restoreRevision(rev)">Restore</button>
+                    <button
+                      type="button"
+                      v-if="!rev.onHeadChain && !rev.isHead"
+                      @click="promoteRevision(rev)"
+                    >Promote</button>
+                  </div>
+                </div>
+              </div>
+              <div v-if="historyPreview" class="history-preview">
+                <h4>
+                  {{ historyPreview.title || 'Untitled' }}
+                  <small>v{{ historyPreview.revisionNo }}</small>
+                </h4>
+                <pre>{{ historyPreview.content }}</pre>
+              </div>
+            </div>
+          </div>
+
+          <BacklinksPanel
+            v-if="backlinksOpen"
+            :backlinks="backlinks"
+            :loading="backlinksLoading"
+            :error="backlinksError"
+            @close="backlinksOpen = false"
+            @open="openBacklinkSource"
+          />
+
           <div class="modal-resize-handle" @mousedown.prevent="startResize"></div>
 
           <!-- Text-note deletion-elsewhere mask (no alert; inline prompt) -->
@@ -323,13 +586,13 @@
       <!-- Custom Confirmation Modal for Deletion -->
       <div v-if="isConfirmOpen" class="modal-overlay" @mousedown.self="closeConfirm">
         <div class="modal-content confirm-modal">
-          <h2>{{ noteToDeleteId ? 'Delete Note?' : 'Delete Selected Notes?' }}</h2>
+          <h2>{{ noteToDeleteId ? 'Archive Note?' : 'Archive Selected Notes?' }}</h2>
           <p>
-            {{ noteToDeleteId ? 'Are you sure you want to delete this note?' : `Are you sure you want to delete these ${selectedNoteIds.size} selected notes?` }}
-            This action cannot be undone.
+            {{ noteToDeleteId ? 'This note will be hidden from the list.' : `These ${selectedNoteIds.size} notes will be hidden from the list.` }}
+            Its revision history is kept and the note can be restored.
           </p>
           <div class="confirm-actions">
-            <button @click="confirmDelete" class="delete-confirm-btn">Delete</button>
+            <button @click="confirmDelete" class="delete-confirm-btn">Archive</button>
             <button @click="closeConfirm" class="cancel-confirm-btn">Cancel</button>
           </div>
         </div>
@@ -370,7 +633,17 @@
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import debug from 'debug'
 import WhiteboardEditor from './components/WhiteboardEditor.vue'
+import TagSidebar from './components/TagSidebar.vue'
+import GraphView from './components/GraphView.vue'
+import BacklinksPanel from './components/BacklinksPanel.vue'
 import { getDisplayTitle } from './utils/notes.js'
+import {
+  renderMarkdown,
+  htmlToMarkdown,
+  normalizeMarkdown,
+  normalizePlainText
+} from './utils/markdown.js'
+import { serializeEditorToMarkdown as serializeEditorRoot } from './utils/editorSerialize.js'
 
 const log = debug('local-keep:client')
 const API_BASE = window.location.origin
@@ -403,7 +676,7 @@ const modKey = isMac ? 'Cmd' : 'Ctrl'
 
 export default {
   name: 'App',
-  components: { WhiteboardEditor },
+  components: { WhiteboardEditor, TagSidebar, GraphView, BacklinksPanel },
   setup() {
     // Auth state
     const showSetup = ref(false)
@@ -418,6 +691,19 @@ export default {
     const newNoteTitle = ref('')
     const newNoteContent = ref('')
     const editingId = ref(null)
+    // Stable document identity: editingId never changes during an edit session.
+    // The base revision is only used for optimistic concurrency.
+    const editingBaseRevisionId = ref(null)
+    const editingRevisionNo = ref(1)
+    const editorMode = ref('write') // 'write' | 'markdown' | 'preview'
+    const revisionNotice = ref('')
+    let revisionNoticeTimer = null
+    let recentLocalRevision = null
+    const historyOpen = ref(false)
+    const historyLoading = ref(false)
+    const historyError = ref('')
+    const historyData = ref(null)
+    const historyPreview = ref(null)
     const isModalOpen = ref(false)
     const copiedId = ref(null)
     const isConfirmOpen = ref(false)
@@ -427,6 +713,32 @@ export default {
     const sortBy = ref('updatedAt')
     const sortOrder = ref('desc')
     const selectedNoteIds = ref(new Set())
+    const showArchived = ref(false)
+
+    // Tag / relationship state
+    const tagsTree = ref({ tags: [], totalNotes: 0, untaggedCount: 0 })
+    const tagSidebarOpen = ref(true)
+    const activeTag = ref(null)
+    const untaggedOnly = ref(false)
+    let tagsRefreshTimer = null
+    const graphOpen = ref(false)
+    const graphLoading = ref(false)
+    const graphError = ref('')
+    const graphData = ref({ nodes: [], edges: [], center: null })
+    const graphCenter = ref(null)
+    const graphDepth = ref(1)
+    const graphIncludeUnresolved = ref(false)
+    const backlinksOpen = ref(false)
+    const backlinks = ref([])
+    const backlinksLoading = ref(false)
+    const backlinksError = ref('')
+    const mcpSettingsOpen = ref(false)
+    const mcpTokens = ref([])
+    const mcpTokenName = ref('')
+    const mcpNewToken = ref('')
+    const mcpTokenError = ref('')
+    const mcpTokenLoading = ref(false)
+    const mcpEndpoint = computed(() => `${window.location.origin.replace(':5174', ':5173')}/mcp`)
 
     // Search state
     const searchOpen = ref(false)
@@ -463,6 +775,7 @@ export default {
     const imageUploadInput = ref(null)
     const imageUploading = ref(false)
     const imageEditor = ref(null)
+    const markdownTextarea = ref(null)
     const selectedImageForResize = ref(null)
     const cleanupRunning = ref(false)
 
@@ -511,9 +824,14 @@ export default {
               console.log(`[${now}] 📨 Updating notes, count: ${data.notes.length}`)
               // Only update notes if the editor modal is not open
               if (!isModalOpen.value) {
-                // Force reactivity by creating a new array reference
-                notes.value = [...data.notes]
+                // Force reactivity by creating a new array reference. The bulk
+                // active list intentionally omits archived rows; keep them in
+                // memory so filtering/link resolution stays correct.
+                const incomingIds = new Set(data.notes.map(n => n.id))
+                const archived = notes.value.filter(n => n.archivedAt && !incomingIds.has(n.id))
+                notes.value = [...data.notes, ...archived]
                 pendingNotes.value = null
+                scheduleTagsRefresh()
                 console.log(`[${now}] 📨 Notes set in Vue, length: ${notes.value.length}`)
                 // Force DOM update using queuePostFlushCb
                 requestAnimationFrame(() => {
@@ -525,6 +843,24 @@ export default {
               }
             } else if (data.type === 'note-deleted' && data.noteId) {
               handleNoteDeletedElsewhere(data.noteId)
+            } else if (data.type === 'note-revised' && data.noteId) {
+              // Remind the user when another tab/client (or a future MCP
+              // client) creates a revision. Suppress the echo of our own save.
+              const isRecentLocal = recentLocalRevision &&
+                recentLocalRevision.id === data.noteId &&
+                Date.now() - recentLocalRevision.at < 5000
+              const isCheckpoint = data.source === 'checkpoint'
+              if (!isRecentLocal && !isCheckpoint) {
+                const isOpen = isModalOpen.value && editingId.value === data.noteId
+                if (isOpen) {
+                  showRevisionNotice(
+                    `This note was updated elsewhere (revision ${data.revisionNo}). Your open copy will be kept as a branch if you save.`
+                  )
+                } else {
+                  const who = String(data.actor || '').startsWith('mcp:') ? 'MCP' : 'Another client'
+                  showRevisionNotice(`${who} saved revision ${data.revisionNo}.`)
+                }
+              }
             }
           } catch (e) {
             console.error('Failed to parse WebSocket message:', e)
@@ -587,10 +923,62 @@ export default {
     // Notes methods
     const loadNotes = async () => {
       try {
-        notes.value = await api('/api/notes')
-        // WebSocket will be started after successful login
+        // Keep archived notes in the in-memory list so link resolution can
+        // identify archived targets and the archived filter is instant.
+        notes.value = await api('/api/notes?includeArchived=1')
+        await loadTags()
       } catch (e) {
         console.error('Failed to load notes', e)
+      }
+    }
+
+    const loadTags = async () => {
+      try {
+        tagsTree.value = await api('/api/tags')
+      } catch (e) {
+        console.error('Failed to load tags', e)
+      }
+    }
+
+    const scheduleTagsRefresh = () => {
+      if (tagsRefreshTimer) clearTimeout(tagsRefreshTimer)
+      tagsRefreshTimer = setTimeout(() => {
+        tagsRefreshTimer = null
+        loadTags()
+      }, 600)
+    }
+
+    const toggleShowArchived = () => {
+      showArchived.value = !showArchived.value
+    }
+
+    const selectTag = (payload) => {
+      const tag = payload?.tag || null
+      if (tag === '__untagged__') {
+        activeTag.value = null
+        untaggedOnly.value = true
+      } else {
+        activeTag.value = tag
+        untaggedOnly.value = false
+      }
+    }
+
+    const clearTag = () => {
+      activeTag.value = null
+      untaggedOnly.value = false
+    }
+
+    const restoreArchivedNote = async (note) => {
+      try {
+        const restored = await api(`/api/notes/${note.id}/restore`, { method: 'POST' })
+        const index = notes.value.findIndex(n => n.id === note.id)
+        if (index !== -1) {
+          notes.value[index] = { ...notes.value[index], ...restored }
+        }
+        showRevisionNotice(`Restored ${getDisplayTitle(restored)}.`)
+        loadTags()
+      } catch (e) {
+        showRevisionNotice(e.message || 'Restore failed')
       }
     }
 
@@ -633,7 +1021,14 @@ export default {
         }
       }
 
-      // 3. Ctrl+I / Cmd+I to open search
+      // 3. Ctrl/Cmd+Shift+M cycles editor modes while the note modal is open
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'm' && isModalOpen.value) {
+        e.preventDefault()
+        cycleEditorMode()
+        return
+      }
+
+      // 4. Ctrl+I / Cmd+I to open search
       if ((e.metaKey || e.ctrlKey) && e.key === 'i') {
         if (!isModalOpen.value && !isConfirmOpen.value) {
           e.preventDefault()
@@ -642,7 +1037,7 @@ export default {
         }
       }
 
-      // 4. Handlers when note editor modal is open
+      // 5. Handlers when note editor modal is open
       if (isModalOpen.value) {
         if (e.key === 'Escape') {
           e.preventDefault()
@@ -651,7 +1046,7 @@ export default {
         }
       }
 
-      // 5. Search bar Escape handling
+      // 6. Search bar Escape handling
       if (searchOpen.value && e.key === 'Escape' && !e.ctrlKey && !e.metaKey) {
         e.preventDefault()
         closeSearch()
@@ -701,6 +1096,8 @@ export default {
     onUnmounted(() => {
       window.removeEventListener('keydown', handleKeyDown)
       window.removeEventListener('paste', handleWindowPaste)
+      if (revisionNoticeTimer) clearTimeout(revisionNoticeTimer)
+      if (tagsRefreshTimer) clearTimeout(tagsRefreshTimer)
       disconnectWebSocket()
     })
 
@@ -780,59 +1177,110 @@ export default {
       openNewCanvas()
     }
 
-    // ── Image editor helpers ──
-    function markdownToHTML(text) {
-      if (!text) return ''
-      const parts = []
-      let lastIndex = 0
-      const imgRegex = /!\[([^\]]*)\]\(([^)]+)\)(?:\{width=(\d+)\})?/g
-      let match
-      while ((match = imgRegex.exec(text)) !== null) {
-        if (match.index > lastIndex) {
-          parts.push(document.createTextNode(text.slice(lastIndex, match.index)))
-        }
-        const img = document.createElement('img')
-        img.src = match[2]
-        img.alt = match[1]
-        // Parse optional width: ![alt](url){width=N}
-        const widthMatch = match[0].match(/\{width=(\d+)\}$/)
-        if (widthMatch) {
-          img.setAttribute('data-width', widthMatch[1])
-          img.style.width = widthMatch[1] + 'px'
-        }
-        img.setAttribute('data-md', match[0])
-        // Broken image → convert to editable markdown text
-        img.onerror = function() {
-          if (this.parentNode) {
-            const md = this.getAttribute('data-md') || ''
-            const textNode = document.createTextNode(md)
-            this.parentNode.replaceChild(textNode, this)
+    // ── Markdown editor helpers ──
+    function attachImageErrorHandlers(container) {
+      if (!container) return
+      container.querySelectorAll('img').forEach((img) => {
+        img.onerror = function () {
+          if (!this.parentNode) return
+          const md = this.getAttribute('data-md') || ''
+          const textNode = document.createTextNode(md)
+          this.parentNode.replaceChild(textNode, this)
+          if (editorMode.value === 'write') {
             newNoteContent.value = serializeEditorToMarkdown()
           }
         }
-        parts.push(img)
-        lastIndex = match.index + match[0].length
-      }
-      if (lastIndex < text.length) {
-        parts.push(document.createTextNode(text.slice(lastIndex)))
-      }
-      if (parts.length === 0) return ''
-      const fragment = document.createDocumentFragment()
-      parts.forEach(p => fragment.appendChild(p))
-      const temp = document.createElement('div')
-      temp.appendChild(fragment)
-      return temp.innerHTML
+      })
     }
 
     function renderEditorContent() {
       const el = imageEditor.value
       if (!el) return
-      el.innerHTML = markdownToHTML(newNoteContent.value)
+      el.innerHTML = renderMarkdown(newNoteContent.value, { resolveLink: resolveWikiLink })
+      attachImageErrorHandlers(el)
+    }
+
+    function setEditorMode(mode) {
+      if (!['write', 'markdown', 'preview'].includes(mode)) return
+      if (editorMode.value === mode) return
+      if (editorMode.value === 'write') {
+        newNoteContent.value = serializeEditorToMarkdown()
+      }
+      editorMode.value = mode
+      if (mode === 'write') {
+        nextTick(() => {
+          renderEditorContent()
+          if (imageEditor.value) imageEditor.value.focus()
+        })
+      } else if (mode === 'markdown') {
+        nextTick(() => {
+          if (markdownTextarea.value) markdownTextarea.value.focus()
+        })
+      }
+    }
+
+    function cycleEditorMode() {
+      const modes = ['write', 'markdown', 'preview']
+      const index = modes.indexOf(editorMode.value)
+      setEditorMode(modes[(index + 1) % modes.length])
+    }
+
+    function insertMarkdownAtCursor(markdown) {
+      const textarea = markdownTextarea.value
+      if (!textarea) {
+        newNoteContent.value = normalizeMarkdown(`${newNoteContent.value}\n${markdown}`)
+        return
+      }
+      const start = textarea.selectionStart ?? newNoteContent.value.length
+      const end = textarea.selectionEnd ?? start
+      const before = newNoteContent.value.slice(0, start)
+      const after = newNoteContent.value.slice(end)
+      newNoteContent.value = before + markdown + after
+      const cursor = start + markdown.length
+      nextTick(() => {
+        textarea.focus()
+        textarea.setSelectionRange(cursor, cursor)
+      })
+    }
+
+    function insertMarkdownAsRich(markdown) {
+      const el = imageEditor.value
+      if (!el) return
+      el.focus()
+      const sel = window.getSelection()
+      if (!sel || !sel.rangeCount) {
+        newNoteContent.value = normalizeMarkdown(`${newNoteContent.value}\n\n${markdown}`)
+        renderEditorContent()
+        return
+      }
+      const range = sel.getRangeAt(0)
+      if (!el.contains(range.startContainer)) {
+        range.selectNodeContents(el)
+        range.collapse(false)
+      }
+      const html = renderMarkdown(markdown, { resolveLink: resolveWikiLink })
+      const temp = document.createElement('div')
+      temp.innerHTML = html
+      const fragment = document.createDocumentFragment()
+      while (temp.firstChild) fragment.appendChild(temp.firstChild)
+      range.deleteContents()
+      range.insertNode(fragment)
+      // Put the caret at the end of the inserted block.
+      range.collapse(false)
+      sel.removeAllRanges()
+      sel.addRange(range)
+      newNoteContent.value = serializeEditorToMarkdown()
     }
 
     const openNewNoteModal = () => {
       isModalOpen.value = true
       editingId.value = null
+      editingBaseRevisionId.value = null
+      editingRevisionNo.value = 1
+      editorMode.value = 'write'
+      historyOpen.value = false
+      backlinksOpen.value = false
+      backlinks.value = []
       newNoteTitle.value = ''
       newNoteContent.value = ''
       modalSize.value = { width: null, height: null }
@@ -843,31 +1291,40 @@ export default {
       }, 50)
     }
 
-    const handleWindowPaste = (e) => {
+    const handleWindowPaste = async (e) => {
       if (!isAuthenticated.value) return
       if (currentView.value === 'canvas') return
       const activeEl = document.activeElement
       const isInputActive = activeEl && (
-        activeEl.tagName === 'INPUT' || 
-        activeEl.tagName === 'TEXTAREA' || 
+        activeEl.tagName === 'INPUT' ||
+        activeEl.tagName === 'TEXTAREA' ||
         activeEl.isContentEditable
       )
       log('paste event: inputActive=%s target=%s', isInputActive, activeEl?.tagName || 'none')
       if (isInputActive) return
       e.preventDefault()
-      const text = e.clipboardData?.getData('text') || ''
-      log('paste intercepted: textLength=%d', text.length)
-      if (!text.trim()) return
+      const html = e.clipboardData?.getData('text/html') || ''
+      const text = e.clipboardData?.getData('text/plain') || ''
+      let markdown = html ? htmlToMarkdown(html) : normalizePlainText(text)
+      if (!markdown.trim()) return
+      markdown = (await normalizeDataUrlImages(markdown)).markdown
+      log('paste intercepted: markdownLength=%d', markdown.length)
       isModalOpen.value = true
       editingId.value = null
+      editingBaseRevisionId.value = null
+      editingRevisionNo.value = 1
+      editorMode.value = 'write'
+      historyOpen.value = false
+      backlinksOpen.value = false
+      backlinks.value = []
       newNoteTitle.value = ''
-      newNoteContent.value = text
+      newNoteContent.value = markdown
       modalSize.value = { width: null, height: null }
-      setTimeout(() => {
-        if (modalContentInput.value) {
-          modalContentInput.value.focus()
-        }
-      }, 50)
+      nextTick(() => {
+        renderEditorContent()
+        if (imageEditor.value) imageEditor.value.focus()
+        else if (modalTitleInput.value) modalTitleInput.value.focus()
+      })
     }
 
     const hasUnsavedChanges = () => {
@@ -889,10 +1346,22 @@ export default {
       }
       isModalOpen.value = false
       editingId.value = null
+      editingBaseRevisionId.value = null
+      editingRevisionNo.value = 1
+      editorMode.value = 'write'
+      historyOpen.value = false
+      backlinksOpen.value = false
+      backlinks.value = []
+      historyData.value = null
+      historyPreview.value = null
+      historyError.value = ''
       newNoteTitle.value = ''
       newNoteContent.value = ''
       if (pendingNotes.value) {
-        notes.value = [...pendingNotes.value]
+        const incoming = pendingNotes.value
+        const incomingIds = new Set(incoming.map(n => n.id))
+        const archived = notes.value.filter(n => n.archivedAt && !incomingIds.has(n.id))
+        notes.value = [...incoming, ...archived]
         pendingNotes.value = null
       }
       modalSize.value = { width: null, height: null }
@@ -976,17 +1445,29 @@ export default {
 
     const addNote = async () => {
       try {
+        if (editorMode.value === 'write') {
+          newNoteContent.value = serializeEditorToMarkdown()
+        }
+        const normalized = await normalizeDataUrlImages(newNoteContent.value)
+        if (normalized.failed > 0) {
+          showRevisionNotice('One or more pasted images could not be uploaded. The note was not saved.')
+          return
+        }
+        const content = normalizeMarkdown(normalized.markdown)
+        newNoteContent.value = content
         const note = await api('/api/notes', {
           method: 'POST',
           body: JSON.stringify({
             title: newNoteTitle.value.trim(),
-            content: newNoteContent.value.trim()
+            content
           })
         })
         notes.value.unshift(note)
+        scheduleTagsRefresh()
         closeModal(true)
       } catch (e) {
         console.error('Failed to add note', e)
+        showRevisionNotice(e.message || 'Failed to add note')
       }
     }
 
@@ -1009,7 +1490,7 @@ export default {
           const id = noteToDeleteId.value
           const result = await api(`/api/notes/${id}`, { method: 'DELETE' })
           console.log('[DEBUG] API response:', result)
-          notes.value = notes.value.filter(n => n.id !== id)
+          await loadNotes()
           if (selectedNoteIds.value.has(id)) {
             toggleSelect(id)
           }
@@ -1020,10 +1501,11 @@ export default {
             body: JSON.stringify({ ids })
           })
           console.log('[DEBUG] API response:', result)
-          notes.value = notes.value.filter(n => !selectedNoteIds.value.has(n.id))
+          await loadNotes()
           deselectAll()
         }
         closeConfirm()
+        scheduleTagsRefresh()
       } catch (e) {
         console.error('[DEBUG] Error in confirmDelete:', e)
       }
@@ -1053,6 +1535,8 @@ export default {
     const handleCardClick = (note) => {
       if (selectedNoteIds.value.size > 0) {
         toggleSelect(note.id)
+      } else if (note.archivedAt) {
+        showRevisionNotice('This note is archived. Restore it to edit.')
       } else if (note.type === 'canvas') {
         openCanvasNote(note)
       } else {
@@ -1063,6 +1547,15 @@ export default {
     const startEditing = (note) => {
       pendingNotes.value = null
       editingId.value = note.id
+      editingBaseRevisionId.value = note.revisionId || null
+      editingRevisionNo.value = note.revisionNo || 1
+      editorMode.value = 'write'
+      historyOpen.value = false
+      backlinksOpen.value = false
+      backlinks.value = []
+      historyData.value = null
+      historyPreview.value = null
+      historyError.value = ''
       newNoteTitle.value = note.title
       newNoteContent.value = note.content
       isModalOpen.value = true
@@ -1073,22 +1566,275 @@ export default {
       })
     }
 
+    const showRevisionNotice = (message) => {
+      if (!message) return
+      revisionNotice.value = message
+      if (revisionNoticeTimer) clearTimeout(revisionNoticeTimer)
+      revisionNoticeTimer = setTimeout(() => { revisionNotice.value = '' }, 7000)
+    }
+
+    const dismissRevisionNotice = () => {
+      revisionNotice.value = ''
+      if (revisionNoticeTimer) {
+        clearTimeout(revisionNoticeTimer)
+        revisionNoticeTimer = null
+      }
+    }
+
     const saveEdit = async () => {
       try {
+        if (editorMode.value === 'write') {
+          newNoteContent.value = serializeEditorToMarkdown()
+        }
+        const normalized = await normalizeDataUrlImages(newNoteContent.value)
+        if (normalized.failed > 0) {
+          showRevisionNotice('One or more pasted images could not be uploaded. The note was not saved.')
+          return
+        }
+        const content = normalizeMarkdown(normalized.markdown)
+        newNoteContent.value = content
         const updated = await api(`/api/notes/${editingId.value}`, {
           method: 'PUT',
           body: JSON.stringify({
             title: newNoteTitle.value.trim(),
-            content: newNoteContent.value.trim()
+            content,
+            baseRevisionId: editingBaseRevisionId.value,
+            mode: 'append'
           })
         })
+        // Keep the document identity stable; only the version pointer moves.
         const index = notes.value.findIndex(n => n.id === editingId.value)
         if (index !== -1) {
-          notes.value[index] = updated
+          notes.value[index] = { ...notes.value[index], ...updated }
         }
+        editingBaseRevisionId.value = updated.headRevisionId || updated.revisionId || null
+        editingRevisionNo.value = updated.revisionNo || editingRevisionNo.value
+        recentLocalRevision = { id: updated.id, at: Date.now() }
+        scheduleTagsRefresh()
+        showRevisionNotice(
+          updated.conflict
+            ? `${updated.notice} Open the note and click History to inspect both versions.`
+            : updated.notice
+        )
         closeModal(true)
       } catch (e) {
         console.error('Failed to save note', e)
+        showRevisionNotice(e.message || 'Save failed')
+      }
+    }
+
+    // ── Revision history ──
+    const openHistory = async () => {
+      if (!editingId.value) return
+      historyOpen.value = true
+      historyLoading.value = true
+      historyError.value = ''
+      historyPreview.value = null
+      try {
+        historyData.value = await api(`/api/notes/${editingId.value}/history`)
+      } catch (e) {
+        historyError.value = e.message || 'Failed to load history'
+        historyData.value = null
+      } finally {
+        historyLoading.value = false
+      }
+    }
+
+    const closeHistory = () => {
+      historyOpen.value = false
+      historyPreview.value = null
+      historyError.value = ''
+    }
+
+    const viewRevision = async (rev) => {
+      try {
+        historyPreview.value = await api(
+          `/api/notes/${editingId.value}/history/${rev.id}`
+        )
+      } catch (e) {
+        historyError.value = e.message || 'Failed to load revision'
+      }
+    }
+
+    const applyRevisionResult = (result) => {
+      const index = notes.value.findIndex(n => n.id === result.id)
+      if (index !== -1) {
+        notes.value[index] = { ...notes.value[index], ...result }
+      }
+      editingBaseRevisionId.value = result.headRevisionId || result.revisionId || null
+      editingRevisionNo.value = result.revisionNo || editingRevisionNo.value
+      showRevisionNotice(result.notice)
+      scheduleTagsRefresh()
+    }
+
+    const restoreRevision = async (rev) => {
+      if (!window.confirm(`Restore v${rev.revisionNo} as a new version?`)) return
+      try {
+        const result = await api(
+          `/api/notes/${editingId.value}/history/${rev.id}/restore`,
+          { method: 'POST' }
+        )
+        applyRevisionResult(result)
+        closeHistory()
+        closeModal(true)
+      } catch (e) {
+        historyError.value = e.message || 'Restore failed'
+      }
+    }
+
+    const promoteRevision = async (rev) => {
+      if (!window.confirm(`Promote branch v${rev.revisionNo} to the head?`)) return
+      try {
+        const result = await api(
+          `/api/notes/${editingId.value}/history/${rev.id}/promote`,
+          { method: 'POST' }
+        )
+        applyRevisionResult(result)
+        closeHistory()
+        closeModal(true)
+      } catch (e) {
+        historyError.value = e.message || 'Promote failed'
+      }
+    }
+
+    // ── Graph / backlinks ──
+    const refreshGraph = async (payload = {}) => {
+      if (payload.depth != null) graphDepth.value = Number(payload.depth)
+      if (payload.includeUnresolved != null) graphIncludeUnresolved.value = !!payload.includeUnresolved
+      graphLoading.value = true
+      graphError.value = ''
+      try {
+        const params = new URLSearchParams({
+          depth: String(graphDepth.value),
+          includeUnresolved: graphIncludeUnresolved.value ? '1' : '0'
+        })
+        if (graphCenter.value) params.set('noteId', graphCenter.value)
+        graphData.value = await api(`/api/graph?${params.toString()}`)
+      } catch (e) {
+        graphError.value = e.message || 'Failed to load graph'
+        graphData.value = { nodes: [], edges: [], center: graphCenter.value }
+      } finally {
+        graphLoading.value = false
+      }
+    }
+
+    const openGraph = async (noteId = null) => {
+      graphCenter.value = noteId || null
+      graphOpen.value = true
+      await refreshGraph()
+    }
+
+    const openGraphNode = (id) => {
+      if (!id || String(id).startsWith('unresolved:')) return
+      const note = notes.value.find(n => n.id === id)
+      if (!note) {
+        showRevisionNotice('The selected graph node is no longer available.')
+        return
+      }
+      if (note.archivedAt) {
+        showRevisionNotice('This note is archived. Restore it to open it.')
+        return
+      }
+      if (isModalOpen.value && hasUnsavedChanges() &&
+          !window.confirm('Discard unsaved changes and open the graph node?')) return
+      graphOpen.value = false
+      if (isModalOpen.value) closeModal(true)
+      nextTick(() => {
+        if (note.type === 'canvas') openCanvasNote(note)
+        else startEditing(note)
+      })
+    }
+
+    const openBacklinks = async () => {
+      if (!editingId.value) return
+      backlinksOpen.value = true
+      backlinksLoading.value = true
+      backlinksError.value = ''
+      try {
+        backlinks.value = await api(`/api/notes/${editingId.value}/backlinks`)
+      } catch (e) {
+        backlinksError.value = e.message || 'Failed to load backlinks'
+        backlinks.value = []
+      } finally {
+        backlinksLoading.value = false
+      }
+    }
+
+    const openBacklinkSource = (noteId) => {
+      const note = notes.value.find(n => n.id === noteId)
+      if (!note) {
+        showRevisionNotice('The linking note is no longer available.')
+        return
+      }
+      if (note.archivedAt) {
+        showRevisionNotice('The linking note is archived.')
+        return
+      }
+      if (hasUnsavedChanges() && !window.confirm('Discard unsaved changes and open the linking note?')) return
+      backlinksOpen.value = false
+      closeModal(true)
+      nextTick(() => {
+        if (note.type === 'canvas') openCanvasNote(note)
+        else startEditing(note)
+      })
+    }
+
+    // ── MCP token settings ──
+    const loadMcpTokens = async () => {
+      mcpTokenLoading.value = true
+      mcpTokenError.value = ''
+      try {
+        mcpTokens.value = await api('/api/mcp/tokens')
+      } catch (e) {
+        mcpTokenError.value = e.message || 'Failed to load tokens'
+      } finally {
+        mcpTokenLoading.value = false
+      }
+    }
+
+    const openMcpSettings = async () => {
+      mcpSettingsOpen.value = true
+      mcpNewToken.value = ''
+      mcpTokenName.value = ''
+      await loadMcpTokens()
+    }
+
+    const createMcpToken = async () => {
+      try {
+        mcpTokenError.value = ''
+        const created = await api('/api/mcp/tokens', {
+          method: 'POST',
+          body: JSON.stringify({ name: mcpTokenName.value.trim() })
+        })
+        mcpNewToken.value = created.token
+        mcpTokenName.value = ''
+        await loadMcpTokens()
+      } catch (e) {
+        mcpTokenError.value = e.message || 'Failed to create token'
+      }
+    }
+
+    const revokeMcpToken = async (token) => {
+      if (!window.confirm(`Revoke MCP token "${token.name}"?`)) return
+      try {
+        await api(`/api/mcp/tokens/${token.id}`, { method: 'DELETE' })
+        await loadMcpTokens()
+      } catch (e) {
+        mcpTokenError.value = e.message || 'Failed to revoke token'
+      }
+    }
+
+    const copyMcpToken = async () => {
+      if (!mcpNewToken.value) return
+      try {
+        await navigator.clipboard.writeText(mcpNewToken.value)
+      } catch (_) {
+        const textarea = document.createElement('textarea')
+        textarea.value = mcpNewToken.value
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
       }
     }
 
@@ -1202,14 +1948,23 @@ export default {
         const isOpenCanvas = currentView.value === 'canvas' && editingCanvasId.value === mask.noteId
 
         if (isOpenTextNote) {
+          if (editorMode.value === 'write') {
+            newNoteContent.value = serializeEditorToMarkdown()
+          }
+          const normalized = await normalizeDataUrlImages(newNoteContent.value)
+          if (normalized.failed > 0) {
+            showRevisionNotice('One or more pasted images could not be uploaded. The note was not saved.')
+            return
+          }
           const note = await api('/api/notes', {
             method: 'POST',
             body: JSON.stringify({
               title: newNoteTitle.value.trim(),
-              content: newNoteContent.value.trim()
+              content: normalizeMarkdown(normalized.markdown)
             })
           })
           notes.value.unshift(note)
+          scheduleTagsRefresh()
           closeModal(true)
           deletedMask.value = null
         } else if (isOpenCanvas) {
@@ -1260,9 +2015,21 @@ export default {
     // Computed
     const sortedNotes = computed(() => {
       let filtered = notes.value
+      if (!showArchived.value) {
+        filtered = filtered.filter(n => !n.archivedAt)
+      }
       if (searchQuery.value.trim() && searchResults.value !== null) {
         const matchIds = new Set(searchResults.value)
-        filtered = notes.value.filter(n => matchIds.has(n.id))
+        filtered = filtered.filter(n => matchIds.has(n.id))
+      }
+      if (activeTag.value) {
+        const prefix = activeTag.value
+        filtered = filtered.filter(n => (n.tags || []).some(tag =>
+          tag === prefix || tag.startsWith(prefix + '/')
+        ))
+      }
+      if (untaggedOnly.value) {
+        filtered = filtered.filter(n => !(n.tags || []).length)
       }
       return [...filtered].sort((a, b) => {
         let valA, valB
@@ -1279,6 +2046,95 @@ export default {
         return 0
       })
     })
+
+    const historyRevisionsNewest = computed(() => {
+      if (!historyData.value?.revisions) return []
+      return [...historyData.value.revisions].sort((a, b) => b.revisionNo - a.revisionNo)
+    })
+
+    // ── Markdown / internal-link helpers ──
+    function normalizeWikiTitle(value) {
+      return String(value || '')
+        .normalize('NFKC')
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim()
+    }
+
+    function resolveWikiLink(target, label) {
+      if (!target) return { noteId: null, status: 'broken', label }
+      let note = null
+      if (target.startsWith('note:')) {
+        const id = target.slice(5).trim()
+        note = notes.value.find(n => n.id === id) || null
+      } else {
+        const wanted = normalizeWikiTitle(target)
+        const matches = notes.value.filter((n) => {
+          const title = normalizeWikiTitle(n.title)
+          const display = normalizeWikiTitle(n.displayTitle || getDisplayTitle(n))
+          return wanted && (wanted === title || wanted === display)
+        })
+        if (matches.length === 1) note = matches[0]
+      }
+      if (!note) return { noteId: null, status: 'broken', label: label || target }
+      return {
+        noteId: note.id,
+        status: note.archivedAt ? 'archived' : 'ok',
+        label: label || target
+      }
+    }
+
+    const renderedPreview = computed(() => renderMarkdown(
+      newNoteContent.value,
+      { resolveLink: resolveWikiLink }
+    ))
+
+    function renderContent(content) {
+      return renderMarkdown(content || '', { resolveLink: resolveWikiLink })
+    }
+
+    function openNoteLink(linkEl) {
+      if (!linkEl) return
+      const id = linkEl.getAttribute('data-note-id')
+      const label = linkEl.getAttribute('data-note-label') || linkEl.textContent || 'note'
+      if (!id) {
+        showRevisionNotice(`Unresolved link: ${label}`)
+        return
+      }
+      const note = notes.value.find(n => n.id === id)
+      if (!note) {
+        showRevisionNotice(`Linked note not found: ${label}`)
+        return
+      }
+      if (note.archivedAt) {
+        showRevisionNotice('The linked note is archived. Restore it to open it.')
+        return
+      }
+      if (editingId.value === id && isModalOpen.value) return
+      if (isModalOpen.value && hasUnsavedChanges()) {
+        if (!window.confirm('Discard unsaved changes and open the linked note?')) return
+      }
+      if (isModalOpen.value) closeModal(true)
+      nextTick(() => {
+        if (note.type === 'canvas') openCanvasNote(note)
+        else startEditing(note)
+      })
+    }
+
+    function onContentClick(event) {
+      const link = event.target.closest('.note-link')
+      if (!link) return
+      event.stopPropagation()
+      event.preventDefault()
+      openNoteLink(link)
+    }
+
+    function onPreviewClick(event) {
+      const link = event.target.closest('.note-link')
+      if (!link) return
+      event.preventDefault()
+      openNoteLink(link)
+    }
 
     // Utilities
     const formatDate = (isoString) => {
@@ -1312,12 +2168,28 @@ export default {
       newNoteTitle,
       newNoteContent,
       editingId,
+      editingBaseRevisionId,
+      editingRevisionNo,
+      revisionNotice,
+      dismissRevisionNotice,
       sortedNotes,
       addNote,
       startEditing,
       saveEdit,
       formatDate,
       getDisplayTitle,
+      // Revision history
+      historyOpen,
+      historyLoading,
+      historyError,
+      historyData,
+      historyPreview,
+      historyRevisionsNewest,
+      openHistory,
+      closeHistory,
+      viewRevision,
+      restoreRevision,
+      promoteRevision,
       // Modal/Shortcuts
       isModalOpen,
       modalSize,
@@ -1346,10 +2218,48 @@ export default {
       sortBy,
       sortOrder,
       selectedNoteIds,
+      showArchived,
+      toggleShowArchived,
+      restoreArchivedNote,
       toggleSelect,
       selectAll,
       deselectAll,
       handleCardClick,
+      // Tags / relationships
+      tagsTree,
+      tagSidebarOpen,
+      activeTag,
+      untaggedOnly,
+      selectTag,
+      clearTag,
+      graphOpen,
+      graphData,
+      graphLoading,
+      graphError,
+      graphCenter,
+      graphDepth,
+      graphIncludeUnresolved,
+      openGraph,
+      refreshGraph,
+      openGraphNode,
+      backlinksOpen,
+      backlinks,
+      backlinksLoading,
+      backlinksError,
+      openBacklinks,
+      openBacklinkSource,
+      // MCP settings
+      mcpSettingsOpen,
+      mcpTokens,
+      mcpTokenName,
+      mcpNewToken,
+      mcpTokenError,
+      mcpTokenLoading,
+      mcpEndpoint,
+      openMcpSettings,
+      createMcpToken,
+      revokeMcpToken,
+      copyMcpToken,
       // WebSocket
       wsConnected,
       wsConnecting,
@@ -1391,6 +2301,10 @@ export default {
       cleanupImages,
       triggerImageUpload,
       // Text formatting toolbar
+      editorMode,
+      markdownTextarea,
+      renderedPreview,
+      setEditorMode,
       formatBold,
       formatItalic,
       insertLink,
@@ -1399,9 +2313,12 @@ export default {
       onEditorInput,
       onEditorKeydown,
       onEditorPaste,
+      onMarkdownPaste,
       onEditorFocus,
       onEditorBlur,
       onEditorClick,
+      onContentClick,
+      onPreviewClick,
       renderContent
     }
 
@@ -1409,46 +2326,7 @@ export default {
     function serializeEditorToMarkdown() {
       const el = imageEditor.value
       if (!el) return newNoteContent.value
-
-      function serialize(node) {
-        if (node.nodeType === 3) return node.textContent
-        if (node.nodeType !== 1) return ''
-        const tag = node.tagName
-
-        if (tag === 'IMG') {
-          const md = node.getAttribute('data-md') || `![${node.alt || 'image'}](${node.src || ''})`
-          const w = node.getAttribute('data-width')
-          return w ? md.replace(/\{width=\d+\}$/, '') + `{width=${w}}` : md
-        }
-        if (tag === 'BR') return '\n'
-        if (tag === 'DIV') {
-          let result = ''
-          for (const child of node.childNodes) result += serialize(child)
-          return result + '\n'
-        }
-        if (tag === 'B' || tag === 'STRONG') {
-          let inner = ''
-          for (const child of node.childNodes) inner += serialize(child)
-          return `**${inner}**`
-        }
-        if (tag === 'I' || tag === 'EM') {
-          let inner = ''
-          for (const child of node.childNodes) inner += serialize(child)
-          return `*${inner}*`
-        }
-        if (tag === 'A') {
-          let inner = ''
-          for (const child of node.childNodes) inner += serialize(child)
-          return `[${inner}](${node.href || ''})`
-        }
-        let result = ''
-        for (const child of node.childNodes) result += serialize(child)
-        return result
-      }
-
-      let md = ''
-      for (const child of el.childNodes) md += serialize(child)
-      return md.replace(/^\n+/, '').replace(/\n+$/, '')
+      return serializeEditorRoot(el)
     }
 
     function isCursorBeforeImage() {
@@ -1561,15 +2439,23 @@ export default {
     }
 
     function onEditorFocus() {
-      // Re-render any remaining markdown images when editor gains focus
+      // Re-render any remaining markdown images when editor gains focus.
       const text = newNoteContent.value
-      if (text && text.includes('![')) {
+      const hasImages = imageEditor.value?.querySelector('img')
+      if (text && text.includes('![') && !hasImages) {
         requestAnimationFrame(() => renderEditorContent())
       }
     }
 
     // ── Image click-to-select and resize ──
     function onEditorClick(e) {
+      const link = e.target.closest('.note-link')
+      if (link && imageEditor.value?.contains(link)) {
+        e.preventDefault()
+        e.stopPropagation()
+        openNoteLink(link)
+        return
+      }
       const img = e.target.closest('img')
       if (img && imageEditor.value?.contains(img)) {
         e.preventDefault()
@@ -1725,11 +2611,11 @@ export default {
       newNoteContent.value = serializeEditorToMarkdown()
     }
 
-    async function uploadImageFile(file) {
+    async function uploadImageBlob(blob, filename = 'pasted-image.png') {
       imageUploading.value = true
       try {
         const formData = new FormData()
-        formData.append('image', file)
+        formData.append('image', blob, filename)
         const headers = {}
         if (runtimeToken) headers['X-Auth-Token'] = runtimeToken
         const res = await fetch(`${API_BASE}/api/images`, {
@@ -1738,8 +2624,7 @@ export default {
           body: formData
         })
         if (!res.ok) throw new Error('Upload failed')
-        const data = await res.json()
-        return `![image](${data.url})`
+        return await res.json()
       } catch (e) {
         console.error('Image upload failed:', e)
         return null
@@ -1748,21 +2633,76 @@ export default {
       }
     }
 
+    async function uploadImageFile(file) {
+      const data = await uploadImageBlob(file, file.name || 'image.png')
+      return data ? `![image](${data.url})` : null
+    }
+
+    async function uploadDataUrlImage(dataURL) {
+      try {
+        const res = await fetch(dataURL)
+        const blob = await res.blob()
+        const data = await uploadImageBlob(blob, 'pasted-image.png')
+        return data?.url || null
+      } catch (e) {
+        console.error('Data URL image upload failed:', e)
+        return null
+      }
+    }
+
+    /**
+     * Rewrite any remaining data:image image refs to /api/images URLs.
+     * Returns { markdown, changed }. Upload failures keep the original ref.
+     */
+    async function normalizeDataUrlImages(markdown) {
+      const source = String(markdown || '')
+      const regex = /!\[([^\]]*)\]\((data:image\/[^)]+)\)/g
+      let result = ''
+      let lastIndex = 0
+      let match
+      let changed = false
+      let failed = 0
+      while ((match = regex.exec(source)) !== null) {
+        result += source.slice(lastIndex, match.index)
+        const url = await uploadDataUrlImage(match[2])
+        if (url) {
+          result += `![${match[1]}](${url})`
+          changed = true
+        } else {
+          failed += 1
+          result += match[0]
+        }
+        lastIndex = match.index + match[0].length
+      }
+      result += source.slice(lastIndex)
+      return { markdown: changed ? result : source, changed, failed }
+    }
+
     function insertImageInEditor(mdRef) {
+      if (!mdRef) return
+      if (editorMode.value === 'markdown') {
+        insertMarkdownAtCursor(mdRef)
+        return
+      }
+      if (editorMode.value === 'preview') {
+        setEditorMode('write')
+        nextTick(() => insertImageInEditor(mdRef))
+        return
+      }
       const el = imageEditor.value
       if (!el) return
       el.focus()
       const sel = window.getSelection()
-      if (!sel) return
-      const imgHTML = markdownToHTML(mdRef)
+      if (!sel || !sel.rangeCount) return
+      const html = renderMarkdown(mdRef, { resolveLink: resolveWikiLink })
       const temp = document.createElement('div')
-      temp.innerHTML = imgHTML
-      const imgNode = temp.firstChild
+      temp.innerHTML = html
+      const imgNode = temp.querySelector('img')
       if (!imgNode) return
       const range = sel.getRangeAt(0)
       range.deleteContents()
       range.insertNode(imgNode)
-      // Place cursor after the image
+      attachImageErrorHandlers(el)
       const afterRange = document.createRange()
       afterRange.setStartAfter(imgNode)
       afterRange.collapse(true)
@@ -1793,39 +2733,42 @@ export default {
           return
         }
       }
+
+      const html = e.clipboardData?.getData('text/html') || ''
+      const text = e.clipboardData?.getData('text/plain') || ''
+      if (!html && !text) return
+      e.preventDefault()
+      let markdown = html ? htmlToMarkdown(html) : normalizePlainText(text)
+      if (!markdown.trim()) return
+      markdown = (await normalizeDataUrlImages(markdown)).markdown
+      insertMarkdownAsRich(markdown)
     }
 
-    // Gallery rendering (skip broken images)
-    function renderContent(content) {
-      if (!content) return ''
-      const escaped = content
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-      return escaped
-        // Images: ![alt](url){width=N}
-        .replace(
-          /!\[([^\]]*)\]\(([^)]+)\)(?:\{width=(\d+)\})?/g,
-          (match, alt, src, width) => {
-            const style = width
-              ? `max-width:none;width:${width}px;border-radius:4px;margin:4px 0`
-              : 'max-width:100%;border-radius:4px;margin:4px 0'
-            return `<img src="${src}" alt="${alt}" style="${style}" onerror="this.style.display='none'">`
+    async function onMarkdownPaste(e) {
+      const items = e.clipboardData?.items
+      if (!items) return
+      for (const item of items) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault()
+          const file = item.getAsFile()
+          if (file) {
+            const mdRef = await uploadImageFile(file)
+            if (mdRef) insertMarkdownAtCursor(mdRef)
           }
-        )
-        // Checkboxes: "- [ ] " → unchecked ☐, "- [x] " → checked ☑
-        .replace(/(^|\n)[ \t]*- \[ \] /g, '$1☐ ')
-        .replace(/(^|\n)[ \t]*- \[[xX]\] /g, '$1☑ ')
-        // Bold
-        .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
-        // Italic (avoid eating image alt's already consumed above)
-        .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
-        // Links: [text](url)
-        .replace(/\[([^\]]+)\]\(([^)]+)\)/g,
-          '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
-        .replace(/\n/g, '<br>')
+          return
+        }
+      }
+
+      const html = e.clipboardData?.getData('text/html') || ''
+      const text = e.clipboardData?.getData('text/plain') || ''
+      if (!html && !text) return
+      e.preventDefault()
+      let markdown = html ? htmlToMarkdown(html) : normalizePlainText(text)
+      markdown = (await normalizeDataUrlImages(markdown)).markdown
+      insertMarkdownAtCursor(markdown)
     }
+
+    // Gallery rendering is handled by the shared sanitised markdown renderer.
 
     // Image garbage collection
     async function cleanupImages() {
@@ -2131,6 +3074,69 @@ main {
   padding: 2rem;
 }
 
+.workspace {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.workspace-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.search-toggle-btn.active {
+  background: #e8f0fe;
+  color: #1a73e8;
+}
+
+.tag-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-left: 0.5rem;
+  background: #e8f0fe;
+  color: #1a73e8;
+  border-radius: 999px;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.75rem;
+}
+
+.tag-filter-chip button {
+  border: none;
+  background: transparent;
+  color: #1a73e8;
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-bottom: 0.4rem;
+  flex-shrink: 0;
+}
+
+.tag-chip {
+  border: 1px solid #d2e3fc;
+  background: #f1f6ff;
+  color: #1a64c7;
+  border-radius: 999px;
+  padding: 0.05rem 0.4rem;
+  font-size: 0.65rem;
+  cursor: pointer;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag-chip:hover {
+  background: #e2edff;
+}
+
 .note-form {
   background: #fff;
   border: 1px solid #e8eaed;
@@ -2346,6 +3352,43 @@ main {
   outline: 2px solid #1a73e8;
 }
 
+.note-card.archived {
+  opacity: 0.72;
+  background: #f8f9fa;
+  border-style: dashed;
+}
+
+.restore-btn {
+  border: 1px solid #dadce0;
+  background: #fff;
+  color: #1a73e8;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  padding: 0.15rem 0.45rem;
+  cursor: pointer;
+}
+
+.restore-btn:hover {
+  background: #e8f0fe;
+}
+
+.archived-toggle-btn {
+  border: 1px solid #dadce0;
+  background: #fff;
+  color: #5f6368;
+  border-radius: 4px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  margin-right: 0.5rem;
+}
+
+.archived-toggle-btn.active {
+  background: #e8f0fe;
+  border-color: #1a73e8;
+  color: #1a73e8;
+}
+
 .card-toolbar {
   display: flex;
   align-items: center;
@@ -2372,8 +3415,8 @@ main {
   flex-shrink: 0;
 }
 
-.note-content p {
-  white-space: pre-wrap;
+.note-preview {
+  white-space: normal;
   word-break: break-word;
   color: #202124;
   line-height: 1.5;
@@ -2385,17 +3428,110 @@ main {
   scrollbar-color: #dadce0 transparent;
 }
 
-.note-content p::-webkit-scrollbar {
+.note-preview::-webkit-scrollbar,
+.markdown-preview::-webkit-scrollbar {
   width: 4px;
 }
 
-.note-content p::-webkit-scrollbar-track {
+.note-preview::-webkit-scrollbar-track,
+.markdown-preview::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.note-content p::-webkit-scrollbar-thumb {
+.note-preview::-webkit-scrollbar-thumb,
+.markdown-preview::-webkit-scrollbar-thumb {
   background-color: #dadce0;
   border-radius: 2px;
+}
+
+/* Shared rendered-markdown typography */
+.note-preview,
+.markdown-preview {
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.note-preview h1,
+.markdown-preview h1 { font-size: 1.35rem; margin: 0.6rem 0 0.4rem; }
+.note-preview h2,
+.markdown-preview h2 { font-size: 1.2rem; margin: 0.55rem 0 0.35rem; }
+.note-preview h3,
+.markdown-preview h3 { font-size: 1.05rem; margin: 0.5rem 0 0.3rem; }
+.note-preview h4,
+.note-preview h5,
+.note-preview h6,
+.markdown-preview h4,
+.markdown-preview h5,
+.markdown-preview h6 { font-size: 0.95rem; margin: 0.45rem 0 0.25rem; }
+.note-preview p,
+.markdown-preview p { margin: 0.35rem 0; }
+.note-preview ul,
+.note-preview ol,
+.markdown-preview ul,
+.markdown-preview ol { padding-left: 1.25rem; margin: 0.35rem 0; }
+.note-preview li,
+.markdown-preview li { margin: 0.1rem 0; }
+.note-preview blockquote,
+.markdown-preview blockquote {
+  margin: 0.4rem 0;
+  padding-left: 0.75rem;
+  border-left: 3px solid #dadce0;
+  color: #5f6368;
+}
+.note-preview pre,
+.markdown-preview pre {
+  background: #f8f9fa;
+  border-radius: 6px;
+  padding: 0.6rem;
+  overflow-x: auto;
+  font-size: 0.78rem;
+  white-space: pre;
+}
+.note-preview code,
+.markdown-preview code {
+  background: #f1f3f4;
+  border-radius: 3px;
+  padding: 0.05rem 0.25rem;
+  font-size: 0.82em;
+}
+.note-preview pre code,
+.markdown-preview pre code {
+  background: transparent;
+  padding: 0;
+}
+.note-preview img,
+.markdown-preview img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 4px;
+  margin: 0.25rem 0;
+}
+.note-preview table,
+.markdown-preview table {
+  border-collapse: collapse;
+  margin: 0.4rem 0;
+  max-width: 100%;
+}
+.note-preview th,
+.note-preview td,
+.markdown-preview th,
+.markdown-preview td {
+  border: 1px solid #dadce0;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.8rem;
+}
+.note-preview a,
+.markdown-preview a { color: #1a73e8; }
+
+.note-link {
+  color: #1a73e8;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.note-link--broken {
+  color: #d93025;
+  text-decoration: underline dashed;
+  cursor: help;
 }
 
 .note-date {
@@ -2574,6 +3710,178 @@ main {
   color: #202124;
 }
 
+.modal-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.revision-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: #e8f0fe;
+  color: #1a73e8;
+  font-size: 0.7rem;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.revision-badge-branch {
+  background: #fef7e0;
+  color: #b06000;
+}
+
+.history-btn {
+  border: 1px solid #dadce0;
+  background: #fff;
+  color: #5f6368;
+  border-radius: 6px;
+  padding: 0.35rem 0.65rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.history-btn:hover {
+  background: #f8f9fa;
+}
+
+.revision-toast {
+  position: fixed;
+  right: 1.5rem;
+  bottom: 1.5rem;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  max-width: min(520px, 90vw);
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: #202124;
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+  font-size: 0.875rem;
+}
+
+.revision-toast button {
+  border: none;
+  background: transparent;
+  color: #fff;
+  font-size: 1.1rem;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.history-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 1rem;
+  background: rgba(32, 33, 36, 0.35);
+  border-radius: 12px;
+}
+
+.history-panel {
+  width: 100%;
+  max-height: 100%;
+  overflow-y: auto;
+  background: #fff;
+  border-radius: 10px;
+  padding: 1rem;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #f1f3f4;
+  padding-bottom: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.history-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.history-loading,
+.history-actor {
+  color: #80868b;
+  font-size: 0.8rem;
+}
+
+.history-item {
+  border-bottom: 1px solid #f1f3f4;
+  padding: 0.6rem 0;
+}
+
+.history-item-head {
+  background: #f8fafd;
+  margin: 0 -0.5rem;
+  padding: 0.6rem 0.5rem;
+  border-radius: 6px;
+}
+
+.history-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: #5f6368;
+}
+
+.history-title {
+  margin: 0.25rem 0;
+  font-weight: 600;
+  color: #202124;
+}
+
+.history-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.history-actions button {
+  border: 1px solid #dadce0;
+  background: #fff;
+  color: #5f6368;
+  border-radius: 4px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.history-actions button:hover {
+  background: #f8f9fa;
+}
+
+.history-preview {
+  margin-top: 1rem;
+  border-top: 1px solid #f1f3f4;
+  padding-top: 0.75rem;
+}
+
+.history-preview h4 {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+}
+
+.history-preview pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 18rem;
+  overflow-y: auto;
+  background: #f8f9fa;
+  border-radius: 6px;
+  padding: 0.75rem;
+  font-size: 0.8rem;
+}
+
 .close-modal-btn {
   border: none;
   background: transparent;
@@ -2627,6 +3935,19 @@ main {
   flex: 1;
   min-height: 100px;
   overflow-y: auto;
+}
+
+.note-form-modal textarea.markdown-source {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  resize: none;
+  white-space: pre;
+}
+
+.note-form-modal .markdown-preview {
+  background: #fafafa;
+  cursor: default;
 }
 
 .note-form-modal textarea {
@@ -2750,6 +4071,41 @@ main {
   padding: 0.25rem 0;
   margin-bottom: 0.25rem;
   border-bottom: 1px solid #ededed;
+  flex-wrap: wrap;
+}
+
+.editor-mode-switch {
+  display: inline-flex;
+  border: 1px solid #dadce0;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.mode-btn {
+  border: none;
+  background: #fff;
+  color: #5f6368;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  border-right: 1px solid #ededed;
+}
+
+.mode-btn:last-child {
+  border-right: none;
+}
+
+.mode-btn.active {
+  background: #e8f0fe;
+  color: #1a73e8;
+  font-weight: 600;
+}
+
+.toolbar-divider {
+  width: 1px;
+  align-self: stretch;
+  background: #ededed;
+  margin: 0 0.25rem;
 }
 
 .toolbar-spacer {
@@ -3086,9 +4442,107 @@ main {
   pointer-events: none;
 }
 
+.mcp-settings-modal {
+  background: #fff;
+  border-radius: 12px;
+  padding: 1.25rem;
+  width: min(620px, 92vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+}
+
+.mcp-hint {
+  color: #5f6368;
+  font-size: 0.8rem;
+  line-height: 1.5;
+}
+
+.mcp-token-form {
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.mcp-token-form input {
+  flex: 1;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid #dadce0;
+  border-radius: 5px;
+  font-size: 0.85rem;
+}
+
+.mcp-token-reveal {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  background: #fef7e0;
+  border: 1px solid #f1e0a8;
+  border-radius: 6px;
+  padding: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.mcp-token-reveal code {
+  flex: 1;
+  word-break: break-all;
+  font-size: 0.75rem;
+}
+
+.mcp-token-reveal button {
+  border: 1px solid #dadce0;
+  background: #fff;
+  border-radius: 4px;
+  padding: 0.2rem 0.5rem;
+  cursor: pointer;
+  font-size: 0.75rem;
+}
+
+.mcp-token-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.mcp-token-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border: 1px solid #ededed;
+  border-radius: 6px;
+  padding: 0.45rem 0.6rem;
+}
+
+.mcp-token-row small {
+  display: block;
+  color: #80868b;
+  font-size: 0.7rem;
+  margin-top: 0.1rem;
+}
+
+.mcp-config {
+  margin-top: 0.85rem;
+  font-size: 0.8rem;
+  color: #5f6368;
+}
+
+.mcp-config pre {
+  background: #f8f9fa;
+  border-radius: 6px;
+  padding: 0.6rem;
+  overflow-x: auto;
+  font-size: 0.72rem;
+}
+
 @media (max-width: 600px) {
   main {
     padding: 1rem;
+  }
+
+  .workspace {
+    flex-direction: column;
   }
 
   .notes-grid {

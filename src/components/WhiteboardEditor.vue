@@ -10,6 +10,12 @@
       />
       <div class="wb-header-actions">
         <span v-if="syncStatus" class="wb-save-status">{{ syncStatus === 'saved' ? '✓ Saved' : syncStatus === 'saving' ? '○ Saving...' : syncStatus === 'loaded' ? '✓ Loaded' : syncStatus }}</span>
+        <span v-if="isRendering" class="wb-render-status">
+          Rendering {{ renderProgress.current }}/{{ renderProgress.total }}
+        </span>
+        <button @click="pagesOpen = !pagesOpen" class="wb-pages-btn" :class="{ active: pagesOpen }" title="Whiteboard pages">
+          Pages<span v-if="latestRender?.tileCount" class="wb-pages-count">{{ latestRender.tileCount }}</span>
+        </button>
         <button @click="debugOpen = !debugOpen" class="wb-debug-btn" :title="debugOpen ? 'Hide pen inspector' : 'Pen event inspector'">
           🖊
         </button>
@@ -19,6 +25,50 @@
       </div>
     </header>
     <div ref="canvasContainer" class="wb-canvas-container"></div>
+
+    <!-- Page images drawer -->
+    <aside v-if="pagesOpen" class="wb-pages-panel">
+      <div class="wb-pages-header">
+        <h3>Whiteboard pages</h3>
+        <button type="button" class="wb-pages-close" @click="pagesOpen = false">×</button>
+      </div>
+
+      <p v-if="isRendering" class="wb-pages-status">
+        Rendering page {{ renderProgress.current }} / {{ renderProgress.total }}…
+      </p>
+      <p v-else-if="renderError" class="wb-pages-error">{{ renderError }}</p>
+      <p v-else-if="renderLoading" class="wb-pages-status">Loading pages…</p>
+      <p v-else-if="!latestRender?.tileCount" class="wb-pages-status">
+        No pages yet. Click Render now to export this board.
+      </p>
+
+      <div v-if="latestRender?.stale && latestRender?.tileCount" class="wb-pages-stale">
+        Stale — the board changed after these pages were rendered.
+      </div>
+
+      <div v-if="latestRender?.tiles?.length" class="wb-pages-grid">
+        <figure v-for="tile in latestRender.tiles" :key="tile.pageIndex" class="wb-page-card">
+          <a :href="tile.url" target="_blank" rel="noopener">
+            <img :src="tile.url" :alt="`Whiteboard page ${tile.pageIndex + 1}`">
+          </a>
+          <figcaption>
+            Page {{ tile.pageIndex + 1 }}
+            <span v-if="tile.clipped" class="wb-page-clipped">clipped</span>
+          </figcaption>
+        </figure>
+      </div>
+
+      <div class="wb-pages-actions">
+        <button type="button" class="wb-pages-primary" :disabled="isRendering" @click="renderNow">
+          {{ isRendering ? 'Rendering…' : 'Render now' }}
+        </button>
+        <button type="button" :disabled="!latestRender?.tileCount || isRendering" @click="copyPagesMarkdown">Copy markdown</button>
+        <button type="button" :disabled="!latestRender?.tileCount || isRendering" @click="downloadPages">Download all</button>
+      </div>
+      <small v-if="latestRender?.renderedAt" class="wb-pages-time">
+        Rendered {{ formatRenderedAt(latestRender.renderedAt) }}
+      </small>
+    </aside>
 
     <!-- Pen event diagnostic panel -->
     <div v-if="debugOpen" class="debug-panel">
@@ -83,10 +133,11 @@
 import { ref, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import React from 'react'
 import { createRoot } from 'react-dom/client'
-import { Excalidraw, exportToBlob } from '@excalidraw/excalidraw'
+import { Excalidraw, exportToBlob, getCommonBounds, getSceneVersion } from '@excalidraw/excalidraw'
 import '@excalidraw/excalidraw/index.css'
 import { createCollabManager } from '../collab/collabManager.js'
 import { DRAWING_TOOLS, isFingerTouch, shouldUseHandTool } from '../utils/whiteboardTouch.js'
+import { planPages } from '../utils/whiteboardTiles.js'
 
 export default {
   name: 'WhiteboardEditor',
@@ -102,6 +153,12 @@ export default {
     const canvasContainer = ref(null)
     const editorRoot = ref(null)
     const syncStatus = ref('')   // 'saved' | 'saving' | 'loaded' | ''
+    const pagesOpen = ref(false)
+    const latestRender = ref(null)
+    const renderLoading = ref(false)
+    const isRendering = ref(false)
+    const renderProgress = ref({ current: 0, total: 0 })
+    const renderError = ref('')
     const isFullscreen = ref(false)
     const debugOpen = ref(false)
     const debugLog = ref([])
@@ -198,6 +255,15 @@ export default {
       onNoteGone(goneNoteId) {
         // Server says the note we're editing no longer exists. Surface to parent.
         emit('note-gone', goneNoteId)
+      },
+      onRenderRequest(message) {
+        Promise.resolve()
+          .then(() => collab.checkpoint())
+          .then(() => renderPages({ requestId: message.requestId, reason: 'request' }))
+          .catch((e) => { console.error('Render request failed:', e) })
+      },
+      onRenderUpdated() {
+        loadLatestRender()
       }
     })
 
@@ -341,7 +407,15 @@ export default {
       }
     }
 
-    function goBack() {
+    async function goBack() {
+      try {
+        await collab.checkpoint()
+      } catch (_) { /* best effort */ }
+      try {
+        if (!latestRender.value || latestRender.value.stale) {
+          await renderPages({ reason: 'leave' })
+        }
+      } catch (_) { /* leave even if rendering fails */ }
       collab.detach()
       cleanup()
       emit('back')
@@ -381,8 +455,188 @@ export default {
       return collab.getCurrentScene ? collab.getCurrentScene() : { elements: [], files: {} }
     }
 
+    // ── Whiteboard page rendering ──
+    function formatRenderedAt(iso) {
+      if (!iso) return ''
+      const date = new Date(iso)
+      if (Number.isNaN(date.getTime())) return ''
+      return date.toLocaleString()
+    }
+
+    async function loadLatestRender() {
+      renderLoading.value = true
+      try {
+        const res = await fetch(`/api/notes/${props.noteId}/renders/latest`, {
+          credentials: 'same-origin'
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        latestRender.value = await res.json()
+      } catch (e) {
+        console.error('Failed to load whiteboard pages:', e)
+        latestRender.value = null
+      } finally {
+        renderLoading.value = false
+      }
+    }
+
+    async function uploadPageBlob(blob, pageNumber) {
+      const formData = new FormData()
+      formData.append('image', blob, `whiteboard-page-${pageNumber}.png`)
+      const res = await fetch('/api/images', {
+        method: 'POST',
+        credentials: 'same-origin',
+        body: formData
+      })
+      if (!res.ok) throw new Error(`Image upload failed (HTTP ${res.status})`)
+      return await res.json()
+    }
+
+    async function blobSize(blob) {
+      try {
+        if (typeof createImageBitmap === 'function') {
+          const bitmap = await createImageBitmap(blob)
+          const size = { width: bitmap.width, height: bitmap.height }
+          bitmap.close?.()
+          return size
+        }
+      } catch (_) { /* best effort */ }
+      return { width: null, height: null }
+    }
+
+    async function postManifest(tiles, requestId) {
+      const res = await fetch(`/api/notes/${props.noteId}/renders`, {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tiles,
+          source: 'client',
+          rendererVersion: 1,
+          requestId: requestId || null
+        })
+      })
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        throw new Error(`Failed to save pages (HTTP ${res.status}) ${text}`.trim())
+      }
+      return await res.json()
+    }
+
+    async function renderPages({ requestId = null, reason = 'manual' } = {}) {
+      if (isRendering.value) return
+      const scene = getCurrentScene()
+      const elements = (scene.elements || []).filter(el => !el.isDeleted)
+      const baseVersion = getSceneVersion(elements)
+      const pages = planPages(elements, {
+        getBounds: (el) => {
+          try {
+            const bounds = getCommonBounds([el])
+            if (bounds && bounds.every(Number.isFinite)) return bounds
+          } catch (_) { /* fallback below */ }
+          const x = Number(el.x) || 0
+          const y = Number(el.y) || 0
+          return [x, y, x + (Number(el.width) || 0), y + (Number(el.height) || 0)]
+        },
+        gap: 48,
+        maxPageW: 1600,
+        maxPageH: 1600
+      })
+
+      isRendering.value = true
+      renderProgress.value = { current: 0, total: pages.length }
+      renderError.value = ''
+      try {
+        const byId = new Map(elements.map(el => [el.id, el]))
+        const appState = excalidrawAPI?.getAppState?.() || {}
+        const files = scene.files || {}
+        const tiles = []
+
+        for (const page of pages) {
+          const latestScene = getCurrentScene()
+          const latestElements = (latestScene.elements || []).filter(el => !el.isDeleted)
+          if (getSceneVersion(latestElements) !== baseVersion) {
+            throw new Error('Scene changed while rendering; pages were not saved. Try again.')
+          }
+          const pageElements = page.elementIds.map(id => byId.get(id)).filter(Boolean)
+          const blob = await exportToBlob({
+            elements: pageElements,
+            appState: {
+              exportBackground: true,
+              viewBackgroundColor: appState.viewBackgroundColor || '#ffffff',
+              exportWithDarkMode: false
+            },
+            files,
+            mimeType: 'image/png',
+            maxWidthOrHeight: 2000,
+            exportPadding: 24
+          })
+          const size = await blobSize(blob)
+          const uploaded = await uploadPageBlob(blob, page.pageIndex + 1)
+          tiles.push({
+            pageIndex: page.pageIndex,
+            hash: uploaded.hash,
+            ext: uploaded.ext || 'png',
+            width: size.width,
+            height: size.height,
+            bbox: page.bbox,
+            elementIds: page.elementIds,
+            clipped: !!page.clipped
+          })
+          renderProgress.value = { current: tiles.length, total: pages.length }
+        }
+
+        const manifest = await postManifest(tiles, requestId)
+        latestRender.value = manifest
+        renderProgress.value = { current: tiles.length, total: tiles.length }
+        if (reason === 'request') pagesOpen.value = false
+      } catch (e) {
+        console.error('Whiteboard page render failed:', e)
+        renderError.value = e.message || 'Render failed'
+        throw e
+      } finally {
+        isRendering.value = false
+      }
+    }
+
+    async function renderNow() {
+      try {
+        await collab.checkpoint()
+        await renderPages()
+      } catch (_) { /* renderError is set */ }
+    }
+
+    async function copyPagesMarkdown() {
+      const tiles = latestRender.value?.tiles || []
+      if (tiles.length === 0) return
+      const markdown = tiles
+        .map(tile => `![Whiteboard page ${tile.pageIndex + 1}](${tile.url})`)
+        .join('\n')
+      try {
+        await navigator.clipboard.writeText(markdown)
+      } catch (_) {
+        const textarea = document.createElement('textarea')
+        textarea.value = markdown
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      }
+    }
+
+    function downloadPages() {
+      for (const tile of latestRender.value?.tiles || []) {
+        const anchor = document.createElement('a')
+        anchor.href = tile.url
+        anchor.download = `whiteboard-page-${tile.pageIndex + 1}.${tile.ext || 'png'}`
+        document.body.appendChild(anchor)
+        anchor.click()
+        anchor.remove()
+      }
+    }
+
     onMounted(async () => {
       await nextTick()
+      loadLatestRender()
       let initialData = null
       if (props.canvasData) {
         try {
@@ -501,7 +755,18 @@ export default {
       copyStatus,
       goBack,
       toggleFullscreen,
-      getCurrentScene
+      getCurrentScene,
+      pagesOpen,
+      latestRender,
+      renderLoading,
+      isRendering,
+      renderProgress,
+      renderError,
+      renderPages,
+      renderNow,
+      copyPagesMarkdown,
+      downloadPages,
+      formatRenderedAt
     }
   }
 }
@@ -579,6 +844,164 @@ export default {
 .wb-save-status {
   font-size: 0.8125rem;
   color: #1e8e3e;
+}
+
+.wb-render-status {
+  font-size: 0.75rem;
+  color: #1a73e8;
+}
+
+.wb-pages-btn {
+  padding: 0.35rem 0.75rem;
+  background: #f1f3f4;
+  color: #5f6368;
+  border: 1px solid #dadce0;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.wb-pages-btn.active {
+  background: #e8f0fe;
+  border-color: #1a73e8;
+  color: #1a73e8;
+}
+
+.wb-pages-count {
+  background: #1a73e8;
+  color: #fff;
+  border-radius: 999px;
+  font-size: 0.65rem;
+  padding: 0.05rem 0.35rem;
+}
+
+.wb-pages-panel {
+  position: absolute;
+  top: 62px;
+  right: 12px;
+  width: min(420px, 92vw);
+  max-height: calc(100vh - 90px);
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid #dadce0;
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2);
+  padding: 0.85rem;
+  z-index: 120;
+}
+
+.wb-pages-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #f1f3f4;
+  padding-bottom: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+
+.wb-pages-header h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.wb-pages-close {
+  border: none;
+  background: transparent;
+  color: #80868b;
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+
+.wb-pages-status {
+  color: #80868b;
+  font-size: 0.8rem;
+  padding: 0.5rem 0;
+}
+
+.wb-pages-error {
+  color: #d93025;
+  font-size: 0.8rem;
+}
+
+.wb-pages-stale {
+  background: #fef7e0;
+  color: #b06000;
+  border-radius: 5px;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.wb-pages-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.5rem;
+}
+
+.wb-page-card {
+  margin: 0;
+  border: 1px solid #ededed;
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fafafa;
+}
+
+.wb-page-card img {
+  width: 100%;
+  height: 110px;
+  object-fit: contain;
+  display: block;
+  background: #fff;
+}
+
+.wb-page-card figcaption {
+  font-size: 0.7rem;
+  color: #5f6368;
+  padding: 0.25rem 0.4rem;
+  display: flex;
+  justify-content: space-between;
+}
+
+.wb-page-clipped {
+  color: #d93025;
+}
+
+.wb-pages-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.7rem;
+}
+
+.wb-pages-actions button {
+  border: 1px solid #dadce0;
+  background: #fff;
+  color: #5f6368;
+  border-radius: 5px;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.wb-pages-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.wb-pages-actions .wb-pages-primary {
+  background: #1a73e8;
+  border-color: #1a73e8;
+  color: #fff;
+}
+
+.wb-pages-time {
+  display: block;
+  color: #80868b;
+  font-size: 0.7rem;
+  margin-top: 0.5rem;
 }
 
 .wb-save-status.error {

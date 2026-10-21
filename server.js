@@ -2,13 +2,41 @@ import express from 'express'
 import cors from 'cors'
 import fs from 'fs'
 import path from 'path'
-import crypto from 'crypto'
 import { fileURLToPath } from 'url'
+import { randomUUID } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 import { createServer } from 'http'
-import { DatabaseSync } from 'node:sqlite'
 import multer from 'multer'
+import { createMcpHandler } from '@modelcontextprotocol/server'
+import { toNodeHandler } from '@modelcontextprotocol/node'
 import { createSessionStore } from './src/server/sessionStore.js'
+import { openDatabase, runMigrations } from './src/server/db.js'
+import { createBaseSchema } from './src/server/schema.js'
+import {
+  ALLOWED_IMAGE_TYPES,
+  MIME_TO_EXT,
+  EXT_TO_MIME,
+  createImageStore,
+  imageMimeForExt
+} from './src/server/images.js'
+import { createImageRefService } from './src/server/services/imageRefs.js'
+import { createRevisionService } from './src/server/services/revisions.js'
+import { createNoteService } from './src/server/services/notes.js'
+import { createRenderService } from './src/server/services/renders.js'
+import { createTagService } from './src/server/services/tags.js'
+import { createLinkService } from './src/server/services/links.js'
+import { createSearchService } from './src/server/services/search.js'
+import { createTokenService } from './src/server/services/tokens.js'
+import { createMcpServer } from './src/mcp/createServer.js'
+import { createEventBus, EVENTS } from './src/server/events.js'
+import {
+  extractCanvasText,
+  indexNote,
+  rebuildFts
+} from './src/server/fts.js'
+import { migration001NoteThreads } from './src/server/migrations/001-note-threads.js'
+import { migration002RelationshipsAndTags } from './src/server/migrations/002-relationships-and-tags.js'
+import { migration003ApiTokens } from './src/server/migrations/003-api-tokens.js'
 
 import debugLib from 'debug'
 const log = debugLib('local-keep:server')
@@ -19,13 +47,19 @@ const __dirname = path.dirname(__filename)
 const app = express()
 const server = createServer(app)
 
-// Always use port 5173
-const PORT = 5173
-const DATA_DIR = path.join(__dirname, 'data')
+// Always default to port 5173; tests/deployments may override.
+const PORT = Number(process.env.PORT || 5173)
+const DATA_DIR = process.env.LOCAL_KEEP_DATA_DIR
+  ? path.resolve(process.env.LOCAL_KEEP_DATA_DIR)
+  : path.join(__dirname, 'data')
 const IMAGES_DIR = path.join(DATA_DIR, 'images')
+const BACKUPS_DIR = path.join(DATA_DIR, 'backups')
 const NOTES_FILE = path.join(DATA_DIR, 'notes.json')
 const PASSWORD_FILE = path.join(DATA_DIR, 'password.json')
 const DB_FILE = path.join(DATA_DIR, 'local-keep.db')
+const CHECKPOINT_MS = Number(process.env.LOCAL_KEEP_CHECKPOINT_MS || 5 * 60 * 1000)
+
+const imageStore = createImageStore({ imagesDir: IMAGES_DIR })
 
 // WebSocket clients storage: Map of token -> Set of WebSocket connections
 const clients = new Map()
@@ -40,7 +74,9 @@ function getOrCreateNoteState(noteId) {
       files: {},
       sessions: new Set(),
       pendingPersist: null,
-      _thumbnail: null
+      _thumbnail: null,
+      lastCheckpointAt: 0,
+      forceCheckpoint: false
     })
   }
   return noteStates.get(noteId)
@@ -49,7 +85,10 @@ function getOrCreateNoteState(noteId) {
 function loadNoteState(noteId) {
   const state = getOrCreateNoteState(noteId)
   if (state.elements.size > 0) return state  // already loaded
-  const note = db.prepare('SELECT canvasData, thumbnail FROM notes WHERE id = ?').get(noteId)
+  const note = db.prepare('SELECT canvasData, thumbnail, last_checkpoint_at FROM notes WHERE id = ?').get(noteId)
+  if (note && note.last_checkpoint_at) {
+    state.lastCheckpointAt = new Date(note.last_checkpoint_at).getTime() || 0
+  }
   if (note && note.canvasData) {
     try {
       const data = JSON.parse(note.canvasData)
@@ -105,37 +144,6 @@ function applyDelta(state, deltaElements, serverTs) {
   return changed
 }
 
-// Accepted image MIME types
-const ALLOWED_IMAGE_TYPES = new Set([
-  'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/svg+xml'
-])
-const MIME_TO_EXT = {
-  'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif',
-  'image/webp': 'webp', 'image/svg+xml': 'svg'
-}
-const EXT_TO_MIME = {
-  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
-  webp: 'image/webp', svg: 'image/svg+xml'
-}
-
-// Store an image file from base64 dataURL to disk, return { hash, ext, mimeType }
-function storeImageFromDataURL(dataURL) {
-  const match = dataURL.match(/^data:([^;]+);base64,(.+)$/)
-  if (!match) return null
-  const mimeType = match[1]
-  const b64 = match[2]
-  if (!ALLOWED_IMAGE_TYPES.has(mimeType)) return null
-  const ext = MIME_TO_EXT[mimeType] || 'bin'
-  const buffer = Buffer.from(b64, 'base64')
-  const hash = crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 16)
-  const filename = `${hash}.${ext}`
-  const filePath = path.join(IMAGES_DIR, filename)
-  if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, buffer)
-  }
-  return { hash, ext, mimeType }
-}
-
 // Merge incoming files from a delta into note state, extracting base64 to disk.
 // Preserves Excalidraw-required fields (id, mimeType, dataURL, created) and
 // augments with hash/ext for content-addressed deduplication and serving.
@@ -144,7 +152,7 @@ function mergeFiles(state, incomingFiles) {
   for (const [fileId, fileData] of Object.entries(incomingFiles)) {
     if (fileData && fileData.dataURL) {
       // Client sent raw Excalidraw file with dataURL — extract to disk
-      const stored = storeImageFromDataURL(fileData.dataURL)
+      const stored = imageStore.storeImageFromDataURL(fileData.dataURL)
       if (stored) {
         state.files[fileId] = { ...fileData, ...stored }
       }
@@ -158,6 +166,11 @@ function mergeFiles(state, incomingFiles) {
 function persistNoteState(noteId) {
   const state = noteStates.get(noteId)
   if (!state) return
+  const noteRow = db.prepare('SELECT id, title, content, archived_at FROM notes WHERE id = ?').get(noteId)
+  if (!noteRow || noteRow.archived_at) {
+    clearNoteState(noteId)
+    return
+  }
   const elements = [...state.elements.values()]
   const cleanElements = elements.map(({ _collab_ts, ...el }) => el)
 
@@ -166,16 +179,12 @@ function persistNoteState(noteId) {
   // Excalidraw to render), so we augment without dropping it.
   for (const [fileId, fileData] of Object.entries(state.files || {})) {
     if (fileData && fileData.dataURL && !fileData.hash) {
-      const stored = storeImageFromDataURL(fileData.dataURL)
+      const stored = imageStore.storeImageFromDataURL(fileData.dataURL)
       if (stored) state.files[fileId] = { ...fileData, ...stored }
     }
   }
 
   const data = JSON.stringify({ elements: cleanElements, files: state.files || {} })
-  const canvasText = elements
-    .filter(el => el.type === 'text' && !el.isDeleted)
-    .map(el => el.text || '')
-    .join(' ')
   const updatedAt = new Date().toISOString()
   const thumbnail = state._thumbnail
   state._thumbnail = null
@@ -183,16 +192,44 @@ function persistNoteState(noteId) {
   db.prepare('UPDATE notes SET canvasData = ?, thumbnail = ?, updatedAt = ? WHERE id = ?')
     .run(data, thumbnail, updatedAt, noteId)
 
-  // Sync image references for this canvas note
-  const note = db.prepare('SELECT content FROM notes WHERE id = ?').get(noteId)
-  syncImageRefs(noteId, note?.content || '', data)
+  imageRefs.syncHeadRefs(noteId, noteRow.content || '', data)
 
   try {
-    db.prepare('DELETE FROM notes_fts WHERE note_id = ?').run(noteId)
-    const note = db.prepare('SELECT title, content FROM notes WHERE id = ?').get(noteId)
-    db.prepare('INSERT INTO notes_fts(note_id, title, content, canvas_text) VALUES (?, ?, ?, ?)')
-      .run(noteId, note?.title || '', note?.content || '', canvasText)
+    indexNote(db, {
+      noteId,
+      title: noteRow.title || '',
+      content: noteRow.content || '',
+      canvasText: extractCanvasText(data)
+    })
   } catch (e) { /* ignore FTS errors */ }
+
+  // Checkpoint only at meaningful boundaries (leave/manual/interval), never on
+  // every 500 ms delta. The revision service skips unchanged canvases.
+  const now = Date.now()
+  const due = state.forceCheckpoint ||
+    !state.lastCheckpointAt ||
+    now - state.lastCheckpointAt >= CHECKPOINT_MS
+  if (due) {
+    try {
+      const revision = revisions.checkpointCanvas({
+        noteId,
+        canvasData: data,
+        thumbnail,
+        actor: 'ui',
+        force: state.forceCheckpoint
+      })
+      // Throttle further attempts even when the scene is unchanged.
+      state.lastCheckpointAt = now
+      if (revision) {
+        log('checkpoint %s -> revision %s', noteId, revision.revision_no)
+      }
+    } catch (error) {
+      console.error('Whiteboard checkpoint failed:', error.message)
+    } finally {
+      state.forceCheckpoint = false
+    }
+  }
+
   broadcastNotes()
 }
 
@@ -217,87 +254,11 @@ function broadcastToNote(noteId, message, excludeWs = null) {
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { mode: 0o700 })
 }
-if (!fs.existsSync(IMAGES_DIR)) {
-  fs.mkdirSync(IMAGES_DIR, { mode: 0o700 })
-}
 
-// Open SQLite Database connection
-const db = new DatabaseSync(DB_FILE)
-
-// Setup Tables
-db.exec(`
-  CREATE TABLE IF NOT EXISTS password (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
-    hash TEXT NOT NULL
-  );
-`)
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS sessions (
-    sessionId TEXT PRIMARY KEY,
-    hash TEXT NOT NULL,
-    expiresAt INTEGER NOT NULL
-  );
-`)
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS notes (
-    id TEXT PRIMARY KEY,
-    title TEXT,
-    content TEXT,
-    type TEXT DEFAULT 'text',
-    canvasData TEXT,
-    thumbnail TEXT,
-    createdAt TEXT NOT NULL,
-    updatedAt TEXT NOT NULL
-  );
-`)
-
-// Migration: add columns if they don't exist (for existing DBs)
-for (const col of [
-  "ALTER TABLE notes ADD COLUMN type TEXT DEFAULT 'text'",
-  "ALTER TABLE notes ADD COLUMN canvasData TEXT",
-  "ALTER TABLE notes ADD COLUMN thumbnail TEXT"
-]) {
-  try { db.exec(col) } catch (e) { /* column already exists */ }
-}
-
-db.exec(`
-  CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
-    note_id, title, content, canvas_text,
-    tokenize='porter unicode61'
-  );
-`)
-
-// Image reference tracking table
-// Tracks which images are referenced by which notes, for garbage collection
-// NOTE: canvas notes store image refs via canvasData.files (hash references)
-// Text notes store image refs via content markdown: ![...](/api/images/<hash>.ext)
-db.exec(`
-  CREATE TABLE IF NOT EXISTS image_refs (
-    image_hash TEXT NOT NULL,
-    note_id TEXT NOT NULL,
-    PRIMARY KEY (image_hash, note_id)
-  );
-`)
-
-// Migration: add canvas_text column to FTS if missing
-try {
-  const ftsColumns = db.prepare("PRAGMA table_info('notes_fts')").all().map(c => c.name)
-  if (!ftsColumns.includes('canvas_text')) {
-    // Drop & recreate FTS with new column
-    db.exec('DROP TABLE IF EXISTS notes_fts')
-    db.exec(`
-      CREATE VIRTUAL TABLE notes_fts USING fts5(
-        note_id, title, content, canvas_text,
-        tokenize='porter unicode61'
-      );
-    `)
-    console.log('ℹ️  FTS table recreated with canvas_text column')
-  }
-} catch (e) {
-  console.error('⚠️ FTS migration error:', e.message)
-}
+// Open SQLite Database connection and create the pre-revision base schema.
+// Versioned migrations add the note-thread/revision layer below.
+const db = openDatabase(DB_FILE)
+createBaseSchema(db)
 
 // Session store: opaque, server-stored sessions signed via HMAC. Used for
 // persistent auth (cookie) and validated for both REST (cookie/X-Auth-Token)
@@ -305,58 +266,10 @@ try {
 const sessions = createSessionStore({ db, dataDir: DATA_DIR })
 sessions.hydrate()
 
-// Helper: extract text from canvasData JSON for FTS indexing
-function extractCanvasText(canvasData) {
-  if (!canvasData) return ''
-  try {
-    const data = typeof canvasData === 'string' ? JSON.parse(canvasData) : canvasData
-    const elements = data.elements || []
-    return elements
-      .filter(el => el.type === 'text' && !el.isDeleted)
-      .map(el => el.text || '')
-      .join(' ')
-  } catch { return '' }
-}
-
-// Helper: extract image hash references from note content and canvasData
-function extractImageRefs(noteId, content, canvasData) {
-  const hashes = new Set()
-  // From markdown content: ![...](/api/images/<hash>.ext)
-  if (content) {
-    const mdImgRegex = /!\[[^\]]*\]\(\/api\/images\/([a-f0-9]{16})\.[a-z]+\)/g
-    let match
-    while ((match = mdImgRegex.exec(content)) !== null) {
-      hashes.add(match[1])
-    }
-  }
-  // From canvas data: files with hash references
-  if (canvasData) {
-    try {
-      const data = typeof canvasData === 'string' ? JSON.parse(canvasData) : canvasData
-      for (const fileData of Object.values(data.files || {})) {
-        if (fileData && fileData.hash && /^[a-f0-9]{16}$/.test(fileData.hash)) {
-          hashes.add(fileData.hash)
-        }
-      }
-    } catch { /* ignore parse errors */ }
-  }
-  return hashes
-}
-
-// Sync image references for a note (delete old refs, insert new ones)
+// Compatibility wrapper for the whiteboard persist path; the canonical
+// implementation lives in the image-ref service.
 function syncImageRefs(noteId, content, canvasData) {
-  try {
-    db.prepare('DELETE FROM image_refs WHERE note_id = ?').run(noteId)
-    const hashes = extractImageRefs(noteId, content, canvasData)
-    if (hashes.size > 0) {
-      const insert = db.prepare('INSERT OR IGNORE INTO image_refs (image_hash, note_id) VALUES (?, ?)')
-      for (const hash of hashes) {
-        insert.run(hash, noteId)
-      }
-    }
-  } catch (e) {
-    console.error('Image ref sync error:', e.message)
-  }
+  imageRefs.syncHeadRefs(noteId, content, canvasData)
 }
 
 // Automatic Data Migration from JSON to SQLite
@@ -393,19 +306,75 @@ try {
   console.error('⚠️ Data migration error:', e.message)
 }
 
+// Versioned schema migrations (note threads/revisions). This runs after the
+// legacy JSON migration so first-boot upgrades include those notes.
+try {
+  const migration = runMigrations({
+    db,
+    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens],
+    backupDir: BACKUPS_DIR,
+    context: { imageStore }
+  })
+  if (migration.backupPath) {
+    console.log(`💾 Pre-migration backup: ${migration.backupPath}`)
+  }
+  if (migration.applied.length > 0) {
+    console.log(`✓ Schema migrated to version ${migration.target}`)
+  }
+} catch (error) {
+  console.error('💥 Fatal: note-thread migration failed:', error.message)
+  if (error.migrationBackupPath) {
+    console.error(`   Backup kept at: ${error.migrationBackupPath}`)
+  }
+  process.exit(1)
+}
+
+// Shared services. Route/WS handlers below are thin adapters over these.
+const bus = createEventBus()
+const imageRefs = createImageRefService({ db, imageStore })
+const tags = createTagService({ db })
+const links = createLinkService({ db })
+const tokens = createTokenService({ db })
+const revisions = createRevisionService({ db, imageStore, imageRefs, bus, tags, links })
+const notesService = createNoteService({ db, revisions, imageRefs, bus, tags, links })
+const renderService = createRenderService({ db, imageRefs, bus })
+const searchService = createSearchService({
+  db,
+  notes: notesService,
+  revisions,
+  tags,
+  renders: renderService
+})
+
+const pendingRenderRequests = new Map()
+function requestWhiteboardRender(noteId, timeoutMs = 20000) {
+  const state = noteStates.get(noteId)
+  if (!state || state.sessions.size === 0) {
+    return Promise.resolve({ requested: false, reason: 'no-client' })
+  }
+  const requestId = randomUUID()
+  return new Promise(resolve => {
+    const timer = setTimeout(() => {
+      pendingRenderRequests.delete(requestId)
+      resolve({ requested: true, requestId, timedOut: true, manifest: renderService.latest(noteId) })
+    }, Math.max(1000, Math.min(60000, Number(timeoutMs) || 20000)))
+    pendingRenderRequests.set(requestId, { resolve, timer, noteId })
+    for (const session of state.sessions) {
+      if (session.readyState === WebSocket.OPEN) {
+        session.send(JSON.stringify({ type: 'render-request', noteId, requestId }))
+      }
+    }
+  })
+}
+
 // Ensure FTS index is up to date
 try {
   const ftsCount = db.prepare('SELECT COUNT(*) as count FROM notes_fts').get()
   const notesCount = db.prepare('SELECT COUNT(*) as count FROM notes').get()
   if (ftsCount.count !== notesCount.count) {
     console.log(`🔍 Rebuilding FTS index (${ftsCount.count} indexed, ${notesCount.count} notes)...`)
-    db.exec('DELETE FROM notes_fts')
-    const notes = db.prepare('SELECT id, title, content, canvasData FROM notes').all()
-    const insert = db.prepare('INSERT INTO notes_fts(note_id, title, content, canvas_text) VALUES (?, ?, ?, ?)')
-    for (const note of notes) {
-      insert.run(note.id, note.title || '', note.content || '', extractCanvasText(note.canvasData))
-    }
-    console.log(`✓ FTS index rebuilt with ${notes.length} notes`)
+    const count = rebuildFts(db)
+    console.log(`✓ FTS index rebuilt with ${count} notes`)
   } else {
     console.log(`✓ FTS index up to date (${ftsCount.count} notes indexed)`)
   }
@@ -437,12 +406,12 @@ function getPasswordHash() {
 }
 
 function getAllNotes() {
-  return db.prepare('SELECT * FROM notes ORDER BY updatedAt DESC').all()
+  return notesService.listNotes()
 }
 
 // Middleware
 app.use(cors())
-app.use(express.json())
+app.use(express.json({ limit: '10mb' }))
 
 // Image upload middleware (max 20MB)
 const imageUpload = multer({
@@ -461,14 +430,13 @@ const imageUpload = multer({
 app.post('/api/images', checkAuth, imageUpload.single('image'), (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'No image provided' })
-    const hash = crypto.createHash('sha256').update(req.file.buffer).digest('hex').slice(0, 16)
-    const ext = MIME_TO_EXT[req.file.mimetype] || 'bin'
-    const filename = `${hash}.${ext}`
-    const filePath = path.join(IMAGES_DIR, filename)
-    if (!fs.existsSync(filePath)) {
-      fs.writeFileSync(filePath, req.file.buffer)
-    }
-    res.json({ hash, url: `/api/images/${filename}`, mimeType: req.file.mimetype })
+    const stored = imageStore.storeImageBuffer(req.file.buffer, req.file.mimetype)
+    if (!stored) return res.status(400).json({ error: 'Unsupported image type' })
+    res.json({
+      hash: stored.hash,
+      url: `/api/images/${stored.hash}.${stored.ext}`,
+      mimeType: stored.mimeType
+    })
   } catch (e) {
     console.error('Image upload error:', e)
     res.status(500).json({ error: e.message })
@@ -486,34 +454,16 @@ app.get('/api/images/:filename', (req, res) => {
     return res.status(404).json({ error: 'Image not found' })
   }
   const ext = path.extname(filename).slice(1)
-  const mimeMap = { png: 'image/png', jpg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', svg: 'image/svg+xml' }
-  res.setHeader('Content-Type', mimeMap[ext] || 'application/octet-stream')
+  res.setHeader('Content-Type', imageMimeForExt(ext))
   res.sendFile(filePath)
 })
 
-// Image garbage collection: remove orphaned images not referenced by any note
+// Image garbage collection: remove orphaned images not referenced by any note,
+// revision, or whiteboard tile.
 app.post('/api/images/cleanup', checkAuth, (req, res) => {
   try {
-    // Build set of all referenced image hashes
-    const referencedHashes = new Set()
-    const rows = db.prepare('SELECT DISTINCT image_hash FROM image_refs').all()
-    for (const row of rows) referencedHashes.add(row.image_hash)
-
-    // Scan image files on disk
-    const files = fs.readdirSync(IMAGES_DIR)
-    let deletedCount = 0
-    const deletedFiles = []
-    for (const file of files) {
-      const match = file.match(/^([a-f0-9]{16})\.[a-z]+$/)
-      if (!match) continue
-      const hash = match[1]
-      if (!referencedHashes.has(hash)) {
-        fs.unlinkSync(path.join(IMAGES_DIR, file))
-        deletedCount++
-        deletedFiles.push(file)
-      }
-    }
-    res.json({ success: true, deleted: deletedCount, files: deletedFiles })
+    const deletedFiles = imageRefs.cleanupImages()
+    res.json({ success: true, deleted: deletedFiles.length, files: deletedFiles })
   } catch (e) {
     console.error('Image cleanup error:', e)
     res.status(500).json({ error: e.message })
@@ -644,112 +594,284 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ success: true })
 })
 
-// Notes routes (protected by session cookie OR X-Auth-Token header)
-function checkAuth(req, res, next) {
-  const sessionId = sessions.sessionIdFromRequest(req) || req.headers['x-auth-token']
-  const currentHash = getPasswordHash()
+// Resolve a request identity from a bearer token, session cookie, or legacy
+// X-Auth-Token session id. Returns { actor, authInfo, token, session } or null.
+function authenticate(req) {
+  const header = String(req.headers.authorization || '')
+  if (header.startsWith('Bearer ')) {
+    const token = tokens.verify(header.slice(7).trim())
+    if (token) {
+      const clientId = token.name.startsWith('mcp:') ? token.name : `mcp:${token.name}`
+      return {
+        actor: clientId,
+        token,
+        authInfo: { clientId, scopes: token.scopes }
+      }
+    }
+  }
 
+  const sessionId = sessions.sessionIdFromRequest(req) || req.headers['x-auth-token']
+  const entry = sessions.validate(sessionId)
+  if (entry) {
+    return {
+      actor: 'ui',
+      session: entry,
+      authInfo: { clientId: 'ui', scopes: ['read', 'write'] }
+    }
+  }
+  return null
+}
+
+function checkAuth(req, res, next) {
+  const currentHash = getPasswordHash()
   if (!currentHash) {
     return res.status(400).json({ error: 'Password not set up' })
   }
 
-  const entry = sessions.validate(sessionId)
-  if (entry) {
-    // Bind the matching password hash onto req for downstream consumers if needed
-    req.passwordHash = entry.hash
-    next()
-  } else {
-    res.status(401).json({ error: 'Unauthorized' })
+  const auth = authenticate(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized' })
+  if (auth.token && req.method !== 'GET' && !auth.token.scopes.includes('write')) {
+    return res.status(403).json({ error: 'Token lacks write scope' })
   }
+  req.actor = auth.actor
+  req.auth = auth.authInfo
+  req.mcpToken = auth.token || null
+  if (auth.session) req.passwordHash = auth.session.hash
+  next()
 }
 
+function mcpAuth(req, res, next) {
+  const auth = authenticate(req)
+  if (!auth) return res.status(401).json({ error: 'Unauthorized MCP request' })
+  req.actor = auth.actor
+  req.auth = auth.authInfo
+  req.mcpToken = auth.token || null
+  next()
+}
+
+// MCP token management (browser session only; bearer tokens cannot mint tokens)
+app.get('/api/mcp/tokens', checkAuth, (req, res) => {
+  if (req.mcpToken) return res.status(403).json({ error: 'Use a browser session to manage MCP tokens' })
+  try { res.json(tokens.list()) } catch (e) { sendServiceError(res, e) }
+})
+
+app.post('/api/mcp/tokens', checkAuth, (req, res) => {
+  if (req.mcpToken) return res.status(403).json({ error: 'Use a browser session to manage MCP tokens' })
+  try {
+    const created = tokens.create({ name: req.body?.name, scopes: req.body?.scopes })
+    res.json(created)
+  } catch (e) { sendServiceError(res, e) }
+})
+
+app.delete('/api/mcp/tokens/:id', checkAuth, (req, res) => {
+  if (req.mcpToken) return res.status(403).json({ error: 'Use a browser session to manage MCP tokens' })
+  try { res.json(tokens.revoke(req.params.id)) } catch (e) { sendServiceError(res, e) }
+})
+
 app.get('/api/notes', checkAuth, (req, res) => {
-  const notes = getAllNotes()
-  res.json(notes)
+  try {
+    const notes = notesService.listNotes({
+      includeArchived: req.query.includeArchived === '1' || req.query.includeArchived === 'true',
+      type: req.query.type || null,
+      tag: req.query.tag || null,
+      exactTag: req.query.exactTag === '1' || req.query.exactTag === 'true',
+      limit: req.query.limit != null ? Number(req.query.limit) : null,
+      offset: req.query.offset != null ? Number(req.query.offset) : 0
+    })
+    res.json(notes)
+  } catch (error) {
+    sendServiceError(res, error)
+  }
 })
 
 app.post('/api/notes', checkAuth, (req, res) => {
   try {
-    console.log('➕ POST /api/notes - Adding note')
-    const canvasText = extractCanvasText(req.body.canvasData)
-    const newNote = {
-      id: Date.now().toString() + '-' + Math.random().toString(36).substr(2, 9),
+    const note = notesService.createNote({
       title: req.body.title || '',
       content: req.body.content || '',
       type: req.body.type || 'text',
       canvasData: req.body.canvasData || null,
       thumbnail: req.body.thumbnail || null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    }
-    db.prepare(
-      'INSERT INTO notes (id, title, content, type, canvasData, thumbnail, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    ).run(newNote.id, newNote.title, newNote.content, newNote.type, newNote.canvasData, newNote.thumbnail, newNote.createdAt, newNote.updatedAt)
-    // Index in FTS (content for text notes, canvas_text for canvas notes)
-    db.prepare('INSERT INTO notes_fts(note_id, title, content, canvas_text) VALUES (?, ?, ?, ?)')
-      .run(newNote.id, newNote.title, newNote.content, canvasText)
-    syncImageRefs(newNote.id, newNote.content, newNote.canvasData)
-    console.log('➕ Note saved, sending response...')
-    res.json(newNote)
-    console.log('➕ Response sent, broadcasting...')
+      actor: req.actor || 'ui',
+      source: 'ui'
+    })
+    const head = revisions.getHead(note.id)
+    const revision = head ? revisions.getRevision(head.head_revision_id) : null
+    res.json({ ...note, revision: notesService.revisionDto(revision) })
     broadcastNotes()
-  } catch (e) {
-    console.error('➕ ERROR in POST /api/notes:', e)
-    if (!res.headersSent) {
-      res.status(500).json({ error: e.message })
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.get('/api/notes/:id', checkAuth, (req, res) => {
+  try {
+    res.json(notesService.getNote(req.params.id))
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.get('/api/notes/:id/links', checkAuth, (req, res) => {
+  try {
+    res.json(links.outgoing(req.params.id, {
+      includeArchived: req.query.includeArchived === '1'
+    }))
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.get('/api/notes/:id/backlinks', checkAuth, (req, res) => {
+  try {
+    res.json(links.backlinks(req.params.id, {
+      includeArchived: req.query.includeArchived === '1'
+    }))
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.get('/api/notes/:id/renders/latest', checkAuth, (req, res) => {
+  try {
+    res.json(renderService.latest(req.params.id))
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.put('/api/notes/:id/renders', checkAuth, (req, res) => {
+  try {
+    const manifest = renderService.saveManifest({
+      noteId: req.params.id,
+      tiles: req.body.tiles || [],
+      source: req.body.source || 'client',
+      rendererVersion: req.body.rendererVersion || 1,
+      requestId: req.body.requestId || null
+    })
+    res.json(manifest)
+    if (req.body.requestId) {
+      broadcastToNote(req.params.id, {
+        type: 'render-complete',
+        noteId: req.params.id,
+        requestId: req.body.requestId,
+        renderId: manifest.renderId
+      })
+    }
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.post('/api/notes/:id/renders/request', checkAuth, (req, res) => {
+  const state = noteStates.get(req.params.id)
+  if (!state || state.sessions.size === 0) {
+    return res.status(202).json({ requested: false, reason: 'no-client' })
+  }
+  const requestId = randomUUID()
+  for (const session of state.sessions) {
+    if (session.readyState === WebSocket.OPEN) {
+      session.send(JSON.stringify({ type: 'render-request', noteId: req.params.id, requestId }))
     }
   }
+  res.status(202).json({ requested: true, requestId })
 })
 
 app.put('/api/notes/:id', checkAuth, (req, res) => {
-  const { title = '', content = '', type, canvasData, thumbnail } = req.body
-  const updatedAt = new Date().toISOString()
-  const canvasText = extractCanvasText(canvasData)
-
-  // Build dynamic SET clause for fields that are provided
-  const updates = ['title = ?', 'content = ?', 'updatedAt = ?']
-  const params = [title, content, updatedAt]
-
-  if (type !== undefined) { updates.push('type = ?'); params.push(type) }
-  if (canvasData !== undefined) { updates.push('canvasData = ?'); params.push(canvasData) }
-  if (thumbnail !== undefined) { updates.push('thumbnail = ?'); params.push(thumbnail) }
-
-  params.push(req.params.id)
-  const info = db.prepare(`UPDATE notes SET ${updates.join(', ')} WHERE id = ?`).run(...params)
-
-  if (info.changes === 0) {
-    return res.status(404).json({ error: 'Note not found' })
-  }
-
-  // Reindex in FTS
   try {
-    db.prepare('DELETE FROM notes_fts WHERE note_id = ?').run(req.params.id)
-    db.prepare('INSERT INTO notes_fts(note_id, title, content, canvas_text) VALUES (?, ?, ?, ?)')
-      .run(req.params.id, title, content, canvasText)
-  } catch (e) {
-    console.error('FTS reindex error:', e.message)
+    const updated = notesService.updateNote({
+      id: req.params.id,
+      title: req.body.title,
+      content: req.body.content,
+      type: req.body.type,
+      canvasData: req.body.canvasData,
+      thumbnail: req.body.thumbnail,
+      baseRevisionId: req.body.baseRevisionId || null,
+      mode: req.body.mode || 'append',
+      actor: req.actor || 'ui',
+      source: 'ui',
+      message: req.body.message || null
+    })
+    res.json(updated)
+    broadcastNotes()
+  } catch (error) {
+    sendServiceError(res, error)
   }
-  syncImageRefs(req.params.id, content, canvasData)
-
-  const updatedNote = db.prepare('SELECT * FROM notes WHERE id = ?').get(req.params.id)
-  res.json(updatedNote)
-  broadcastNotes()
 })
 
-app.delete('/api/notes/:id', checkAuth, (req, res) => {
-  const info = db.prepare('DELETE FROM notes WHERE id = ?').run(req.params.id)
-
-  if (info.changes === 0) {
-    return res.status(404).json({ error: 'Note not found' })
+app.get('/api/notes/:id/history', checkAuth, (req, res) => {
+  try {
+    res.json(notesService.history(req.params.id))
+  } catch (error) {
+    sendServiceError(res, error)
   }
+})
 
-  // Deindex from FTS and image refs
-  try { db.prepare('DELETE FROM notes_fts WHERE note_id = ?').run(req.params.id) } catch (e) {}
-  try { db.prepare('DELETE FROM image_refs WHERE note_id = ?').run(req.params.id) } catch (e) {}
+app.get('/api/notes/:id/history/:revisionId', checkAuth, (req, res) => {
+  try {
+    res.json(notesService.revisionSnapshot(req.params.id, req.params.revisionId))
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
 
-  res.json({ success: true })
-  broadcastNotes()
-  broadcastNoteDeleted(req.params.id)
+app.post('/api/notes/:id/history/:revisionId/restore', checkAuth, (req, res) => {
+  try {
+    const result = notesService.restoreRevision(
+      req.params.id, req.params.revisionId, req.actor || 'ui'
+    )
+    res.json(result)
+    broadcastNotes()
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.post('/api/notes/:id/history/:revisionId/promote', checkAuth, (req, res) => {
+  try {
+    const result = notesService.promoteRevision(
+      req.params.id, req.params.revisionId, req.actor || 'ui'
+    )
+    res.json(result)
+    broadcastNotes()
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.post('/api/notes/:id/restore', checkAuth, (req, res) => {
+  try {
+    const note = notesService.restoreNote(req.params.id, req.actor || 'ui')
+    res.json(note)
+    broadcastNotes()
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+function sendServiceError(res, error) {
+  const status = error.status && error.status >= 400 ? error.status : 500
+  res.status(status).json({
+    error: error.message || 'Request failed',
+    code: error.code || 'internal_error'
+  })
+}
+
+app.delete('/api/notes/:id', checkAuth, (req, res) => {
+  try {
+    const purge = req.query.purge === '1' || req.query.purge === 'true'
+    if (purge) {
+      notesService.purgeNote(req.params.id, req.actor || 'ui')
+    } else {
+      notesService.archiveNote(req.params.id, req.actor || 'ui')
+    }
+    clearNoteState(req.params.id)
+    res.json({ success: true, purged: purge, archived: !purge })
+    broadcastNotes()
+    broadcastNoteDeleted(req.params.id)
+  } catch (error) {
+    sendServiceError(res, error)
+  }
 })
 
 app.post('/api/notes/batch-delete', checkAuth, (req, res) => {
@@ -759,35 +881,54 @@ app.post('/api/notes/batch-delete', checkAuth, (req, res) => {
       return res.status(400).json({ error: 'Invalid note IDs' })
     }
 
-    console.log(`🗑️ POST /api/notes/batch-delete - Deleting ${ids.length} notes`)
-    const placeholders = ids.map(() => '?').join(',')
-    const stmt = db.prepare(`DELETE FROM notes WHERE id IN (${placeholders})`)
-    const info = stmt.run(...ids)
-
-    console.log(`✓ Deleted ${info.changes} notes from SQLite`)
-    // Deindex from FTS and image refs
-    try {
-      const delStmt = db.prepare(`DELETE FROM notes_fts WHERE note_id IN (${placeholders})`)
-      delStmt.run(...ids)
-    } catch (e) {}
-    try {
-      const delRefStmt = db.prepare(`DELETE FROM image_refs WHERE note_id IN (${placeholders})`)
-      delRefStmt.run(...ids)
-    } catch (e) {}
-    res.json({ success: true, count: info.changes })
+    const changed = notesService.archiveNotes(ids, req.actor || 'ui')
+    res.json({ success: true, count: changed, archived: true })
     broadcastNotes()
-    for (const id of ids) broadcastNoteDeleted(id)
+    for (const id of ids) {
+      clearNoteState(id)
+      broadcastNoteDeleted(id)
+    }
   } catch (e) {
     console.error('🗑️ ERROR in POST /api/notes/batch-delete:', e)
     if (!res.headersSent) {
-      res.status(500).json({ error: e.message })
+      sendServiceError(res, e)
     }
+  }
+})
+
+app.get('/api/tags', checkAuth, (req, res) => {
+  try {
+    res.json(tags.tree({ prefix: req.query.prefix || '' }))
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.get('/api/graph', checkAuth, (req, res) => {
+  try {
+    res.json(links.graph({
+      noteId: req.query.noteId || null,
+      depth: req.query.depth != null ? Number(req.query.depth) : 1,
+      tag: req.query.tag || null,
+      limit: req.query.limit != null ? Number(req.query.limit) : 300,
+      includeUnresolved: req.query.includeUnresolved === '1' || req.query.includeUnresolved === 'true'
+    }))
+  } catch (error) {
+    sendServiceError(res, error)
   }
 })
 
 app.get('/api/search', checkAuth, (req, res) => {
   const raw = (req.query.q || '').trim()
-  if (!raw) return res.json([])
+  const tag = req.query.tag || null
+  const exactTag = req.query.exactTag === '1' || req.query.exactTag === 'true'
+  let tagIds = null
+  if (tag) tagIds = tags.noteIdsForTag(tag, { exact: exactTag })
+
+  if (!raw) {
+    if (tagIds) return res.json([...tagIds])
+    return res.json([])
+  }
 
   // Sanitize and build prefix query
   const tokens = raw
@@ -800,13 +941,50 @@ app.get('/api/search', checkAuth, (req, res) => {
   const query = tokens.join(' ')
 
   try {
-    const rows = db.prepare(
-      'SELECT note_id FROM notes_fts WHERE notes_fts MATCH ? ORDER BY rank LIMIT 100'
-    ).all(query)
-    res.json(rows.map(r => r.note_id))
+    const rows = db.prepare(`
+      SELECT f.note_id AS note_id
+      FROM notes_fts f
+      JOIN notes n ON n.id = f.note_id
+      WHERE notes_fts MATCH ? AND n.archived_at IS NULL
+      ORDER BY rank
+      LIMIT 100
+    `).all(query)
+    let ids = rows.map(r => r.note_id)
+    if (tagIds) ids = ids.filter(id => tagIds.has(id))
+    res.json(ids)
   } catch (e) {
     console.error('Search error:', e.message)
     res.json([])
+  }
+})
+
+// ── Domain events → WebSocket clients ─────────────────────────────────────
+bus.on(EVENTS.NOTE_CREATED, payload => {
+  broadcastToAllClients({ type: 'note-created', ...payload })
+})
+bus.on(EVENTS.NOTE_REVISED, payload => {
+  broadcastToAllClients({ type: 'note-revised', ...payload })
+})
+bus.on(EVENTS.NOTE_ARCHIVED, payload => {
+  broadcastToAllClients({ type: 'note-archived', ...payload })
+})
+bus.on(EVENTS.NOTE_RESTORED, payload => {
+  broadcastToAllClients({ type: 'note-restored', ...payload })
+})
+bus.on(EVENTS.NOTE_PURGED, payload => {
+  broadcastToAllClients({ type: 'note-purged', ...payload })
+})
+bus.on(EVENTS.RENDER_UPDATED, payload => {
+  broadcastToNote(payload.noteId, { type: 'render-updated', ...payload })
+  if (payload.requestId && pendingRenderRequests.has(payload.requestId)) {
+    const pending = pendingRenderRequests.get(payload.requestId)
+    clearTimeout(pending.timer)
+    pendingRenderRequests.delete(payload.requestId)
+    pending.resolve({
+      requested: true,
+      requestId: payload.requestId,
+      manifest: renderService.latest(payload.noteId)
+    })
   }
 })
 
@@ -856,6 +1034,10 @@ wss.on('connection', (ws, req) => {
       const state = noteStates.get(noteId)
       if (state) {
         state.sessions.delete(ws)
+        if (state.sessions.size === 0) {
+          state.forceCheckpoint = true
+          schedulePersist(noteId)
+        }
       }
       ws._collabNoteId = null
     }
@@ -871,6 +1053,11 @@ wss.on('connection', (ws, req) => {
       const msg = JSON.parse(data.toString())
       switch (msg.type) {
         case 'join': {
+          const noteRow = db.prepare('SELECT id, archived_at FROM notes WHERE id = ?').get(msg.noteId)
+          if (!noteRow || noteRow.archived_at) {
+            ws.send(JSON.stringify({ type: 'note-gone', noteId: msg.noteId }))
+            break
+          }
           const state = loadNoteState(msg.noteId)
           state.sessions.add(ws)
           ws._collabNoteId = msg.noteId
@@ -889,9 +1076,24 @@ wss.on('connection', (ws, req) => {
           const state = noteStates.get(msg.noteId)
           if (state) {
             state.sessions.delete(ws)
+            if (state.sessions.size === 0) {
+              state.forceCheckpoint = true
+              schedulePersist(msg.noteId)
+            }
           }
           ws._collabNoteId = null
           console.log(`👋 Client left note ${msg.noteId}`)
+          break
+        }
+        case 'checkpoint': {
+          if (!msg.noteId) break
+          const state = noteStates.get(msg.noteId)
+          if (state) {
+            state.forceCheckpoint = true
+            clearTimeout(state.pendingPersist)
+            persistNoteState(msg.noteId)
+            ws.send(JSON.stringify({ type: 'checkpoint-saved', noteId: msg.noteId }))
+          }
           break
         }
         case 'delta': {
@@ -946,6 +1148,26 @@ function countClients() {
   }
   return count
 }
+
+// ── Embedded MCP server (Streamable HTTP) ────────────────────────────────
+const mcpPublicUrl = process.env.LOCAL_KEEP_PUBLIC_URL || `http://localhost:${PORT}`
+const mcpHandler = createMcpHandler(({ authInfo }) => createMcpServer({
+  services: {
+    db,
+    notes: notesService,
+    revisions,
+    tags,
+    links,
+    renders: renderService,
+    search: searchService,
+    imageStore
+  },
+  authInfo,
+  baseUrl: mcpPublicUrl.replace(/\/$/, ''),
+  requestRender: requestWhiteboardRender
+}))
+const mcpNodeHandler = toNodeHandler(mcpHandler)
+app.all('/mcp', mcpAuth, (req, res) => mcpNodeHandler(req, res, req.body))
 
 // Serve static files from dist ONLY in production mode
 // In development, use Vite dev server on port 5174 instead
