@@ -295,7 +295,7 @@
                 </div>
                 <div class="shortcut-row">
                   <span class="shortcut-keys"><kbd>{{ modKey }}</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd></span>
-                  <span class="shortcut-desc">Cycle Write / Markdown / Preview</span>
+                  <span class="shortcut-desc">Cycle Write / Plain / Preview</span>
                 </div>
               </div>
             </div>
@@ -744,10 +744,10 @@
                 <button
                   type="button"
                   class="mode-btn"
-                  :class="{ active: editorMode === 'markdown' }"
-                  @click="setEditorMode('markdown')"
-                  title="Edit raw markdown"
-                >M↓ Markdown</button>
+                  :class="{ active: editorMode === 'plain' }"
+                  @click="setEditorMode('plain')"
+                  title="Edit plain markdown source"
+                >Plain</button>
                 <button
                   type="button"
                   class="mode-btn"
@@ -782,12 +782,12 @@
               @click="onEditorClick"
             ></div>
             <textarea
-              v-else-if="editorMode === 'markdown'"
+              v-else-if="editorMode === 'plain'"
               ref="markdownTextarea"
               v-model="newNoteContent"
               class="note-editor markdown-source"
               spellcheck="false"
-              placeholder="Write markdown..."
+              placeholder="Plain markdown source..."
               @keydown.ctrl.enter.stop.prevent="editingId ? saveEdit() : addNote()"
               @keydown.meta.enter.stop.prevent="editingId ? saveEdit() : addNote()"
               @paste="onMarkdownPaste"
@@ -1064,7 +1064,8 @@ export default {
     // The base revision is only used for optimistic concurrency.
     const editingBaseRevisionId = ref(null)
     const editingRevisionNo = ref(1)
-    const editorMode = ref('write') // 'write' | 'markdown' | 'preview'
+    const editorMode = ref('write') // 'write' | 'plain' | 'preview'
+    let editorDirty = false
     const revisionNotice = ref('')
     let revisionNoticeTimer = null
     let recentLocalRevision = null
@@ -1751,6 +1752,7 @@ export default {
           const textNode = document.createTextNode(md)
           this.parentNode.replaceChild(textNode, this)
           if (editorMode.value === 'write') {
+            markEditorDirty()
             newNoteContent.value = serializeEditorToMarkdown()
           }
         }
@@ -1765,18 +1767,21 @@ export default {
     }
 
     function setEditorMode(mode) {
-      if (!['write', 'markdown', 'preview'].includes(mode)) return
+      if (!['write', 'plain', 'preview'].includes(mode)) return
       if (editorMode.value === mode) return
       if (editorMode.value === 'write') {
-        newNoteContent.value = serializeEditorToMarkdown()
+        // Only serialise when the user actually edited. Merely opening a note
+        // or switching modes must not rewrite the canonical markdown.
+        serializeEditorIfDirty()
       }
       editorMode.value = mode
       if (mode === 'write') {
         nextTick(() => {
           renderEditorContent()
+          editorDirty = false
           if (imageEditor.value) imageEditor.value.focus()
         })
-      } else if (mode === 'markdown') {
+      } else if (mode === 'plain') {
         nextTick(() => {
           if (markdownTextarea.value) markdownTextarea.value.focus()
         })
@@ -1784,7 +1789,7 @@ export default {
     }
 
     function cycleEditorMode() {
-      const modes = ['write', 'markdown', 'preview']
+      const modes = ['write', 'plain', 'preview']
       const index = modes.indexOf(editorMode.value)
       setEditorMode(modes[(index + 1) % modes.length])
     }
@@ -1833,6 +1838,7 @@ export default {
       range.collapse(false)
       sel.removeAllRanges()
       sel.addRange(range)
+      markEditorDirty()
       newNoteContent.value = serializeEditorToMarkdown()
     }
 
@@ -1842,6 +1848,7 @@ export default {
       editingBaseRevisionId.value = null
       editingRevisionNo.value = 1
       editorMode.value = 'write'
+      editorDirty = false
       historyOpen.value = false
       backlinksOpen.value = false
       backlinks.value = []
@@ -1878,6 +1885,7 @@ export default {
       editingBaseRevisionId.value = null
       editingRevisionNo.value = 1
       editorMode.value = 'write'
+      editorDirty = false
       historyOpen.value = false
       backlinksOpen.value = false
       backlinks.value = []
@@ -1913,6 +1921,7 @@ export default {
       editingBaseRevisionId.value = null
       editingRevisionNo.value = 1
       editorMode.value = 'write'
+      editorDirty = false
       historyOpen.value = false
       backlinksOpen.value = false
       backlinks.value = []
@@ -2009,9 +2018,7 @@ export default {
 
     const addNote = async () => {
       try {
-        if (editorMode.value === 'write') {
-          newNoteContent.value = serializeEditorToMarkdown()
-        }
+        serializeEditorIfDirty()
         const normalized = await normalizeDataUrlImages(newNoteContent.value)
         if (normalized.failed > 0) {
           showRevisionNotice('One or more pasted images could not be uploaded. The note was not saved.')
@@ -2114,6 +2121,7 @@ export default {
       editingBaseRevisionId.value = note.revisionId || null
       editingRevisionNo.value = note.revisionNo || 1
       editorMode.value = 'write'
+      editorDirty = false
       historyOpen.value = false
       backlinksOpen.value = false
       backlinks.value = []
@@ -2147,9 +2155,7 @@ export default {
 
     const saveEdit = async () => {
       try {
-        if (editorMode.value === 'write') {
-          newNoteContent.value = serializeEditorToMarkdown()
-        }
+        serializeEditorIfDirty()
         const normalized = await normalizeDataUrlImages(newNoteContent.value)
         if (normalized.failed > 0) {
           showRevisionNotice('One or more pasted images could not be uploaded. The note was not saved.')
@@ -2669,9 +2675,7 @@ export default {
         const isOpenCanvas = currentView.value === 'canvas' && editingCanvasId.value === mask.noteId
 
         if (isOpenTextNote) {
-          if (editorMode.value === 'write') {
-            newNoteContent.value = serializeEditorToMarkdown()
-          }
+          serializeEditorIfDirty()
           const normalized = await normalizeDataUrlImages(newNoteContent.value)
           if (normalized.failed > 0) {
             showRevisionNotice('One or more pasted images could not be uploaded. The note was not saved.')
@@ -3094,6 +3098,18 @@ export default {
     }
 
     // ── ContentEditable editor functions (after return) ──
+    function serializeEditorIfDirty() {
+      if (editorMode.value === 'write' && editorDirty) {
+        newNoteContent.value = serializeEditorToMarkdown()
+        editorDirty = false
+      }
+      return newNoteContent.value
+    }
+
+    function markEditorDirty() {
+      editorDirty = true
+    }
+
     function serializeEditorToMarkdown() {
       const el = imageEditor.value
       if (!el) return newNoteContent.value
@@ -3168,6 +3184,7 @@ export default {
         }
       }
 
+      markEditorDirty()
       newNoteContent.value = serializeEditorToMarkdown()
     }
 
@@ -3205,6 +3222,7 @@ export default {
         newRange.collapse(true)
         sel.removeAllRanges()
         sel.addRange(newRange)
+        markEditorDirty()
         newNoteContent.value = serializeEditorToMarkdown()
       }
     }
@@ -3260,7 +3278,6 @@ export default {
         wrapper.remove()
       }
       selectedImageForResize.value = null
-      newNoteContent.value = serializeEditorToMarkdown()
     }
 
     function onResizeStart(e, img) {
@@ -3288,6 +3305,7 @@ export default {
         const oldMd = img.getAttribute('data-md') || ''
         const baseMd = oldMd.replace(/\{width=\d+\}$/, '')
         img.setAttribute('data-md', baseMd + `{width=${finalWidth}}`)
+        markEditorDirty()
         newNoteContent.value = serializeEditorToMarkdown()
       }
 
@@ -3296,7 +3314,7 @@ export default {
     }
 
     function onEditorBlur() {
-      newNoteContent.value = serializeEditorToMarkdown()
+      serializeEditorIfDirty()
     }
 
     // ── Image upload ──
@@ -3330,6 +3348,7 @@ export default {
       const sel = focusEditorAtSelection()
       if (!sel) return
       document.execCommand('bold', false, null)
+      markEditorDirty()
       newNoteContent.value = serializeEditorToMarkdown()
     }
 
@@ -3337,6 +3356,7 @@ export default {
       const sel = focusEditorAtSelection()
       if (!sel) return
       document.execCommand('italic', false, null)
+      markEditorDirty()
       newNoteContent.value = serializeEditorToMarkdown()
     }
 
@@ -3353,6 +3373,7 @@ export default {
         range.deleteContents()
         range.insertNode(document.createTextNode(url))
       }
+      markEditorDirty()
       newNoteContent.value = serializeEditorToMarkdown()
     }
 
@@ -3379,6 +3400,7 @@ export default {
       newRange.collapse(true)
       sel.removeAllRanges()
       sel.addRange(newRange)
+      markEditorDirty()
       newNoteContent.value = serializeEditorToMarkdown()
     }
 
@@ -3451,7 +3473,7 @@ export default {
 
     function insertImageInEditor(mdRef) {
       if (!mdRef) return
-      if (editorMode.value === 'markdown') {
+      if (editorMode.value === 'plain') {
         insertMarkdownAtCursor(mdRef)
         return
       }
@@ -3479,6 +3501,7 @@ export default {
       afterRange.collapse(true)
       sel.removeAllRanges()
       sel.addRange(afterRange)
+      markEditorDirty()
       newNoteContent.value = serializeEditorToMarkdown()
     }
 

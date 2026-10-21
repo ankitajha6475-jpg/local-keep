@@ -245,9 +245,11 @@ Single user, multiple terminals. Same note, same WS endpoint (`/ws?token=`).
 - Canonical text content is markdown. The client renderer lives in
   `src/utils/markdown.js`: `marked` (GFM, breaks) + `DOMPurify`; HTML paste conversion
   uses `Turndown` + `turndown-plugin-gfm`.
-- Three modes: **Write** (contentEditable), **Markdown** (raw textarea), **Preview**
-  (read-only sanitised render). `Ctrl/Cmd+Shift+M` cycles modes. Switching out of Write
-  serialises first; switching back re-renders from markdown.
+- Three modes: **Write** (contentEditable), **Plain** (raw markdown source textarea),
+  and **Preview** (read-only sanitised render). `Ctrl/Cmd+Shift+M` cycles modes.
+  Switching out of Write serialises **only when the editor is dirty**; switching back
+  re-renders from markdown. Merely opening a note or toggling modes must not rewrite
+  canonical markdown or trigger the unsaved-changes prompt.
 - `src/utils/editorSerialize.js` converts the rich editor to markdown: headings,
   paragraphs, ordered/unordered lists, blockquotes, fenced/inline code, tables, HR,
   links, wiki-link spans, images with `{width=N}`.

@@ -82,6 +82,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - MCP end-to-end/token tests (`@modelcontextprotocol/client`) and `docs/mcp.md`
 
 ### Changed
+- Editor mode label **Markdown** renamed to **Plain** to avoid confusion with the canonical markdown format
 - Runtime image switched from `node:22-alpine` to `node:22-slim` so the glibc `sqlite-vec` loadable extension can be used
 - `openDatabase` now opens SQLite with `allowExtension: true` for the vector extension
 - Existing single-password installs migrate to `admin` / `Administrator` using the old password; the hash is upgraded on first login
@@ -115,6 +116,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Whiteboard touch handling now allows single-finger pan in drawing tools while keeping stylus input free, instead of requiring a two-finger gesture to switch to hand mode
 
 ### Fixed
+- Opening a note and switching between Write / Plain / Preview no longer marks it dirty or prompts to save when nothing was edited; serialisation now runs only after real editor changes
 - Pasted/inserted whiteboard images now render correctly on all clients and on reload (server no longer strips Excalidraw's required dataURL; sender excluded from its own delta echo)
 - Legacy whiteboard entries stored without `dataURL` are hydrated from disk on next load
 - Image cleanup no longer deletes images referenced only by an old revision or a whiteboard tile

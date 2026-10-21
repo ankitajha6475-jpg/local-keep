@@ -10,7 +10,7 @@ A Google Keep-like notes app with text notes and Excalidraw whiteboard canvas. V
 - Revision history drawer with view, restore, and promote; archive by default with restore
 - Wiki-link relationships (`[[Note]]`), backlinks, and an interactive relationship graph
 - Hierarchical tags (`#area/project/topic`) with a tag tree, counts, and filtering
-- Markdown Write / Markdown / Preview modes; rich-paste sanitisation and markdown image refs
+- Markdown **Write / Plain / Preview** modes (Plain = raw markdown source); rich-paste sanitisation and markdown image refs
 - Whiteboard page rendering: ordered page images (left→right, top→bottom) with a Pages drawer
 - Embedded MCP server: search with timestamps, revision threads, links/tags/graph, and whiteboard recall as multiple images
 - MCP token management via the 🔌 header dialog or `npm run mcp:token`
