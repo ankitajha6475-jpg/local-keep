@@ -1,4 +1,5 @@
 import crypto from 'crypto'
+import fs from 'fs'
 import path from 'path'
 import { getLoadablePath } from 'sqlite-vec'
 import { loadOrCreateSecret } from '../secret.js'
@@ -81,14 +82,49 @@ export function createEmbeddingService({
   rerankClientFactory = createRerankClient,
   fetchImpl,
   autoIndex = true,
-  embeddingBatchSize = Number(process.env.LOCAL_KEEP_EMBEDDING_BATCH_SIZE || 32),
+  embeddingBatchSize = Number(process.env.LOCAL_KEEP_EMBEDDING_BATCH_SIZE || 64),
   embeddingConcurrency = Number(process.env.LOCAL_KEEP_EMBEDDING_CONCURRENCY || 2),
-  embeddingMaxBatchChars = Number(process.env.LOCAL_KEEP_EMBEDDING_MAX_BATCH_CHARS || 48_000),
-  noteConcurrency = Number(process.env.LOCAL_KEEP_EMBEDDING_NOTE_CONCURRENCY || 2)
+  embeddingMaxBatchChars = Number(process.env.LOCAL_KEEP_EMBEDDING_MAX_BATCH_CHARS || 80_000),
+  noteConcurrency = Number(process.env.LOCAL_KEEP_EMBEDDING_NOTE_CONCURRENCY || 1)
 }) {
   const SECRET = loadOrCreateSecret(path.join(dataDir, 'server_secret'))
   const queue = new Map() // noteId -> force
   const stats = { indexed: 0, failed: 0, lastError: null }
+  const tuningPath = path.join(dataDir, 'embedding-tuning.json')
+  const fallbackTuning = {
+    batchSize: Math.max(1, Math.min(128, Number(embeddingBatchSize) || 64)),
+    concurrency: Math.max(1, Math.min(8, Number(embeddingConcurrency) || 2)),
+    maxBatchChars: Math.max(1_000, Number(embeddingMaxBatchChars) || 80_000),
+    noteConcurrency: Math.max(1, Math.min(8, Number(noteConcurrency) || 1))
+  }
+  let tuning = { ...fallbackTuning }
+  let tuningMtime = 0
+  try {
+    if (!fs.existsSync(tuningPath)) {
+      fs.writeFileSync(tuningPath, `${JSON.stringify(tuning, null, 2)}\n`, { mode: 0o600 })
+    }
+  } catch (error) {
+    console.error('Could not create embedding tuning config:', error.message)
+  }
+
+  function readTuning() {
+    try {
+      const stat = fs.statSync(tuningPath)
+      if (stat.mtimeMs === tuningMtime) return tuning
+      tuningMtime = stat.mtimeMs
+      const parsed = JSON.parse(fs.readFileSync(tuningPath, 'utf8'))
+      tuning = {
+        batchSize: Math.max(1, Math.min(128, Number(parsed.batchSize) || fallbackTuning.batchSize)),
+        concurrency: Math.max(1, Math.min(8, Number(parsed.concurrency) || fallbackTuning.concurrency)),
+        maxBatchChars: Math.max(1_000, Number(parsed.maxBatchChars) || fallbackTuning.maxBatchChars),
+        noteConcurrency: Math.max(1, Math.min(8, Number(parsed.noteConcurrency) || fallbackTuning.noteConcurrency))
+      }
+    } catch (error) {
+      console.error('Could not read embedding tuning config:', error.message)
+    }
+    return tuning
+  }
+  readTuning()
   let vecLoaded = false
   let vecVersion = null
   let vecError = null
@@ -224,15 +260,16 @@ export function createEmbeddingService({
 
   function makeClient({ baseUrl, apiKey, model, dimensions }) {
     if (!apiKey) throw fail(400, 'Embedding API key is required', 'missing_api_key')
+    const current = readTuning()
     return clientFactory({
       baseUrl,
       apiKey,
       model,
       dimensions,
       fetchImpl,
-      batchSize: Math.max(1, Math.min(128, Number(embeddingBatchSize) || 32)),
-      concurrency: Math.max(1, Math.min(8, Number(embeddingConcurrency) || 2)),
-      maxBatchChars: Math.max(1_000, Number(embeddingMaxBatchChars) || 48_000),
+      batchSize: current.batchSize,
+      concurrency: current.concurrency,
+      maxBatchChars: current.maxBatchChars,
       sendDimensions: supportsDimensions(model)
     })
   }
@@ -617,7 +654,7 @@ export function createEmbeddingService({
   async function runWorker() {
     if (workerRunning) return
     workerRunning = true
-    const workers = Math.max(1, Math.min(8, Number(noteConcurrency) || 2))
+    const workers = readTuning().noteConcurrency
     try {
       await Promise.all(Array.from({ length: workers }, async () => {
         while (queue.size > 0) {
@@ -860,6 +897,7 @@ export function createEmbeddingService({
     const settings = settingsRow()
     return {
       settings: settingsDto(settings),
+      tuning: readTuning(),
       models: listModels(),
       queue: {
         queued: queue.size,

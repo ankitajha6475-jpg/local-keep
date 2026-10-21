@@ -275,6 +275,10 @@ corresponding card while any session has that note open.
   database is opened with `allowExtension: true`; `sqlite-vec` is loaded from
   `node_modules/sqlite-vec-linux-x64/vec0.so`. The image is `node:22-slim`
   because the distributed extension is glibc, not musl/Alpine.
+- Runtime tuning lives in `data/embedding-tuning.json` (`batchSize`,
+  `concurrency`, `maxBatchChars`, `noteConcurrency`), is mtime-checked before each
+  note and on status reads, and applies to the next note without restart. Env vars are only creation
+  fallbacks. Do not assume process env hot reloads.
 - Chunking: markdown/canvas text → plain text, paragraph-aware chunks
   (default 1200 chars, 180 overlap). The note title prefixes the embedding input,
   not the stored chunk.

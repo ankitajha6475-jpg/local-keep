@@ -256,3 +256,38 @@ test('resetIndex drops embedding tables and model metadata without touching sett
     ctx.cleanup()
   }
 })
+
+test('embedding tuning JSON is picked up without restarting the service', async () => {
+  const ctx = createFreshContext()
+  try {
+    const service = createEmbeddingService({
+      db: ctx.db,
+      dataDir: ctx.dir,
+      tags: ctx.tags,
+      clientFactory: variantClientFactory,
+      autoIndex: false
+    })
+    const initial = service.status().tuning
+    assert.deepEqual(initial, {
+      batchSize: 64,
+      concurrency: 2,
+      maxBatchChars: 80000,
+      noteConcurrency: 1
+    })
+
+    const file = `${ctx.dir}/embedding-tuning.json`
+    fs.writeFileSync(file, JSON.stringify({
+      batchSize: 8,
+      concurrency: 1,
+      maxBatchChars: 20000,
+      noteConcurrency: 1
+    }))
+    fs.utimesSync(file, new Date(), new Date(Date.now() + 2000))
+    const updated = service.status().tuning
+    assert.equal(updated.batchSize, 8)
+    assert.equal(updated.concurrency, 1)
+    assert.equal(updated.maxBatchChars, 20000)
+  } finally {
+    ctx.cleanup()
+  }
+})

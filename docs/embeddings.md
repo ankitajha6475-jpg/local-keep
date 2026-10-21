@@ -102,21 +102,40 @@ operation in a future version.
   hash.
 - Indexing is queued per note and processed by a bounded background worker pool.
   Each note's chunks are sent as **array inputs** (`input: ["...", "..."]`) in
-  batches, and up to `LOCAL_KEEP_EMBEDDING_CONCURRENCY` batches run in parallel.
-  Notes can also be processed in parallel with
-  `LOCAL_KEEP_EMBEDDING_NOTE_CONCURRENCY` (both default to `2`).
-  Head edits, canvas checkpoints, archive/restore, and note creation enqueue the
-  note automatically. Archived/purged notes remove their chunks.
+  batches, and batches/notes run in parallel according to
+  `data/embedding-tuning.json`. Head edits, canvas checkpoints, archive/restore,
+  and note creation enqueue the note automatically. Archived/purged notes remove
+  their chunks.
 - Qwen3 dimensions: `Qwen/Qwen3-Embedding-8B` defaults to 4096; the API also accepts
   64–4096. Changing dimensions creates a new variant table and requires a re-index.
-- Batch controls:
-  - `LOCAL_KEEP_EMBEDDING_BATCH_SIZE` (default `32`, max `128`)
-  - `LOCAL_KEEP_EMBEDDING_MAX_BATCH_CHARS` (default `48000`)
-  - `LOCAL_KEEP_EMBEDDING_CONCURRENCY` (parallel requests per note, default `2`, max `8`)
-  - `LOCAL_KEEP_EMBEDDING_NOTE_CONCURRENCY` (parallel notes, default `2`, max `8`)
-  These are env-level controls, not per-model settings. The total in-flight
-  request count is roughly `noteConcurrency × concurrency`; lower them if the
-  provider returns `429`/TPM limits.
+- Runtime batch controls live in `data/embedding-tuning.json` (created
+  automatically if missing):
+
+```json
+{
+  "batchSize": 64,
+  "concurrency": 2,
+  "maxBatchChars": 80000,
+  "noteConcurrency": 1
+}
+```
+
+  The service checks the file's mtime before each note and applies changes to the
+  **next note without restarting the server**. Invalid JSON is logged and the previous
+  settings remain active.
+
+  - `batchSize` (1–128): inputs per request
+  - `concurrency` (1–8): parallel requests within a note
+  - `noteConcurrency` (1–8): parallel notes
+  - `maxBatchChars`: character budget per request
+
+  Total in-flight requests are roughly `noteConcurrency × concurrency`. Lower
+  them if the provider returns `429`/TPM limits.
+
+  The env vars `LOCAL_KEEP_EMBEDDING_BATCH_SIZE`, `..._MAX_BATCH_CHARS`,
+  `..._CONCURRENCY`, and `..._NOTE_CONCURRENCY` are the fallback initial values
+  used only when the JSON file is created; changing env requires a restart.
+  Prefer the JSON file for live tuning.
 - The SiliconFlow embeddings endpoint accepts an array of strings in one request;
   each item is still subject to the model's per-input token limit (e.g. 512 for
   `BAAI/bge-large-*`, 8192 for `BAAI/bge-m3`). Keep the chunk size within that

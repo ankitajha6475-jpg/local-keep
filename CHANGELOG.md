@@ -7,6 +7,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Embedding tuning is now live-reloadable from `data/embedding-tuning.json` (batch size, per-note concurrency, note concurrency, character budget) with best defaults for Qwen3-Embedding-8B (64/2/1/80000)
 - Embedding variants: table partitions are keyed by model **and** dimensions, so `Qwen/Qwen3-Embedding-8B` at 4096 and 1024 dims use independent tables; Qwen3 defaults to 4096
 - Admin embedding dimensions field and `Reset index` action/API to drop all embedding tables and reindex cleanly
 - Migration 8 resets the embedding index for the variant-aware table scheme and queues a rebuild
