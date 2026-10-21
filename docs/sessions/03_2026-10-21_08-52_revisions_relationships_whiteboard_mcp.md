@@ -1,7 +1,7 @@
 # Session Log: revisions, relationships, tags, whiteboard pages, and embedded MCP
 
 - **Date**: 2026-10-21 08:52
-- **Commit**: _pending_
+- **Commit**: `1e4de5195c71a359782aac9c7519e24eb274d2c6` — feat: add revisions, relationships, tags, whiteboard pages, and MCP
 
 ## Changed Files
 
