@@ -25,7 +25,8 @@ Example configuration:
   "enabled": true,
   "baseUrl": "https://api.siliconflow.cn/v1",
   "apiKey": "sk-...",
-  "model": "BAAI/bge-m3",
+  "model": "Qwen/Qwen3-Embedding-8B",
+  "dimensions": 4096,
   "chunkSize": 1200,
   "chunkOverlap": 180
 }
@@ -37,7 +38,9 @@ Example configuration:
   they must match the model's actual output.
 - `Test connection` does not save anything.
 - `Rebuild index` re-queues every note with `force`.
+- `Reset index` drops all embedding chunk/vector tables, clears model/index metadata, and reindexes with the current model/variant. It does not delete the note database or the embedding key.
 - Changing the chunk size/overlap forces a re-index.
+- `dimensions` defaults to 4096 for `Qwen/Qwen3-Embedding-8B` (2560 for 4B, 1024 for 0.6B). Qwen3 accepts 64–4096 depending on the model; for other models leave it empty and use the native dimensions from the connection probe.
 
 ## Rerank (optional)
 
@@ -72,15 +75,16 @@ The model name is the partition key:
 
 | Situation | Behavior |
 |---|---|
-| Same model name | Reuses the existing `embedding_models` row, vector table, and chunks |
+| Same model + same dimensions | Reuses the existing `embedding_models` row, vector table, and chunks |
+| Same model + different dimensions (variant) | Creates a separate vector table keyed by model + dimensions |
 | New model name | Creates a new vector table; old tables are preserved |
-| Switch back | Reuses the original table and its indexed chunks |
-| Same name, different dimensions | Rejected (`dimension_mismatch`); use a new model name |
+| Switch back | Reuses the original model/variant table and its indexed chunks |
 
-Vector tables are named by a hash of the model name (`emb_<hash>`), so model names
-are never interpolated directly into SQL. Metadata lives in
-`embedding_chunks_emb_<hash>`; vectors live in a `sqlite-vec` `vec0` virtual table
-`embedding_vec_emb_<hash>` using cosine distance.
+Vector tables are named by a hash of `model + variant` (`emb_<hash>`), so neither
+model names nor variants are interpolated directly into SQL. `variant` is the
+dimensions string, so the same model at 4096 and 1024 dimensions has independent
+tables. Metadata lives in `embedding_chunks_emb_<hash>`; vectors live in a
+`sqlite-vec` `vec0` virtual table `embedding_vec_emb_<hash>` using cosine distance.
 
 Switching models does not delete the old table. This is deliberate: switching back
 is instant for unchanged notes, and deleting a model should be an explicit admin
@@ -103,6 +107,8 @@ operation in a future version.
   `LOCAL_KEEP_EMBEDDING_NOTE_CONCURRENCY` (both default to `2`).
   Head edits, canvas checkpoints, archive/restore, and note creation enqueue the
   note automatically. Archived/purged notes remove their chunks.
+- Qwen3 dimensions: `Qwen/Qwen3-Embedding-8B` defaults to 4096; the API also accepts
+  64–4096. Changing dimensions creates a new variant table and requires a re-index.
 - Batch controls:
   - `LOCAL_KEEP_EMBEDDING_BATCH_SIZE` (default `32`, max `128`)
   - `LOCAL_KEEP_EMBEDDING_MAX_BATCH_CHARS` (default `48000`)

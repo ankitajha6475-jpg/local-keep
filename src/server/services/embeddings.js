@@ -20,8 +20,25 @@ function fail(status, message, code = 'embedding_error') {
   return error
 }
 
-function tableKeyFor(model) {
-  return `emb_${hash(model).slice(0, 16)}`
+function tableKeyFor(model, variant) {
+  return `emb_${hash(`${model}\0${variant}`).slice(0, 16)}`
+}
+
+function variantFor(dimensions) {
+  return String(Number(dimensions))
+}
+
+function defaultDimensionsForModel(model) {
+  const name = String(model || '')
+  if (!/^Qwen\/Qwen3-Embedding/i.test(name)) return null
+  if (/8B/i.test(name)) return 4096
+  if (/4B/i.test(name)) return 2560
+  if (/0\.6B/i.test(name)) return 1024
+  return 4096
+}
+
+function supportsDimensions(model) {
+  return /^Qwen\/Qwen3-Embedding/i.test(String(model || ''))
 }
 
 function safeKey(value) {
@@ -86,13 +103,15 @@ export function createEmbeddingService({
     return row
   }
 
-  function modelRow(model) {
-    return db.prepare('SELECT * FROM embedding_models WHERE model = ?').get(model)
+  function modelRow(model, variant) {
+    return db.prepare('SELECT * FROM embedding_models WHERE model = ? AND variant = ?')
+      .get(model, variantFor(variant))
   }
 
   function listModels() {
     return db.prepare('SELECT * FROM embedding_models ORDER BY created_at DESC').all().map(row => ({
       model: row.model,
+      variant: row.variant,
       dimensions: row.dimensions,
       baseUrl: row.base_url,
       chunkCount: row.chunk_count,
@@ -110,6 +129,7 @@ export function createEmbeddingService({
       apiKeyMasked: maskKey(row.api_key_encrypted),
       hasApiKey: !!row.api_key_encrypted,
       model: row.model,
+      variant: row.dimensions ? variantFor(row.dimensions) : null,
       dimensions: row.dimensions,
       chunkSize: row.chunk_size,
       chunkOverlap: row.chunk_overlap,
@@ -176,28 +196,26 @@ export function createEmbeddingService({
       throw fail(400, 'Embedding dimensions must be between 1 and 8192', 'invalid_dimensions')
     }
     requireVec()
-    const existing = modelRow(name)
+    const variant = variantFor(dims)
+    const existing = modelRow(name, variant)
     if (existing) {
-      if (Number(existing.dimensions) !== dims) {
-        throw fail(409, `Model "${name}" already uses ${existing.dimensions} dimensions. Use a different model name for a different dimension.`, 'dimension_mismatch')
-      }
       createModelTables(safeKey(existing.table_key), dims)
       return existing
     }
 
-    const key = tableKeyFor(name)
-    const collision = db.prepare('SELECT model FROM embedding_models WHERE table_key = ?').get(key)
-    if (collision && collision.model !== name) {
-      throw fail(409, 'Embedding table key collision; choose another model name', 'table_collision')
+    const key = tableKeyFor(name, variant)
+    const collision = db.prepare('SELECT model, variant FROM embedding_models WHERE table_key = ?').get(key)
+    if (collision) {
+      throw fail(409, 'Embedding table key collision; choose another model/variant', 'table_collision')
     }
     createModelTables(key, dims)
     const now = new Date().toISOString()
     db.prepare(`
       INSERT INTO embedding_models
-        (model, table_key, dimensions, base_url, chunk_count, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 0, 'idle', ?, ?)
-    `).run(name, key, dims, baseUrl || null, now, now)
-    return modelRow(name)
+        (model, variant, table_key, dimensions, base_url, chunk_count, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 0, 'idle', ?, ?)
+    `).run(name, variant, key, dims, baseUrl || null, now, now)
+    return modelRow(name, variant)
   }
 
   function apiKeyFromRow(row) {
@@ -214,7 +232,8 @@ export function createEmbeddingService({
       fetchImpl,
       batchSize: Math.max(1, Math.min(128, Number(embeddingBatchSize) || 32)),
       concurrency: Math.max(1, Math.min(8, Number(embeddingConcurrency) || 2)),
-      maxBatchChars: Math.max(1_000, Number(embeddingMaxBatchChars) || 48_000)
+      maxBatchChars: Math.max(1_000, Number(embeddingMaxBatchChars) || 48_000),
+      sendDimensions: supportsDimensions(model)
     })
   }
 
@@ -247,9 +266,14 @@ export function createEmbeddingService({
       baseUrl: normalizeBaseUrl(baseUrl || row.base_url),
       apiKey: apiKey || apiKeyFromRow(row),
       model: String(model || row.model || '').trim(),
-      dimensions: dimensions != null ? Number(dimensions) : row.dimensions
+      dimensions: dimensions != null
+        ? Number(dimensions)
+        : (String(model || row.model || '').trim() === row.model && row.dimensions
+            ? row.dimensions
+            : defaultDimensionsForModel(model || row.model))
     }
     if (!resolved.model) throw fail(400, 'Embedding model is required', 'invalid_model')
+    if (!supportsDimensions(resolved.model)) resolved.dimensions = null
     const client = makeClient(resolved)
     const probe = await client.probe()
     return { ok: true, ...probe, model: resolved.model, baseUrl: resolved.baseUrl }
@@ -301,7 +325,12 @@ export function createEmbeddingService({
 
     let nextDimensions = dimensions != null && dimensions !== ''
       ? Number(dimensions)
-      : old.model === nextModel ? old.dimensions : null
+      : old.model === nextModel
+        ? old.dimensions
+        : defaultDimensionsForModel(nextModel)
+    // `dimensions` is only meaningful for Qwen3-Embedding in the current
+    // SiliconFlow API. Other providers/models use their native dimensions.
+    if (!supportsDimensions(nextModel)) nextDimensions = null
 
     let probe = null
     let rerankProbe = null
@@ -333,8 +362,9 @@ export function createEmbeddingService({
     }
 
     const now = new Date().toISOString()
+    const dimensionsChanged = nextDimensions != null && Number(old.dimensions) !== Number(nextDimensions)
     const reindex = enabled && (
-      forceReindex || modelChanged || !old.enabled ||
+      forceReindex || modelChanged || dimensionsChanged || !old.enabled ||
       Number(old.chunk_size) !== nextChunkSize || Number(old.chunk_overlap) !== nextOverlap
     )
     db.prepare(`
@@ -367,16 +397,17 @@ export function createEmbeddingService({
     return { settings: settingsDto(), probe, rerankProbe }
   }
 
-  function upsertState(model, noteId, patch) {
+  function upsertState(model, variant, noteId, patch) {
     const now = new Date().toISOString()
+    const normalizedVariant = variantFor(variant)
     const existing = db.prepare(
-      'SELECT * FROM embedding_index_state WHERE model = ? AND note_id = ?'
-    ).get(model, noteId)
+      'SELECT * FROM embedding_index_state WHERE model = ? AND variant = ? AND note_id = ?'
+    ).get(model, normalizedVariant, noteId)
     if (existing) {
       db.prepare(`
         UPDATE embedding_index_state
         SET revision_id = ?, content_hash = ?, chunk_count = ?, status = ?, error = ?, updated_at = ?
-        WHERE model = ? AND note_id = ?
+        WHERE model = ? AND variant = ? AND note_id = ?
       `).run(
         patch.revisionId ?? existing.revision_id,
         patch.contentHash ?? existing.content_hash,
@@ -385,15 +416,17 @@ export function createEmbeddingService({
         patch.error ?? null,
         now,
         model,
+        normalizedVariant,
         noteId
       )
     } else {
       db.prepare(`
         INSERT INTO embedding_index_state
-          (model, note_id, revision_id, content_hash, chunk_count, status, error, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          (model, variant, note_id, revision_id, content_hash, chunk_count, status, error, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         model,
+        normalizedVariant,
         noteId,
         patch.revisionId || null,
         patch.contentHash || null,
@@ -405,8 +438,8 @@ export function createEmbeddingService({
     }
   }
 
-  function deleteNoteChunks(model, noteId) {
-    const row = modelRow(model)
+  function deleteNoteChunks(model, variant, noteId) {
+    const row = modelRow(model, variant)
     if (!row) return
     const key = safeKey(row.table_key)
     const chunks = `embedding_chunks_${key}`
@@ -421,7 +454,7 @@ export function createEmbeddingService({
 
   function deleteNoteEverywhere(noteId) {
     for (const row of db.prepare('SELECT * FROM embedding_models').all()) {
-      deleteNoteChunks(row.model, noteId)
+      deleteNoteChunks(row.model, row.variant, noteId)
     }
     db.prepare('DELETE FROM embedding_index_state WHERE note_id = ?').run(noteId)
   }
@@ -439,13 +472,14 @@ export function createEmbeddingService({
       baseUrl: settings.base_url
     })
     if (Number(model.dimensions) !== Number(settings.dimensions)) {
-      throw fail(409, 'Embedding model dimensions changed; use a new model name', 'dimension_mismatch')
+      throw fail(409, 'Embedding model dimensions changed; choose a variant with its own dimensions', 'dimension_mismatch')
     }
+    const variant = variantFor(settings.dimensions)
 
     const note = db.prepare('SELECT * FROM notes WHERE id = ?').get(noteId)
     if (!note || note.archived_at) {
-      deleteNoteChunks(settings.model, noteId)
-      upsertState(settings.model, noteId, {
+      deleteNoteChunks(settings.model, variant, noteId)
+      upsertState(settings.model, variant, noteId, {
         status: note ? 'archived' : 'missing',
         chunkCount: 0,
         contentHash: null,
@@ -456,8 +490,8 @@ export function createEmbeddingService({
 
     const text = noteText(note)
     if (!text) {
-      deleteNoteChunks(settings.model, noteId)
-      upsertState(settings.model, noteId, {
+      deleteNoteChunks(settings.model, variant, noteId)
+      upsertState(settings.model, variant, noteId, {
         status: 'empty',
         chunkCount: 0,
         contentHash: null,
@@ -468,8 +502,8 @@ export function createEmbeddingService({
 
     const contentHash = noteHash(note, text, settings.chunk_size, settings.chunk_overlap)
     const state = db.prepare(
-      'SELECT * FROM embedding_index_state WHERE model = ? AND note_id = ?'
-    ).get(settings.model, noteId)
+      'SELECT * FROM embedding_index_state WHERE model = ? AND variant = ? AND note_id = ?'
+    ).get(settings.model, variant, noteId)
     if (!force && state?.content_hash === contentHash && state.status === 'indexed' && state.chunk_count > 0) {
       return { skipped: true, reason: 'unchanged' }
     }
@@ -479,8 +513,8 @@ export function createEmbeddingService({
       overlapChars: settings.chunk_overlap
     })
     if (chunks.length === 0) {
-      deleteNoteChunks(settings.model, noteId)
-      upsertState(settings.model, noteId, {
+      deleteNoteChunks(settings.model, variant, noteId)
+      upsertState(settings.model, variant, noteId, {
         status: 'empty', chunkCount: 0, contentHash, revisionId: note.head_revision_id
       })
       return { skipped: true, reason: 'empty' }
@@ -516,7 +550,7 @@ export function createEmbeddingService({
     const now = new Date().toISOString()
     db.exec('BEGIN IMMEDIATE')
     try {
-      deleteNoteChunks(settings.model, noteId)
+      deleteNoteChunks(settings.model, variant, noteId)
       const insertChunk = db.prepare(`
         INSERT INTO ${chunksTable}
           (chunk_id, note_id, revision_id, chunk_index, content, content_hash, char_count, created_at)
@@ -537,7 +571,7 @@ export function createEmbeddingService({
         )
         insertVec.run(chunkId, new Float32Array(vectors[index]))
       })
-      upsertState(settings.model, noteId, {
+      upsertState(settings.model, variant, noteId, {
         revisionId: note.head_revision_id,
         contentHash,
         chunkCount: chunks.length,
@@ -548,13 +582,13 @@ export function createEmbeddingService({
       db.prepare(`
         UPDATE embedding_models
         SET chunk_count = ?, status = 'ready', last_indexed_at = ?, last_error = NULL, updated_at = ?
-        WHERE model = ?
-      `).run(count, now, now, settings.model)
+        WHERE model = ? AND variant = ?
+      `).run(count, now, now, settings.model, variant)
       db.exec('COMMIT')
       return { chunks: chunks.length }
     } catch (error) {
       try { db.exec('ROLLBACK') } catch (_) { /* noop */ }
-      upsertState(settings.model, noteId, {
+      upsertState(settings.model, variant, noteId, {
         revisionId: note.head_revision_id,
         contentHash,
         chunkCount: 0,
@@ -562,8 +596,9 @@ export function createEmbeddingService({
         error: error.message
       })
       db.prepare(`
-        UPDATE embedding_models SET status = 'error', last_error = ?, updated_at = ? WHERE model = ?
-      `).run(error.message, new Date().toISOString(), settings.model)
+        UPDATE embedding_models SET status = 'error', last_error = ?, updated_at = ?
+        WHERE model = ? AND variant = ?
+      `).run(error.message, new Date().toISOString(), settings.model, variant)
       throw error
     }
   }
@@ -790,6 +825,37 @@ export function createEmbeddingService({
     return { model: settings.model, rerank: rerankInfo, results }
   }
 
+  function resetIndex({ reindex = true } = {}) {
+    const tables = db.prepare(`
+      SELECT name FROM sqlite_master
+      WHERE type = 'table'
+        AND (name LIKE 'embedding_chunks_%' OR name LIKE 'embedding_vec_%')
+      ORDER BY name
+    `).all()
+      .map(row => row.name)
+      .filter(name => /^embedding_chunks_emb_[a-f0-9]{16}$/.test(name) ||
+        /^embedding_vec_emb_[a-f0-9]{16}$/.test(name))
+    queue.clear()
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const name of tables) {
+        db.exec(`DROP TABLE IF EXISTS "${String(name).replace(/"/g, '""')}"`)
+      }
+      db.exec('DELETE FROM embedding_index_state')
+      db.exec('DELETE FROM embedding_models')
+      db.exec('COMMIT')
+    } catch (error) {
+      try { db.exec('ROLLBACK') } catch (_) { /* noop */ }
+      throw error
+    }
+    if (reindex) enqueueAll({ force: true })
+    return {
+      success: true,
+      droppedTables: tables.length,
+      queued: reindex ? queue.size : 0
+    }
+  }
+
   function status() {
     const settings = settingsRow()
     return {
@@ -830,6 +896,7 @@ export function createEmbeddingService({
     saveConfig,
     enqueueNote,
     enqueueAll,
+    resetIndex,
     indexNoteNow,
     searchMatches,
     deleteNoteEverywhere,

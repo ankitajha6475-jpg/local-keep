@@ -7,6 +7,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Embedding variants: table partitions are keyed by model **and** dimensions, so `Qwen/Qwen3-Embedding-8B` at 4096 and 1024 dims use independent tables; Qwen3 defaults to 4096
+- Admin embedding dimensions field and `Reset index` action/API to drop all embedding tables and reindex cleanly
+- Migration 8 resets the embedding index for the variant-aware table scheme and queues a rebuild
 - Embedding indexing now sends chunk arrays in batches and runs bounded parallel requests/notes (`LOCAL_KEEP_EMBEDDING_BATCH_SIZE`, `_CONCURRENCY`, `_NOTE_CONCURRENCY`, `_MAX_BATCH_CHARS`); `429`/`5xx` retries honor `Retry-After`
 - Persistent MCP edit sessions: `edit_note` `mode: open|oneshot`, per-token one-note leases with TTL, dynamic open/close tool lists, and `tools_list_changed` notifications
 - MCP incremental editing tools: read, exact replace, line insert, delete, append, title, save, and close on the shared Yjs draft

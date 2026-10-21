@@ -582,7 +582,7 @@
           </div>
           <p class="embedding-hint">
             OpenAI-compatible embeddings (SiliconFlow by default). The API key is encrypted at rest.
-            Changing the model name creates or reuses a separate vector table; the old table is preserved.
+            Changing the model name or dimensions creates or reuses a separate variant table; old tables are preserved.
           </p>
           <p v-if="embeddingLoading" class="embedding-hint">Loading status…</p>
           <form class="embedding-form" @submit.prevent="saveEmbeddingSettings">
@@ -596,7 +596,12 @@
             </label>
             <label>
               Model
-              <input v-model="embeddingForm.model" type="text" placeholder="BAAI/bge-m3" required>
+              <input v-model="embeddingForm.model" type="text" placeholder="Qwen/Qwen3-Embedding-8B" required>
+            </label>
+            <label>
+              Dimensions
+              <input v-model.number="embeddingForm.dimensions" type="number" min="1" max="8192" placeholder="4096">
+              <small>Qwen3-Embedding supports 64–4096; other models use their native dimensions.</small>
             </label>
             <label>
               API key
@@ -665,6 +670,7 @@
                 {{ embeddingTesting ? 'Testing…' : 'Test connection' }}
               </button>
               <button type="button" class="cancel-btn" @click="reindexEmbeddings">Rebuild index</button>
+              <button type="button" class="cancel-btn" :disabled="embeddingQueue?.running" @click="resetEmbeddingIndex">Reset index</button>
               <button type="button" class="cancel-btn" @click="refreshEmbeddingStatus">Refresh status</button>
             </div>
           </form>
@@ -1038,7 +1044,8 @@ export default {
       enabled: false,
       baseUrl: 'https://api.siliconflow.cn/v1',
       apiKey: '',
-      model: 'BAAI/bge-m3',
+      model: 'Qwen/Qwen3-Embedding-8B',
+      dimensions: 4096,
       chunkSize: 1200,
       chunkOverlap: 180,
       rerankEnabled: false,
@@ -2706,7 +2713,8 @@ export default {
           enabled: !!settings.enabled,
           baseUrl: settings.baseUrl || 'https://api.siliconflow.cn/v1',
           apiKey: '',
-          model: settings.model || 'BAAI/bge-m3',
+          model: settings.model || 'Qwen/Qwen3-Embedding-8B',
+          dimensions: settings.dimensions || 4096,
           chunkSize: settings.chunkSize || 1200,
           chunkOverlap: settings.chunkOverlap ?? 180,
           rerankEnabled: !!settings.rerankEnabled,
@@ -2757,7 +2765,8 @@ export default {
           body: JSON.stringify({
             baseUrl: embeddingForm.value.baseUrl,
             apiKey: embeddingForm.value.apiKey || undefined,
-            model: embeddingForm.value.model
+            model: embeddingForm.value.model,
+            dimensions: embeddingForm.value.dimensions || undefined
           })
         })
         embeddingNotice.value = `Connection OK · ${data.dimensions} dimensions · ${data.latencyMs} ms`
@@ -2780,6 +2789,7 @@ export default {
             baseUrl: embeddingForm.value.baseUrl,
             apiKey: embeddingForm.value.apiKey || undefined,
             model: embeddingForm.value.model,
+            dimensions: embeddingForm.value.dimensions || undefined,
             chunkSize: embeddingForm.value.chunkSize,
             chunkOverlap: embeddingForm.value.chunkOverlap,
             rerankEnabled: embeddingForm.value.rerankEnabled,
@@ -2827,6 +2837,20 @@ export default {
         const data = await api('/api/admin/embeddings/reindex', { method: 'POST' })
         embeddingQueue.value = data.status?.queue || embeddingQueue.value
         embeddingNotice.value = `Queued ${data.queued} notes for re-indexing.`
+      } catch (e) {
+        embeddingError.value = e.message
+      }
+    }
+
+    async function resetEmbeddingIndex() {
+      if (!window.confirm('Reset all embedding tables and reindex every note? Current vectors will be deleted.')) return
+      try {
+        embeddingNotice.value = ''
+        embeddingError.value = ''
+        const data = await api('/api/admin/embeddings/reset', { method: 'POST' })
+        embeddingQueue.value = data.status?.queue || embeddingQueue.value
+        embeddingModels.value = data.status?.models || []
+        embeddingNotice.value = `Reset ${data.droppedTables || 0} tables; queued ${data.queued || 0} notes.`
       } catch (e) {
         embeddingError.value = e.message
       }
@@ -3320,6 +3344,7 @@ export default {
       testRerankSettings,
       saveEmbeddingSettings,
       reindexEmbeddings,
+      resetEmbeddingIndex,
       toggleSemanticSearch,
       // WebSocket
       wsConnected,

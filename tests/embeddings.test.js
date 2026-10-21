@@ -167,3 +167,92 @@ test('rerank failure falls back to vector order', async () => {
     ctx.cleanup()
   }
 })
+
+function variantClientFactory() {
+  return {
+    async probe() { return { dimensions: 3, latencyMs: 1 } },
+    async embed(texts) {
+      return texts.map(() => [1, 0, 0])
+    }
+  }
+}
+
+test('same model name with different dimensions gets a separate table', async () => {
+  const ctx = createFreshContext()
+  try {
+    const service = createEmbeddingService({
+      db: ctx.db,
+      dataDir: ctx.dir,
+      tags: ctx.tags,
+      clientFactory: ({ dimensions }) => ({
+        async probe() { return { dimensions: Number(dimensions), latencyMs: 1 } },
+        async embed(texts) {
+          return texts.map(() => Array(Number(dimensions)).fill(0))
+        }
+      }),
+      autoIndex: false
+    })
+
+    await service.saveConfig({
+      baseUrl: 'https://example.test/v1',
+      apiKey: 'secret-key',
+      model: 'Qwen/Qwen3-Embedding-8B',
+      dimensions: 3,
+      chunkSize: 400,
+      chunkOverlap: 40,
+      enabled: true
+    })
+    await service.saveConfig({
+      baseUrl: 'https://example.test/v1',
+      apiKey: '',
+      model: 'Qwen/Qwen3-Embedding-8B',
+      dimensions: 2,
+      chunkSize: 400,
+      chunkOverlap: 40,
+      enabled: true
+    })
+
+    const models = ctx.db.prepare(
+      'SELECT model, variant, dimensions, table_key FROM embedding_models ORDER BY dimensions'
+    ).all()
+    assert.equal(models.length, 2)
+    assert.deepEqual(models.map(row => row.variant), ['2', '3'])
+    assert.notEqual(models[0].table_key, models[1].table_key)
+    assert.equal(service.settings().dimensions, 2)
+    assert.equal(service.settings().variant, '2')
+  } finally {
+    ctx.cleanup()
+  }
+})
+
+test('resetIndex drops embedding tables and model metadata without touching settings', async () => {
+  const ctx = createFreshContext()
+  try {
+    const service = createEmbeddingService({
+      db: ctx.db,
+      dataDir: ctx.dir,
+      tags: ctx.tags,
+      clientFactory: variantClientFactory,
+      autoIndex: false
+    })
+    await service.saveConfig({
+      baseUrl: 'https://example.test/v1',
+      apiKey: 'secret-key',
+      model: 'fake-reset-model',
+      dimensions: 3,
+      chunkSize: 400,
+      chunkOverlap: 40,
+      enabled: true
+    })
+    const result = service.resetIndex({ reindex: false })
+    assert.ok(result.droppedTables >= 2)
+    assert.equal(ctx.db.prepare('SELECT COUNT(*) AS count FROM embedding_models').get().count, 0)
+    assert.equal(ctx.db.prepare('SELECT COUNT(*) AS count FROM embedding_index_state').get().count, 0)
+    const remaining = ctx.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'embedding_chunks_%'
+    `).all()
+    assert.equal(remaining.length, 0)
+  } finally {
+    ctx.cleanup()
+  }
+})

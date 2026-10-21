@@ -47,6 +47,7 @@ import { migration004MultiuserAuth } from './src/server/migrations/004-multiuser
 import { migration005Embeddings } from './src/server/migrations/005-embeddings.js'
 import { migration006OptionalRerank } from './src/server/migrations/006-optional-rerank.js'
 import { migration007LiveTextCollab } from './src/server/migrations/007-live-text-collab.js'
+import { migration008EmbeddingVariants } from './src/server/migrations/008-embedding-variants.js'
 
 import debugLib from 'debug'
 const log = debugLib('local-keep:server')
@@ -324,7 +325,7 @@ try {
 try {
   const migration = runMigrations({
     db,
-    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab],
+    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants],
     backupDir: BACKUPS_DIR,
     context: { imageStore }
   })
@@ -969,6 +970,15 @@ app.post('/api/admin/embeddings/test-rerank', checkAuth, requireAdmin, async (re
     res.json(await embeddings.testRerankConfig(req.body || {}))
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message, code: error.code })
+  }
+})
+
+app.post('/api/admin/embeddings/reset', checkAuth, requireAdmin, (req, res) => {
+  try {
+    const result = embeddings.resetIndex({ reindex: req.body?.reindex !== false })
+    res.json({ ...result, status: embeddings.status() })
+  } catch (error) {
+    sendServiceError(res, error)
   }
 })
 

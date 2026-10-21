@@ -25,7 +25,8 @@ export function createEmbeddingClient({
   fetchImpl = globalThis.fetch,
   batchSize = 32,
   concurrency = 2,
-  maxBatchChars = 48_000
+  maxBatchChars = 48_000,
+  sendDimensions = false
 }) {
   if (!baseUrl) throw new Error('Embedding base URL is required')
   if (!apiKey) throw new Error('Embedding API key is required')
@@ -42,6 +43,7 @@ export function createEmbeddingClient({
       input,
       encoding_format: 'float'
     }
+    if (sendDimensions && dimensions != null) body.dimensions = Number(dimensions)
     let lastError = null
     for (let attempt = 0; attempt < 3; attempt++) {
       const controller = new AbortController()

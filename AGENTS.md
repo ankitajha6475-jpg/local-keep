@@ -266,11 +266,11 @@ corresponding card while any session has that note open.
 - `embedding_settings` is a singleton: enabled, base URL, encrypted API key,
   active model, dimensions, chunk size/overlap. The key is AES-256-GCM encrypted
   with a key derived from `data/server_secret`; never return it.
-- **Model name is the partition key.** `embedding_models` stores a hashed
-  `emb_<hash>` table key and dimensions. Same model name reuses the original
-  `embedding_chunks_emb_<hash>` + `embedding_vec_emb_<hash>` tables; a new name
-  creates new tables; switching back reuses the old table. Same name with
-  different dimensions is rejected.
+- **Model + dimension variant is the partition key.** `embedding_models` stores
+  a hashed `emb_<hash(model+variant)>` table key and dimensions; `variant` is the
+  dimensions string. Same model at the same dimensions reuses its original
+  `embedding_chunks_emb_<hash>` + `embedding_vec_emb_<hash>` tables; a new model
+  or dimensions creates new tables; switching back reuses the old table.
 - Vector tables are `sqlite-vec` `vec0` tables using cosine distance. The
   database is opened with `allowExtension: true`; `sqlite-vec` is loaded from
   `node_modules/sqlite-vec-linux-x64/vec0.so`. The image is `node:22-slim`
@@ -419,9 +419,11 @@ embedding_settings (id=1, enabled, base_url, api_key_encrypted, model, dimension
                     chunk_size, chunk_overlap, last_tested_at, last_error, updated_at,
                     rerank_enabled, rerank_base_url, rerank_api_key_encrypted,
                     rerank_model, rerank_top_n)
-embedding_models (model, table_key, dimensions, base_url, chunk_count, status,
+embedding_models (model, variant, table_key, dimensions, base_url, chunk_count, status,
                   last_indexed_at, last_error, created_at, updated_at)
-embedding_index_state (model, note_id, revision_id, content_hash, chunk_count, status, error, updated_at)
+                  -- PRIMARY KEY(model, variant); variant is the dimensions string (e.g. "4096")
+embedding_index_state (model, variant, note_id, revision_id, content_hash, chunk_count,
+                       status, error, updated_at)  -- PRIMARY KEY(model, variant, note_id)
 -- per model: embedding_chunks_emb_<hash>, embedding_vec_emb_<hash> (vec0 cosine)
 image_refs (image_hash, note_id)                          -- head/tile refs
 revision_image_refs (image_hash, revision_id)             -- protects old-version images
@@ -486,7 +488,7 @@ All notable changes must be recorded in `CHANGELOG.md`. When making changes:
 23. **HTTPS cert SAN**: the shared mkcert cert is for `192.168.3.222`, not `localhost`; use the IP or issue a cert for your hostname. `COOKIE_SECURE=1` means login cookies only work over HTTPS.
 24. **Multiuser migration**: existing installs become `admin` / `Administrator` with the old password. Do not delete `users`/`sessions`; use `npm run auth:reset -- <username>` for recovery and keep at least one active admin.
 25. **sqlite-vec / image**: the loadable extension is glibc; keep `node:22-slim` (or rebuild for musl). `openDatabase` must pass `allowExtension: true` before `loadExtension`.
-26. **Embedding model partitions**: never store vectors of two models in one table. Use the hashed `emb_<hash>` table key; a changed model name gets a new table, and switching back reuses the old one. Dimensions are fixed per model name.
+26. **Embedding model partitions**: never store vectors of two model/variant pairs in one table. Use the hashed `emb_<hash(model+variant)>` table key; `variant` is the dimensions string (for Qwen3, e.g. 4096/1024). A changed model or dimensions gets a new table, and switching back reuses the old one. Do not reject same model name with different dimensions; that is a separate variant.
 27. **Embedding key**: only decrypt in the server; never return `api_key_encrypted` or log the key. The admin API returns `hasApiKey`/mask only.
 28. **Embedding index freshness**: note head edits/checkpoints and archive/restore must enqueue the note. A failed embedding call must not delete the previous vector rows; index atomically after all vectors succeed.
 29. **Rerank is optional**: never make semantic search depend on a reranker. If it is unset or fails, return vector order and expose `rerank.error`; do not fail the request.
