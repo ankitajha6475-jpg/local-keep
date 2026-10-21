@@ -172,6 +172,7 @@
                 </div>
                 <button type="button" @click="openAccountSettings()">⚙️ Account settings</button>
                 <button v-if="isAdmin" type="button" @click="openUsers">👥 Manage users</button>
+                <button v-if="isAdmin" type="button" @click="openEmbeddingSettings">✨ Semantic search</button>
                 <button type="button" class="account-menu-danger" @click="logout">🔒 Lock workspace</button>
               </div>
             </div>
@@ -184,10 +185,17 @@
               ref="searchInput"
               v-model="searchQuery"
               type="text"
-              placeholder="Search notes..."
+              :placeholder="semanticSearchEnabled ? 'Semantic search...' : 'Search notes...'"
               class="search-input"
               @input="onSearchInput"
             >
+            <button
+              type="button"
+              class="search-semantic-btn"
+              :class="{ active: semanticSearchEnabled }"
+              @click="toggleSemanticSearch"
+              :title="semanticSearchEnabled ? 'Semantic search on' : 'Semantic search off'"
+            >✨</button>
             <button v-if="searchQuery" @click="clearSearch" class="search-clear-btn" title="Clear search">×</button>
             <button @click="closeSearch" class="search-close-btn" title="Close search (Esc)">✕</button>
           </div>
@@ -559,6 +567,86 @@
         </div>
       </div>
 
+      <!-- Admin: semantic search settings -->
+      <div v-if="embeddingSettingsOpen" class="modal-overlay" @mousedown.self="embeddingSettingsOpen = false">
+        <div class="modal-content embedding-modal">
+          <div class="modal-header">
+            <h2>✨ Semantic search</h2>
+            <button type="button" class="close-modal-btn" @click="embeddingSettingsOpen = false">×</button>
+          </div>
+          <p class="embedding-hint">
+            OpenAI-compatible embeddings (SiliconFlow by default). The API key is encrypted at rest.
+            Changing the model name creates or reuses a separate vector table; the old table is preserved.
+          </p>
+          <p v-if="embeddingLoading" class="embedding-hint">Loading status…</p>
+          <form class="embedding-form" @submit.prevent="saveEmbeddingSettings">
+            <label class="embedding-check">
+              <input v-model="embeddingForm.enabled" type="checkbox">
+              Enable semantic search
+            </label>
+            <label>
+              Base URL
+              <input v-model="embeddingForm.baseUrl" type="url" placeholder="https://api.siliconflow.cn/v1" required>
+            </label>
+            <label>
+              Model
+              <input v-model="embeddingForm.model" type="text" placeholder="BAAI/bge-m3" required>
+            </label>
+            <label>
+              API key
+              <input
+                v-model="embeddingForm.apiKey"
+                type="password"
+                autocomplete="new-password"
+                :placeholder="embeddingSettings?.hasApiKey ? 'Saved key — leave blank to keep' : 'sk-...'"
+              >
+              <small v-if="embeddingSettings?.hasApiKey">A key is already saved. Leave blank to keep it.</small>
+            </label>
+            <div class="embedding-grid">
+              <label>
+                Chunk size (chars)
+                <input v-model.number="embeddingForm.chunkSize" type="number" min="200" max="4000">
+              </label>
+              <label>
+                Overlap (chars)
+                <input v-model.number="embeddingForm.chunkOverlap" type="number" min="0" max="1000">
+              </label>
+            </div>
+            <p v-if="embeddingError" class="error">{{ embeddingError }}</p>
+            <p v-if="embeddingNotice" class="account-success">{{ embeddingNotice }}</p>
+            <div class="embedding-actions">
+              <button type="submit" class="save-btn" :disabled="embeddingSaving">
+                {{ embeddingSaving ? 'Saving…' : 'Save & enable' }}
+              </button>
+              <button type="button" class="cancel-btn" :disabled="embeddingTesting" @click="testEmbeddingSettings">
+                {{ embeddingTesting ? 'Testing…' : 'Test connection' }}
+              </button>
+              <button type="button" class="cancel-btn" @click="reindexEmbeddings">Rebuild index</button>
+              <button type="button" class="cancel-btn" @click="refreshEmbeddingStatus">Refresh status</button>
+            </div>
+          </form>
+
+          <div v-if="embeddingSettings" class="embedding-status">
+            <span>Status: <strong>{{ embeddingSettings.enabled ? 'enabled' : 'disabled' }}</strong></span>
+            <span v-if="embeddingSettings.model">Model: <strong>{{ embeddingSettings.model }}</strong></span>
+            <span v-if="embeddingSettings.dimensions">{{ embeddingSettings.dimensions }} dims</span>
+            <span v-if="embeddingQueue?.queued">Queue: {{ embeddingQueue.queued }}</span>
+            <span v-if="embeddingQueue?.running">Indexing: {{ embeddingQueue.currentNote || '…' }}</span>
+            <span v-if="embeddingSettings.lastError" class="embedding-error">{{ embeddingSettings.lastError }}</span>
+          </div>
+
+          <div v-if="embeddingModels.length" class="embedding-models">
+            <div v-for="model in embeddingModels" :key="model.model" class="embedding-model-row">
+              <div>
+                <strong>{{ model.model }}</strong>
+                <small>{{ model.dimensions }} dims · {{ model.chunkCount }} chunks · {{ model.status }}</small>
+              </div>
+              <small v-if="model.lastIndexedAt">{{ formatDate(model.lastIndexedAt) }}</small>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Modal for Add/Edit Note -->
       <div v-if="isModalOpen" class="modal-overlay" @mousedown.self="closeModal">
         <div
@@ -894,6 +982,24 @@ export default {
     const usersError = ref('')
     const newUserForm = ref({ username: '', displayName: '', password: '', role: 'member' })
     const resetPasswordResult = ref('')
+    const embeddingSettingsOpen = ref(false)
+    const embeddingSettings = ref(null)
+    const embeddingModels = ref([])
+    const embeddingQueue = ref(null)
+    const embeddingLoading = ref(false)
+    const embeddingSaving = ref(false)
+    const embeddingTesting = ref(false)
+    const embeddingError = ref('')
+    const embeddingNotice = ref('')
+    const embeddingForm = ref({
+      enabled: false,
+      baseUrl: 'https://api.siliconflow.cn/v1',
+      apiKey: '',
+      model: 'BAAI/bge-m3',
+      chunkSize: 1200,
+      chunkOverlap: 180
+    })
+    const semanticSearchEnabled = ref(false)
 
     const isAdmin = computed(() => currentUser.value?.role === 'admin')
     const userInitials = computed(() => {
@@ -2253,6 +2359,119 @@ export default {
       }
     }
 
+    // ── Semantic search / embedding settings ──
+    function applyEmbeddingStatus(data, { updateForm = false } = {}) {
+      embeddingSettings.value = data.settings || null
+      embeddingModels.value = data.models || []
+      embeddingQueue.value = data.queue || null
+      if (updateForm && data.settings) {
+        const settings = data.settings
+        embeddingForm.value = {
+          enabled: !!settings.enabled,
+          baseUrl: settings.baseUrl || 'https://api.siliconflow.cn/v1',
+          apiKey: '',
+          model: settings.model || 'BAAI/bge-m3',
+          chunkSize: settings.chunkSize || 1200,
+          chunkOverlap: settings.chunkOverlap ?? 180
+        }
+      }
+    }
+
+    async function openEmbeddingSettings() {
+      accountMenuOpen.value = false
+      if (!isAdmin.value) return
+      embeddingSettingsOpen.value = true
+      embeddingError.value = ''
+      embeddingNotice.value = ''
+      embeddingLoading.value = true
+      try {
+        const data = await api('/api/admin/embeddings')
+        applyEmbeddingStatus(data, { updateForm: true })
+      } catch (e) {
+        embeddingError.value = e.message
+      } finally {
+        embeddingLoading.value = false
+      }
+    }
+
+    async function refreshEmbeddingStatus() {
+      try {
+        embeddingLoading.value = true
+        embeddingError.value = ''
+        const data = await api('/api/admin/embeddings')
+        applyEmbeddingStatus(data)
+      } catch (e) {
+        embeddingError.value = e.message
+      } finally {
+        embeddingLoading.value = false
+      }
+    }
+
+    async function testEmbeddingSettings() {
+      try {
+        embeddingTesting.value = true
+        embeddingError.value = ''
+        embeddingNotice.value = ''
+        const data = await api('/api/admin/embeddings/test', {
+          method: 'POST',
+          body: JSON.stringify({
+            baseUrl: embeddingForm.value.baseUrl,
+            apiKey: embeddingForm.value.apiKey || undefined,
+            model: embeddingForm.value.model
+          })
+        })
+        embeddingNotice.value = `Connection OK · ${data.dimensions} dimensions · ${data.latencyMs} ms`
+      } catch (e) {
+        embeddingError.value = e.message
+      } finally {
+        embeddingTesting.value = false
+      }
+    }
+
+    async function saveEmbeddingSettings() {
+      try {
+        embeddingSaving.value = true
+        embeddingError.value = ''
+        embeddingNotice.value = ''
+        const data = await api('/api/admin/embeddings', {
+          method: 'PUT',
+          body: JSON.stringify({
+            enabled: embeddingForm.value.enabled,
+            baseUrl: embeddingForm.value.baseUrl,
+            apiKey: embeddingForm.value.apiKey || undefined,
+            model: embeddingForm.value.model,
+            chunkSize: embeddingForm.value.chunkSize,
+            chunkOverlap: embeddingForm.value.chunkOverlap
+          })
+        })
+        applyEmbeddingStatus(data, { updateForm: true })
+        embeddingNotice.value = data.settings?.enabled
+          ? 'Saved. Indexing is running in the background.'
+          : 'Saved. Semantic search is disabled.'
+      } catch (e) {
+        embeddingError.value = e.message
+      } finally {
+        embeddingSaving.value = false
+      }
+    }
+
+    async function reindexEmbeddings() {
+      try {
+        embeddingNotice.value = ''
+        embeddingError.value = ''
+        const data = await api('/api/admin/embeddings/reindex', { method: 'POST' })
+        embeddingQueue.value = data.status?.queue || embeddingQueue.value
+        embeddingNotice.value = `Queued ${data.queued} notes for re-indexing.`
+      } catch (e) {
+        embeddingError.value = e.message
+      }
+    }
+
+    function toggleSemanticSearch() {
+      semanticSearchEnabled.value = !semanticSearchEnabled.value
+      if (searchQuery.value.trim()) onSearchInput()
+    }
+
     // Search methods
     const openSearch = () => {
       searchOpen.value = true
@@ -2286,9 +2505,24 @@ export default {
       searchTimer = setTimeout(async () => {
         searchLoading.value = true
         try {
-          searchResults.value = await api(`/api/search?q=${encodeURIComponent(q)}`)
+          if (semanticSearchEnabled.value) {
+            const data = await api(`/api/search/semantic?q=${encodeURIComponent(q)}&limit=50`)
+            searchResults.value = (data.results || []).map(result => result.note_id)
+          } else {
+            searchResults.value = await api(`/api/search?q=${encodeURIComponent(q)}`)
+          }
         } catch (e) {
-          searchResults.value = []
+          if (semanticSearchEnabled.value) {
+            semanticSearchEnabled.value = false
+            showRevisionNotice(`Semantic search unavailable: ${e.message}`)
+            try {
+              searchResults.value = await api(`/api/search?q=${encodeURIComponent(q)}`)
+            } catch (_) {
+              searchResults.value = []
+            }
+          } else {
+            searchResults.value = []
+          }
         } finally {
           searchLoading.value = false
         }
@@ -2705,6 +2939,24 @@ export default {
       createMcpToken,
       revokeMcpToken,
       copyMcpToken,
+      // Semantic search / embedding settings
+      embeddingSettingsOpen,
+      embeddingSettings,
+      embeddingModels,
+      embeddingQueue,
+      embeddingLoading,
+      embeddingSaving,
+      embeddingTesting,
+      embeddingError,
+      embeddingNotice,
+      embeddingForm,
+      semanticSearchEnabled,
+      openEmbeddingSettings,
+      refreshEmbeddingStatus,
+      testEmbeddingSettings,
+      saveEmbeddingSettings,
+      reindexEmbeddings,
+      toggleSemanticSearch,
       // WebSocket
       wsConnected,
       wsConnecting,
@@ -3535,6 +3787,23 @@ header h1 {
 
 .search-input::placeholder {
   color: #80868b;
+}
+
+.search-semantic-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: transparent;
+  border-radius: 50%;
+  cursor: pointer;
+  font-size: 0.9rem;
+  opacity: 0.55;
+  flex-shrink: 0;
+}
+
+.search-semantic-btn.active {
+  opacity: 1;
+  background: #e8f0fe;
 }
 
 .search-clear-btn {
@@ -5111,6 +5380,147 @@ main {
   height: 1px;
   opacity: 0;
   pointer-events: none;
+}
+
+.embedding-modal {
+  background: #fff;
+  border-radius: 14px;
+  padding: 1.25rem;
+  width: min(680px, 94vw);
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.28);
+}
+
+.embedding-hint {
+  color: #64748b;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.embedding-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  margin-top: 0.7rem;
+}
+
+.embedding-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  color: #334155;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.embedding-form label small {
+  color: #94a3b8;
+  font-weight: 400;
+  font-size: 0.68rem;
+}
+
+.embedding-form input[type="url"],
+.embedding-form input[type="text"],
+.embedding-form input[type="password"],
+.embedding-form input[type="number"] {
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid #dbe2ea;
+  border-radius: 7px;
+  font-size: 0.82rem;
+  box-sizing: border-box;
+}
+
+.embedding-check {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 0.45rem !important;
+  font-weight: 500 !important;
+}
+
+.embedding-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.6rem;
+}
+
+.embedding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.embedding-actions button {
+  border: 1px solid #dbe2ea;
+  background: #fff;
+  color: #475569;
+  border-radius: 6px;
+  padding: 0.4rem 0.65rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.embedding-actions .save-btn {
+  background: #4f46e5;
+  border-color: #4f46e5;
+  color: #fff;
+}
+
+.embedding-actions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.embedding-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  margin-top: 0.8rem;
+  font-size: 0.72rem;
+  color: #64748b;
+}
+
+.embedding-status strong {
+  color: #0f172a;
+}
+
+.embedding-error {
+  color: #b91c1c;
+  width: 100%;
+}
+
+.embedding-models {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.7rem;
+}
+
+.embedding-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  padding: 0.45rem 0.55rem;
+}
+
+.embedding-model-row strong {
+  display: block;
+  font-size: 0.76rem;
+  color: #0f172a;
+}
+
+.embedding-model-row small {
+  color: #94a3b8;
+  font-size: 0.68rem;
 }
 
 .account-modal,

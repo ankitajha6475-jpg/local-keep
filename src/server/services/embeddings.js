@@ -1,0 +1,700 @@
+import crypto from 'crypto'
+import path from 'path'
+import { getLoadablePath } from 'sqlite-vec'
+import { loadOrCreateSecret } from '../secret.js'
+import { encryptSecret, decryptSecret } from '../embeddings/secrets.js'
+import { createEmbeddingClient } from '../embeddings/client.js'
+import { chunkText } from '../embeddings/chunk.js'
+import { extractCanvasText } from '../fts.js'
+import { markdownToText } from '../../shared/notesText.js'
+
+function hash(value) {
+  return crypto.createHash('sha256').update(String(value)).digest('hex')
+}
+
+function fail(status, message, code = 'embedding_error') {
+  const error = new Error(message)
+  error.status = status
+  error.code = code
+  return error
+}
+
+function tableKeyFor(model) {
+  return `emb_${hash(model).slice(0, 16)}`
+}
+
+function safeKey(value) {
+  if (!/^emb_[a-f0-9]{16}$/.test(String(value || ''))) {
+    throw new Error('Invalid embedding table key')
+  }
+  return value
+}
+
+function noteText(row) {
+  const markdown = markdownToText(row.content || '')
+  const canvas = extractCanvasText(row.canvas_data || row.canvasData)
+  return `${markdown}\n\n${canvas}`.trim()
+}
+
+function noteHash(row, text, chunkSize, chunkOverlap) {
+  return hash(`${row.title || ''}\n${text}\n${chunkSize}\n${chunkOverlap}`)
+}
+
+function normalizeBaseUrl(value) {
+  const text = String(value || '').trim().replace(/\/+$/, '')
+  if (!text) throw fail(400, 'Embedding base URL is required', 'invalid_base_url')
+  let url
+  try { url = new URL(text) } catch (_) { throw fail(400, 'Embedding base URL is invalid', 'invalid_base_url') }
+  if (!['http:', 'https:'].includes(url.protocol)) {
+    throw fail(400, 'Embedding base URL must use http or https', 'invalid_base_url')
+  }
+  return text
+}
+
+function maskKey(encrypted) {
+  return encrypted ? '••••••••' : ''
+}
+
+export function createEmbeddingService({
+  db,
+  dataDir,
+  tags,
+  clientFactory = createEmbeddingClient,
+  fetchImpl,
+  autoIndex = true
+}) {
+  const SECRET = loadOrCreateSecret(path.join(dataDir, 'server_secret'))
+  const queue = new Map() // noteId -> force
+  const stats = { indexed: 0, failed: 0, lastError: null }
+  let vecLoaded = false
+  let vecVersion = null
+  let vecError = null
+  let workerRunning = false
+  let workerTimer = null
+  let currentNote = null
+
+  function settingsRow() {
+    const row = db.prepare('SELECT * FROM embedding_settings WHERE id = 1').get()
+    if (!row) throw new Error('Embedding settings are missing')
+    return row
+  }
+
+  function modelRow(model) {
+    return db.prepare('SELECT * FROM embedding_models WHERE model = ?').get(model)
+  }
+
+  function listModels() {
+    return db.prepare('SELECT * FROM embedding_models ORDER BY created_at DESC').all().map(row => ({
+      model: row.model,
+      dimensions: row.dimensions,
+      baseUrl: row.base_url,
+      chunkCount: row.chunk_count,
+      status: row.status,
+      lastIndexedAt: row.last_indexed_at,
+      lastError: row.last_error,
+      createdAt: row.created_at
+    }))
+  }
+
+  function settingsDto(row = settingsRow()) {
+    return {
+      enabled: !!row.enabled,
+      baseUrl: row.base_url,
+      apiKeyMasked: maskKey(row.api_key_encrypted),
+      hasApiKey: !!row.api_key_encrypted,
+      model: row.model,
+      dimensions: row.dimensions,
+      chunkSize: row.chunk_size,
+      chunkOverlap: row.chunk_overlap,
+      lastTestedAt: row.last_tested_at,
+      lastError: row.last_error,
+      updatedAt: row.updated_at
+    }
+  }
+
+  function loadVec() {
+    if (vecLoaded) return true
+    try {
+      db.loadExtension(getLoadablePath())
+      const row = db.prepare('SELECT vec_version() AS version').get()
+      vecVersion = row?.version || null
+      vecLoaded = true
+      vecError = null
+      return true
+    } catch (error) {
+      vecError = error.message
+      return false
+    }
+  }
+
+  function requireVec() {
+    if (!loadVec()) {
+      throw fail(500, `sqlite-vec is unavailable: ${vecError}`, 'vec_unavailable')
+    }
+  }
+
+  function createModelTables(key, dimensions) {
+    const chunks = `embedding_chunks_${key}`
+    const vec = `embedding_vec_${key}`
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS ${chunks} (
+        chunk_id TEXT PRIMARY KEY,
+        note_id TEXT NOT NULL,
+        revision_id TEXT,
+        chunk_index INTEGER NOT NULL,
+        content TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        char_count INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_${key}_note ON ${chunks}(note_id);
+    `)
+    db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS ${vec}
+      USING vec0(chunk_id text primary key, embedding float[${dimensions}] distance_metric=cosine)
+    `)
+    return { chunks, vec }
+  }
+
+  function ensureModel({ model, dimensions, baseUrl }) {
+    const name = String(model || '').trim()
+    if (!name || name.length > 200) throw fail(400, 'Embedding model is required', 'invalid_model')
+    const dims = Number(dimensions)
+    if (!Number.isInteger(dims) || dims < 1 || dims > 8192) {
+      throw fail(400, 'Embedding dimensions must be between 1 and 8192', 'invalid_dimensions')
+    }
+    requireVec()
+    const existing = modelRow(name)
+    if (existing) {
+      if (Number(existing.dimensions) !== dims) {
+        throw fail(409, `Model "${name}" already uses ${existing.dimensions} dimensions. Use a different model name for a different dimension.`, 'dimension_mismatch')
+      }
+      createModelTables(safeKey(existing.table_key), dims)
+      return existing
+    }
+
+    const key = tableKeyFor(name)
+    const collision = db.prepare('SELECT model FROM embedding_models WHERE table_key = ?').get(key)
+    if (collision && collision.model !== name) {
+      throw fail(409, 'Embedding table key collision; choose another model name', 'table_collision')
+    }
+    createModelTables(key, dims)
+    const now = new Date().toISOString()
+    db.prepare(`
+      INSERT INTO embedding_models
+        (model, table_key, dimensions, base_url, chunk_count, status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 0, 'idle', ?, ?)
+    `).run(name, key, dims, baseUrl || null, now, now)
+    return modelRow(name)
+  }
+
+  function apiKeyFromRow(row) {
+    return decryptSecret(SECRET, row.api_key_encrypted)
+  }
+
+  function makeClient({ baseUrl, apiKey, model, dimensions }) {
+    if (!apiKey) throw fail(400, 'Embedding API key is required', 'missing_api_key')
+    return clientFactory({
+      baseUrl,
+      apiKey,
+      model,
+      dimensions,
+      fetchImpl
+    })
+  }
+
+  async function testConfig({ baseUrl, apiKey, model, dimensions } = {}) {
+    const row = settingsRow()
+    const resolved = {
+      baseUrl: normalizeBaseUrl(baseUrl || row.base_url),
+      apiKey: apiKey || apiKeyFromRow(row),
+      model: String(model || row.model || '').trim(),
+      dimensions: dimensions != null ? Number(dimensions) : row.dimensions
+    }
+    if (!resolved.model) throw fail(400, 'Embedding model is required', 'invalid_model')
+    const client = makeClient(resolved)
+    const probe = await client.probe()
+    return { ok: true, ...probe, model: resolved.model, baseUrl: resolved.baseUrl }
+  }
+
+  async function saveConfig({
+    baseUrl,
+    apiKey,
+    clearApiKey = false,
+    model,
+    dimensions,
+    chunkSize,
+    chunkOverlap,
+    enabled = false,
+    forceReindex = false
+  } = {}) {
+    const old = settingsRow()
+    const nextBaseUrl = normalizeBaseUrl(baseUrl || old.base_url)
+    const nextModel = String(model !== undefined ? model : (old.model || '')).trim()
+    const nextChunkSize = Math.max(200, Math.min(4000, Number(chunkSize) || old.chunk_size || 1200))
+    const overlapInput = chunkOverlap !== undefined && chunkOverlap !== null && chunkOverlap !== ''
+      ? Number(chunkOverlap)
+      : (old.chunk_overlap ?? 180)
+    const nextOverlap = Math.max(0, Math.min(
+      Math.floor(nextChunkSize / 3),
+      Number.isFinite(overlapInput) ? overlapInput : 180
+    ))
+    let encrypted = old.api_key_encrypted
+    if (clearApiKey) encrypted = null
+    else if (apiKey) encrypted = encryptSecret(SECRET, String(apiKey))
+    const rawKey = clearApiKey ? null : (apiKey || apiKeyFromRow(old))
+
+    let nextDimensions = dimensions != null && dimensions !== ''
+      ? Number(dimensions)
+      : old.model === nextModel ? old.dimensions : null
+
+    let probe = null
+    let modelChanged = old.model !== nextModel
+    if (enabled) {
+      if (!rawKey) throw fail(400, 'Embedding API key is required to enable semantic search', 'missing_api_key')
+      if (!nextModel) throw fail(400, 'Embedding model is required', 'invalid_model')
+      probe = await testConfig({
+        baseUrl: nextBaseUrl,
+        apiKey: rawKey,
+        model: nextModel,
+        dimensions: nextDimensions
+      })
+      if (nextDimensions != null && Number(nextDimensions) !== probe.dimensions) {
+        throw fail(400, `Model returned ${probe.dimensions} dimensions, but ${nextDimensions} was configured`, 'dimension_mismatch')
+      }
+      nextDimensions = probe.dimensions
+      ensureModel({ model: nextModel, dimensions: nextDimensions, baseUrl: nextBaseUrl })
+    }
+
+    const now = new Date().toISOString()
+    const reindex = enabled && (
+      forceReindex || modelChanged || !old.enabled ||
+      Number(old.chunk_size) !== nextChunkSize || Number(old.chunk_overlap) !== nextOverlap
+    )
+    db.prepare(`
+      UPDATE embedding_settings
+      SET enabled = ?, base_url = ?, api_key_encrypted = ?, model = ?, dimensions = ?,
+          chunk_size = ?, chunk_overlap = ?, last_tested_at = ?, last_error = NULL, updated_at = ?
+      WHERE id = 1
+    `).run(
+      enabled ? 1 : 0,
+      nextBaseUrl,
+      encrypted,
+      nextModel || null,
+      nextDimensions || null,
+      nextChunkSize,
+      nextOverlap,
+      probe ? now : old.last_tested_at,
+      now
+    )
+
+    if (!enabled) {
+      queue.clear()
+    } else {
+      enqueueAll({ force: reindex })
+    }
+    return { settings: settingsDto(), probe }
+  }
+
+  function upsertState(model, noteId, patch) {
+    const now = new Date().toISOString()
+    const existing = db.prepare(
+      'SELECT * FROM embedding_index_state WHERE model = ? AND note_id = ?'
+    ).get(model, noteId)
+    if (existing) {
+      db.prepare(`
+        UPDATE embedding_index_state
+        SET revision_id = ?, content_hash = ?, chunk_count = ?, status = ?, error = ?, updated_at = ?
+        WHERE model = ? AND note_id = ?
+      `).run(
+        patch.revisionId ?? existing.revision_id,
+        patch.contentHash ?? existing.content_hash,
+        patch.chunkCount ?? existing.chunk_count,
+        patch.status ?? existing.status,
+        patch.error ?? null,
+        now,
+        model,
+        noteId
+      )
+    } else {
+      db.prepare(`
+        INSERT INTO embedding_index_state
+          (model, note_id, revision_id, content_hash, chunk_count, status, error, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        model,
+        noteId,
+        patch.revisionId || null,
+        patch.contentHash || null,
+        patch.chunkCount || 0,
+        patch.status || 'pending',
+        patch.error || null,
+        now
+      )
+    }
+  }
+
+  function deleteNoteChunks(model, noteId) {
+    const row = modelRow(model)
+    if (!row) return
+    const key = safeKey(row.table_key)
+    const chunks = `embedding_chunks_${key}`
+    const vec = `embedding_vec_${key}`
+    try {
+      const ids = db.prepare(`SELECT chunk_id FROM ${chunks} WHERE note_id = ?`).all(noteId)
+      const delVec = db.prepare(`DELETE FROM ${vec} WHERE chunk_id = ?`)
+      for (const item of ids) delVec.run(item.chunk_id)
+      db.prepare(`DELETE FROM ${chunks} WHERE note_id = ?`).run(noteId)
+    } catch (_) { /* table may not exist yet */ }
+  }
+
+  function deleteNoteEverywhere(noteId) {
+    for (const row of db.prepare('SELECT * FROM embedding_models').all()) {
+      deleteNoteChunks(row.model, noteId)
+    }
+    db.prepare('DELETE FROM embedding_index_state WHERE note_id = ?').run(noteId)
+  }
+
+  async function processNote(noteId, { force = false } = {}) {
+    const settings = settingsRow()
+    if (!settings.enabled || !settings.model) return { skipped: true, reason: 'disabled' }
+    const key = apiKeyFromRow(settings)
+    if (!key) {
+      throw fail(400, 'Embedding API key is missing', 'missing_api_key')
+    }
+    const model = ensureModel({
+      model: settings.model,
+      dimensions: settings.dimensions,
+      baseUrl: settings.base_url
+    })
+    if (Number(model.dimensions) !== Number(settings.dimensions)) {
+      throw fail(409, 'Embedding model dimensions changed; use a new model name', 'dimension_mismatch')
+    }
+
+    const note = db.prepare('SELECT * FROM notes WHERE id = ?').get(noteId)
+    if (!note || note.archived_at) {
+      deleteNoteChunks(settings.model, noteId)
+      upsertState(settings.model, noteId, {
+        status: note ? 'archived' : 'missing',
+        chunkCount: 0,
+        contentHash: null,
+        revisionId: note?.head_revision_id || null
+      })
+      return { skipped: true, reason: note ? 'archived' : 'missing' }
+    }
+
+    const text = noteText(note)
+    if (!text) {
+      deleteNoteChunks(settings.model, noteId)
+      upsertState(settings.model, noteId, {
+        status: 'empty',
+        chunkCount: 0,
+        contentHash: null,
+        revisionId: note.head_revision_id
+      })
+      return { skipped: true, reason: 'empty' }
+    }
+
+    const contentHash = noteHash(note, text, settings.chunk_size, settings.chunk_overlap)
+    const state = db.prepare(
+      'SELECT * FROM embedding_index_state WHERE model = ? AND note_id = ?'
+    ).get(settings.model, noteId)
+    if (!force && state?.content_hash === contentHash && state.status === 'indexed' && state.chunk_count > 0) {
+      return { skipped: true, reason: 'unchanged' }
+    }
+
+    const chunks = chunkText(text, {
+      maxChars: settings.chunk_size,
+      overlapChars: settings.chunk_overlap
+    })
+    if (chunks.length === 0) {
+      deleteNoteChunks(settings.model, noteId)
+      upsertState(settings.model, noteId, {
+        status: 'empty', chunkCount: 0, contentHash, revisionId: note.head_revision_id
+      })
+      return { skipped: true, reason: 'empty' }
+    }
+
+    const title = note.title || note.display_title || ''
+    const inputs = chunks.map(chunk => `${title}\n\n${chunk.content}`.trim())
+    const client = makeClient({
+      baseUrl: settings.base_url,
+      apiKey: key,
+      model: settings.model,
+      dimensions: settings.dimensions
+    })
+    const vectors = await client.embed(inputs)
+    if (vectors.length !== chunks.length) throw new Error('Embedding vector count mismatch')
+    for (const vector of vectors) {
+      if (!Array.isArray(vector) || vector.length !== Number(model.dimensions)) {
+        throw fail(400, `Model returned ${vector?.length || 0} dimensions, expected ${model.dimensions}`, 'dimension_mismatch')
+      }
+    }
+
+    const current = db.prepare('SELECT * FROM notes WHERE id = ?').get(noteId)
+    const currentText = current ? noteText(current) : ''
+    const currentHash = current ? noteHash(current, currentText, settings.chunk_size, settings.chunk_overlap) : null
+    if (currentHash !== contentHash) {
+      enqueueNote(noteId)
+      return { skipped: true, reason: 'changed-during-embedding' }
+    }
+
+    const tableKey = safeKey(model.table_key)
+    const chunksTable = `embedding_chunks_${tableKey}`
+    const vecTable = `embedding_vec_${tableKey}`
+    const now = new Date().toISOString()
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      deleteNoteChunks(settings.model, noteId)
+      const insertChunk = db.prepare(`
+        INSERT INTO ${chunksTable}
+          (chunk_id, note_id, revision_id, chunk_index, content, content_hash, char_count, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      const insertVec = db.prepare(`INSERT INTO ${vecTable} (chunk_id, embedding) VALUES (?, ?)`)
+      chunks.forEach((chunk, index) => {
+        const chunkId = hash(`${settings.model}\0${noteId}\0${contentHash}\0${index}`).slice(0, 40)
+        insertChunk.run(
+          chunkId,
+          noteId,
+          note.head_revision_id || null,
+          index,
+          chunk.content,
+          hash(chunk.content),
+          chunk.charCount,
+          now
+        )
+        insertVec.run(chunkId, new Float32Array(vectors[index]))
+      })
+      upsertState(settings.model, noteId, {
+        revisionId: note.head_revision_id,
+        contentHash,
+        chunkCount: chunks.length,
+        status: 'indexed',
+        error: null
+      })
+      const count = db.prepare(`SELECT COUNT(*) AS count FROM ${chunksTable}`).get().count
+      db.prepare(`
+        UPDATE embedding_models
+        SET chunk_count = ?, status = 'ready', last_indexed_at = ?, last_error = NULL, updated_at = ?
+        WHERE model = ?
+      `).run(count, now, now, settings.model)
+      db.exec('COMMIT')
+      return { chunks: chunks.length }
+    } catch (error) {
+      try { db.exec('ROLLBACK') } catch (_) { /* noop */ }
+      upsertState(settings.model, noteId, {
+        revisionId: note.head_revision_id,
+        contentHash,
+        chunkCount: 0,
+        status: 'error',
+        error: error.message
+      })
+      db.prepare(`
+        UPDATE embedding_models SET status = 'error', last_error = ?, updated_at = ? WHERE model = ?
+      `).run(error.message, new Date().toISOString(), settings.model)
+      throw error
+    }
+  }
+
+  function wakeWorker() {
+    if (workerRunning || workerTimer) return
+    workerTimer = setTimeout(() => {
+      workerTimer = null
+      runWorker().catch(error => {
+        stats.failed += 1
+        stats.lastError = error.message
+      })
+    }, 250)
+  }
+
+  async function runWorker() {
+    if (workerRunning) return
+    workerRunning = true
+    try {
+      while (queue.size > 0) {
+        const [noteId, force] = queue.entries().next().value
+        queue.delete(noteId)
+        currentNote = noteId
+        try {
+          await processNote(noteId, { force })
+          stats.indexed += 1
+        } catch (error) {
+          stats.failed += 1
+          stats.lastError = error.message
+        }
+      }
+    } finally {
+      workerRunning = false
+      currentNote = null
+    }
+  }
+
+  function enqueueNote(noteId, { force = false } = {}) {
+    if (!autoIndex) return false
+    const settings = settingsRow()
+    if (!settings.enabled || !noteId) return false
+    queue.set(noteId, force || queue.get(noteId) === true)
+    wakeWorker()
+    return true
+  }
+
+  function enqueueAll({ force = false } = {}) {
+    if (!autoIndex) return 0
+    const settings = settingsRow()
+    if (!settings.enabled) return 0
+    const rows = db.prepare('SELECT id FROM notes').all()
+    for (const row of rows) queue.set(row.id, force || queue.get(row.id) === true)
+    wakeWorker()
+    return rows.length
+  }
+
+  async function indexNoteNow(noteId, { force = true } = {}) {
+    const settings = settingsRow()
+    if (!settings.enabled) throw fail(400, 'Semantic search is disabled', 'embedding_disabled')
+    return processNote(noteId, { force })
+  }
+
+  async function searchMatches({
+    query,
+    limit = 20,
+    tags: tagList = [],
+    tagMode = 'any',
+    type = null,
+    includeArchived = false
+  } = {}) {
+    const settings = settingsRow()
+    if (!settings.enabled || !settings.model) {
+      throw fail(400, 'Semantic search is not configured', 'embedding_disabled')
+    }
+    const key = apiKeyFromRow(settings)
+    if (!key) throw fail(400, 'Embedding API key is missing', 'missing_api_key')
+    const model = ensureModel({
+      model: settings.model,
+      dimensions: settings.dimensions,
+      baseUrl: settings.base_url
+    })
+    const text = String(query || '').trim()
+    if (!text) return { model: settings.model, results: [] }
+    requireVec()
+    const client = makeClient({
+      baseUrl: settings.base_url,
+      apiKey: key,
+      model: settings.model,
+      dimensions: settings.dimensions
+    })
+    const [vector] = await client.embed([text])
+    if (!Array.isArray(vector) || vector.length !== Number(model.dimensions)) {
+      throw fail(400, `Query embedding has ${vector?.length || 0} dimensions, expected ${model.dimensions}`, 'dimension_mismatch')
+    }
+
+    const tableKey = safeKey(model.table_key)
+    const chunksTable = `embedding_chunks_${tableKey}`
+    const vecTable = `embedding_vec_${tableKey}`
+    const k = Math.max(50, Math.min(200, Number(limit) * 5))
+    const vectorRows = db.prepare(
+      `SELECT chunk_id, distance FROM ${vecTable} WHERE embedding MATCH ? AND k = ?`
+    ).all(new Float32Array(vector), k)
+    if (vectorRows.length === 0) return { model: settings.model, results: [] }
+
+    const ids = vectorRows.map(row => row.chunk_id)
+    const placeholders = ids.map(() => '?').join(',')
+    const chunks = db.prepare(
+      `SELECT * FROM ${chunksTable} WHERE chunk_id IN (${placeholders})`
+    ).all(...ids)
+    const chunkMap = new Map(chunks.map(row => [row.chunk_id, row]))
+    const noteIds = [...new Set(chunks.map(row => row.note_id))]
+    if (noteIds.length === 0) return { model: settings.model, results: [] }
+
+    const notePlaceholders = noteIds.map(() => '?').join(',')
+    const notes = db.prepare(
+      `SELECT * FROM notes WHERE id IN (${notePlaceholders})`
+    ).all(...noteIds)
+    const noteMap = new Map(notes.map(row => [row.id, row]))
+
+    let tagIds = null
+    const wantedTags = Array.isArray(tagList) ? tagList.filter(Boolean) : []
+    if (wantedTags.length > 0 && tags) {
+      const sets = wantedTags.map(tag => tags.noteIdsForTag(tag))
+      tagIds = new Set(sets[0] || [])
+      if (tagMode === 'all') {
+        for (const set of sets.slice(1)) {
+          for (const id of [...tagIds]) if (!set?.has(id)) tagIds.delete(id)
+        }
+      } else {
+        for (const set of sets) for (const id of set || []) tagIds.add(id)
+      }
+    }
+
+    const grouped = new Map()
+    for (const row of vectorRows) {
+      const chunk = chunkMap.get(row.chunk_id)
+      if (!chunk) continue
+      const note = noteMap.get(chunk.note_id)
+      if (!note) continue
+      if (!includeArchived && note.archived_at) continue
+      if (type && note.type !== type) continue
+      if (tagIds && !tagIds.has(note.id)) continue
+      const existing = grouped.get(note.id)
+      if (!existing || row.distance < existing.distance) {
+        grouped.set(note.id, {
+          noteId: note.id,
+          distance: row.distance,
+          similarity: Math.max(0, 1 - row.distance),
+          chunkIndex: chunk.chunk_index,
+          snippet: chunk.content.slice(0, 400)
+        })
+      }
+    }
+
+    const results = [...grouped.values()]
+      .sort((a, b) => b.similarity - a.similarity)
+      .slice(0, Math.max(1, Math.min(100, Number(limit) || 20)))
+    return { model: settings.model, results }
+  }
+
+  function status() {
+    const settings = settingsRow()
+    return {
+      settings: settingsDto(settings),
+      models: listModels(),
+      queue: {
+        queued: queue.size,
+        running: workerRunning,
+        currentNote,
+        indexed: stats.indexed,
+        failed: stats.failed,
+        lastError: stats.lastError
+      },
+      vector: {
+        loaded: vecLoaded,
+        version: vecVersion,
+        error: vecError
+      }
+    }
+  }
+
+  function initialize() {
+    loadVec()
+    const settings = settingsRow()
+    if (settings.enabled && settings.model && settings.dimensions) {
+      if (apiKeyFromRow(settings)) enqueueAll({ force: false })
+    }
+    return status()
+  }
+
+  return {
+    initialize,
+    status,
+    settings: () => settingsDto(),
+    models: listModels,
+    testConfig,
+    saveConfig,
+    enqueueNote,
+    enqueueAll,
+    indexNoteNow,
+    searchMatches,
+    deleteNoteEverywhere,
+    loadVec
+  }
+}

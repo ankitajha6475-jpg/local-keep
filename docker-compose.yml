@@ -1,6 +1,6 @@
 services:
   app:
-    image: node:22-alpine
+    image: node:22-slim
     container_name: local-keep
     working_dir: /app
     command: >

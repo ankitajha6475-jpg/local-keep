@@ -7,7 +7,7 @@ Google Keep-like notes app with text notes and Excalidraw whiteboard canvas. Vue
 ## Architecture
 
 ```
-Docker "local-keep" (node:22-alpine)
+Docker "local-keep" (node:22-slim)
 ├── node --watch server.js    → Express + WS on :5173 (API only in dev)
 └── npx vite --host 0.0.0.0   → HTTPS Vite dev server on :5174 (frontend)
 ```
@@ -54,14 +54,19 @@ src/
     db.js                         # openDatabase, migrations runner, backup
     schema.js                     # Pre-revision base tables + FTS
     auth/passwords.js             # scrypt hashing, legacy upgrade, temp passwords
+    embeddings/client.js           # OpenAI-compatible /embeddings client
+    embeddings/chunk.js            # paragraph-aware chunker
+    embeddings/secrets.js          # AES-GCM API-key encryption
     migrations/001-note-threads.js
     migrations/002-relationships-and-tags.js
     migrations/003-api-tokens.js
     migrations/004-multiuser-auth.js
+    migrations/005-embeddings.js
     services/notes.js             # head CRUD, archive/restore/purge, history facade
     services/revisions.js         # immutable revisions, branch, restore/promote, checkpoints
     services/imageRefs.js         # head/revision/tile image refs + cleanup
     services/users.js             # accounts, roles, password reset, last-admin guard
+    services/embeddings.js        # admin config, vector tables, background indexer, vector search
     services/tags.js              # tag sync, tree, descendant filter
     services/links.js             # wiki-link sync/resolve, backlinks, graph
     services/renders.js           # whiteboard page manifests + staleness
@@ -201,6 +206,35 @@ Single user, multiple terminals. Same note, same WS endpoint (`/ws?token=`).
 - Direct MCP clients can keep using `http://localhost:5173/mcp`; browser MCP
   clients can use `https://192.168.3.222:5174/mcp`.
 
+### Semantic Search / Embeddings
+
+- Optional admin-configured semantic search over text notes and canvas text.
+  Provider is any OpenAI-compatible `POST /embeddings`; default SiliconFlow
+  `https://api.siliconflow.cn/v1` (e.g. `BAAI/bge-m3`).
+- `embedding_settings` is a singleton: enabled, base URL, encrypted API key,
+  active model, dimensions, chunk size/overlap. The key is AES-256-GCM encrypted
+  with a key derived from `data/server_secret`; never return it.
+- **Model name is the partition key.** `embedding_models` stores a hashed
+  `emb_<hash>` table key and dimensions. Same model name reuses the original
+  `embedding_chunks_emb_<hash>` + `embedding_vec_emb_<hash>` tables; a new name
+  creates new tables; switching back reuses the old table. Same name with
+  different dimensions is rejected.
+- Vector tables are `sqlite-vec` `vec0` tables using cosine distance. The
+  database is opened with `allowExtension: true`; `sqlite-vec` is loaded from
+  `node_modules/sqlite-vec-linux-x64/vec0.so`. The image is `node:22-slim`
+  because the distributed extension is glibc, not musl/Alpine.
+- Chunking: markdown/canvas text → plain text, paragraph-aware chunks
+  (default 1200 chars, 180 overlap). The note title prefixes the embedding input,
+  not the stored chunk.
+- Background worker indexes sequentially; note create/edit/checkpoint, archive,
+  restore, and config changes enqueue work. Archived/purged notes remove chunks.
+  In-flight results are discarded if the note hash changed.
+- Search: `GET /api/search/semantic|hybrid`; MCP `search_notes` with
+  `mode: keyword|semantic|hybrid` plus `semantic_search`. Hybrid uses RRF.
+  UI ✨ search toggle falls back to keyword with a notice on failure.
+- Admin UI: avatar → **✨ Semantic search**; APIs under `/api/admin/embeddings`.
+  `Rebuild index` force-queues all notes. Old model tables are preserved.
+
 ### Markdown Editor and Rendering
 
 - Canonical text content is markdown. The client renderer lives in
@@ -294,6 +328,12 @@ notes_fts (note_id, title, content, canvas_text)          -- FTS5; content is pl
 users (id, username, display_name, password_hash, role, must_change_password,
        created_at, updated_at, last_login_at, disabled_at)
 sessions (sessionId, user_id, hash, expiresAt)
+embedding_settings (id=1, enabled, base_url, api_key_encrypted, model, dimensions,
+                    chunk_size, chunk_overlap, last_tested_at, last_error, updated_at)
+embedding_models (model, table_key, dimensions, base_url, chunk_count, status,
+                  last_indexed_at, last_error, created_at, updated_at)
+embedding_index_state (model, note_id, revision_id, content_hash, chunk_count, status, error, updated_at)
+-- per model: embedding_chunks_emb_<hash>, embedding_vec_emb_<hash> (vec0 cosine)
 image_refs (image_hash, note_id)                          -- head/tile refs
 revision_image_refs (image_hash, revision_id)             -- protects old-version images
 whiteboard_renders (id, note_id, revision_id, scene_hash, ...)
@@ -356,3 +396,7 @@ All notable changes must be recorded in `CHANGELOG.md`. When making changes:
 22. **MCP whiteboard recall**: render pages in the browser; if no browser is connected, return the stale manifest with a notice. Do not add headless Chromium to the server for this.
 23. **HTTPS cert SAN**: the shared mkcert cert is for `192.168.3.222`, not `localhost`; use the IP or issue a cert for your hostname. `COOKIE_SECURE=1` means login cookies only work over HTTPS.
 24. **Multiuser migration**: existing installs become `admin` / `Administrator` with the old password. Do not delete `users`/`sessions`; use `npm run auth:reset -- <username>` for recovery and keep at least one active admin.
+25. **sqlite-vec / image**: the loadable extension is glibc; keep `node:22-slim` (or rebuild for musl). `openDatabase` must pass `allowExtension: true` before `loadExtension`.
+26. **Embedding model partitions**: never store vectors of two models in one table. Use the hashed `emb_<hash>` table key; a changed model name gets a new table, and switching back reuses the old one. Dimensions are fixed per model name.
+27. **Embedding key**: only decrypt in the server; never return `api_key_encrypted` or log the key. The admin API returns `hasApiKey`/mask only.
+28. **Embedding index freshness**: note head edits/checkpoints and archive/restore must enqueue the note. A failed embedding call must not delete the previous vector rows; index atomically after all vectors succeed.

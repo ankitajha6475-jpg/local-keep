@@ -59,6 +59,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     description: 'Search notes and whiteboards. Returns timestamps, revision, tags, links, and render info.',
     inputSchema: z.object({
       query: z.string().optional(),
+      mode: z.enum(['keyword', 'semantic', 'hybrid']).optional(),
       tags: z.array(z.string()).optional(),
       tag_mode: z.enum(['any', 'all']).optional(),
       type: z.enum(['text', 'canvas']).optional(),
@@ -72,8 +73,9 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     })
   }, async (args) => {
     try {
-      return text(search.search({
+      return text(await search.search({
         query: args.query || '',
+        mode: args.mode || 'keyword',
         tags: args.tags || [],
         tagMode: args.tag_mode || 'any',
         type: args.type || null,
@@ -100,8 +102,34 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     })
   }, async (args) => {
     try {
-      return text(search.search({
+      return text(await search.search({
         query: '',
+        tags: args.tags || [],
+        tagMode: args.tag_mode || 'any',
+        type: args.type || null,
+        includeArchived: !!args.include_archived,
+        limit: args.limit || 20,
+        offset: args.offset || 0
+      }))
+    } catch (e) { return fail(e.message) }
+  })
+
+  server.registerTool('semantic_search', {
+    description: 'Vector similarity search using the admin-configured embedding model. Returns timestamps/chunks and notes.',
+    inputSchema: z.object({
+      query: z.string(),
+      tags: z.array(z.string()).optional(),
+      tag_mode: z.enum(['any', 'all']).optional(),
+      type: z.enum(['text', 'canvas']).optional(),
+      include_archived: z.boolean().optional(),
+      limit: z.number().int().min(1).max(100).optional(),
+      offset: z.number().int().min(0).optional()
+    })
+  }, async (args) => {
+    try {
+      return text(await search.search({
+        query: args.query,
+        mode: 'semantic',
         tags: args.tags || [],
         tagMode: args.tag_mode || 'any',
         type: args.type || null,

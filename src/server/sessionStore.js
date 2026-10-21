@@ -1,30 +1,11 @@
 // Session management: opaque, server-stored session IDs signed via HMAC.
 
 import crypto from 'crypto'
-import fs from 'fs'
 import path from 'path'
+import { loadOrCreateSecret } from './secret.js'
 
 const COOKIE_NAME = 'local_keep_session'
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30 // 30 days
-
-/**
- * Resolve or create the long-lived server secret used to HMAC-sign cookies.
- * Stored on disk so container restarts still validate cookies issued before.
- */
-function loadOrCreateSecret(secretFilePath) {
-  try {
-    if (fs.existsSync(secretFilePath)) {
-      const existing = fs.readFileSync(secretFilePath, 'utf8').trim()
-      if (existing.length >= 32) return existing
-    }
-  } catch (_) { /* fall through to create */ }
-  const generated = crypto.randomBytes(48).toString('hex')
-  try {
-    fs.mkdirSync(path.dirname(secretFilePath), { mode: 0o700, recursive: true })
-    fs.writeFileSync(secretFilePath, generated, { mode: 0o600 })
-  } catch (_) { /* best-effort; in-memory works until next restart */ }
-  return generated
-}
 
 export function createSessionStore({ db, dataDir }) {
   const SECRET = loadOrCreateSecret(path.join(dataDir, 'server_secret'))

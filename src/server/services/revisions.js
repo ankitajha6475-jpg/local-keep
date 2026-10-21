@@ -29,7 +29,7 @@ function parseCanvas(canvasData) {
   }
 }
 
-export function createRevisionService({ db, imageStore, imageRefs, bus, tags, links }) {
+export function createRevisionService({ db, imageStore, imageRefs, bus, tags, links, embeddings }) {
   const insertRevisionStmt = db.prepare(`
     INSERT INTO note_revisions
       (id, note_id, parent_revision_id, revision_no, title, content, display_title,
@@ -169,6 +169,7 @@ export function createRevisionService({ db, imageStore, imageRefs, bus, tags, li
     imageRefs.syncRevisionRefs(revision.id, content, lean)
     tags?.syncNote(noteId, content, lean)
     links?.syncNote(noteId, revision.id, content, lean)
+    embeddings?.enqueueNote(noteId)
     const head = getHead(noteId)
     indexHead(head, revision)
     insertEventStmt.run(
@@ -273,6 +274,7 @@ export function createRevisionService({ db, imageStore, imageRefs, bus, tags, li
       indexHead(finalHead, revision)
       tags?.syncNote(noteId, effectiveContent, lean)
       links?.syncNote(noteId, revision.id, effectiveContent, lean)
+      embeddings?.enqueueNote(noteId)
     }
 
     const notice = branch
@@ -384,6 +386,7 @@ export function createRevisionService({ db, imageStore, imageRefs, bus, tags, li
       imageRefs.syncRevisionRefs(revision.id, fresh.content || '', lean)
       tags?.syncNote(noteId, fresh.content || '', lean)
       links?.syncNote(noteId, revision.id, fresh.content || '', lean)
+      embeddings?.enqueueNote(noteId)
       const updatedHead = getHead(noteId)
       indexHead(updatedHead, revision)
       insertEventStmt.run(

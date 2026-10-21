@@ -9,7 +9,7 @@ function fail(status, message, code = 'note_error') {
   return error
 }
 
-export function createNoteService({ db, revisions, imageRefs, bus, tags, links }) {
+export function createNoteService({ db, revisions, imageRefs, bus, tags, links, embeddings }) {
   function revisionDto(revision) {
     if (!revision) return null
     return {
@@ -185,6 +185,7 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links }
     db.prepare('UPDATE notes SET archived_at = ?, updatedAt = ? WHERE id = ?')
       .run(archivedAt, archivedAt, id)
     links?.resolveAll()
+    embeddings?.enqueueNote(id)
     bus?.emit(EVENTS.NOTE_ARCHIVED, { noteId: id, actor, source, archivedAt })
     return decorateRow(db.prepare('SELECT * FROM notes WHERE id = ?').get(id))
   }
@@ -210,6 +211,7 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links }
       db.exec('COMMIT')
       links?.resolveAll()
       for (const id of changedIds) {
+        embeddings?.enqueueNote(id)
         bus?.emit(EVENTS.NOTE_ARCHIVED, { noteId: id, actor, source, archivedAt })
       }
       return changed
@@ -227,6 +229,7 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links }
     db.prepare('UPDATE notes SET archived_at = NULL, updatedAt = ? WHERE id = ?')
       .run(updatedAt, id)
     links?.resolveAll()
+    embeddings?.enqueueNote(id)
     bus?.emit(EVENTS.NOTE_RESTORED, { noteId: id, actor, source })
     return decorateRow(db.prepare('SELECT * FROM notes WHERE id = ?').get(id))
   }
@@ -238,6 +241,7 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links }
     removeNoteFromIndex(db, id)
     tags?.deleteNote(id)
     links?.deleteNote(id)
+    embeddings?.deleteNoteEverywhere(id)
     db.prepare('DELETE FROM note_events WHERE note_id = ?').run(id)
     db.prepare('DELETE FROM notes WHERE id = ?').run(id)
     links?.resolveAll()

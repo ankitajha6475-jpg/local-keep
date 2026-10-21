@@ -13,8 +13,41 @@ function normalizeTagList(tags) {
   return String(tags).split(',').map(t => t.trim()).filter(Boolean)
 }
 
-export function createSearchService({ db, notes, revisions, tags, renders }) {
-  function search({
+export function createSearchService({ db, notes, revisions, tags, renders, embeddings }) {
+  function enrich(noteId, { snippet = '', score = 0, semanticScore = null, chunkIndex = null } = {}) {
+    try {
+      const note = notes.getNote(noteId)
+      const headRevision = revisions.getRevision(note.revisionId)
+      const render = note.type === 'canvas' ? renders.latest(note.id) : null
+      return {
+        note_id: note.id,
+        revision_id: note.revisionId,
+        title: note.title || '',
+        display_title: note.displayTitle,
+        type: note.type,
+        snippet,
+        tags: note.tags || [],
+        created_at: note.createdAt,
+        updated_at: note.updatedAt,
+        revision_created_at: headRevision?.created_at || note.updatedAt,
+        revision_no: note.revisionNo || 1,
+        score,
+        ...(semanticScore != null ? { semantic_score: semanticScore } : {}),
+        ...(chunkIndex != null ? { chunk_index: chunkIndex } : {}),
+        link_count: note.linkCount || 0,
+        backlink_count: note.backlinkCount || 0,
+        ...(render ? {
+          tile_count: render.tileCount || 0,
+          rendered_at: render.renderedAt,
+          stale: render.stale
+        } : {})
+      }
+    } catch (_) {
+      return null
+    }
+  }
+
+  function keywordSearch({
     query = '',
     tags: tagList = [],
     tagMode = 'any',
@@ -87,36 +120,109 @@ export function createSearchService({ db, notes, revisions, tags, renders }) {
     const total = rows.length
     const start = Math.max(0, Number(offset) || 0)
     const page = rows.slice(start, start + Math.max(1, Math.min(100, Number(limit) || 20)))
+    const results = page.map(row => enrich(row.note_id, {
+      snippet: row.snippet || '',
+      score: row.score ?? 0
+    })).filter(Boolean)
 
-    const results = page.map(row => {
-      const note = notes.getNote(row.note_id)
-      const headRevision = revisions.getRevision(note.revisionId)
-      const render = note.type === 'canvas' ? renders.latest(note.id) : null
-      return {
-        note_id: note.id,
-        revision_id: note.revisionId,
-        title: note.title || '',
-        display_title: note.displayTitle,
-        type: note.type,
-        snippet: row.snippet || '',
-        tags: note.tags || [],
-        created_at: note.createdAt,
-        updated_at: note.updatedAt,
-        revision_created_at: headRevision?.created_at || note.updatedAt,
-        revision_no: note.revisionNo || 1,
-        score: row.score ?? 0,
-        link_count: note.linkCount || 0,
-        backlink_count: note.backlinkCount || 0,
-        ...(render ? {
-          tile_count: render.tileCount || 0,
-          rendered_at: render.renderedAt,
-          stale: render.stale
-        } : {})
-      }
-    })
-
-    return { query: raw, results, total, limit, offset: start }
+    return { query: raw, mode: 'keyword', results, total, limit, offset: start }
   }
 
-  return { search }
+  async function semanticSearch({
+    query = '',
+    tags: tagList = [],
+    tagMode = 'any',
+    type = null,
+    includeArchived = false,
+    limit = 20,
+    offset = 0
+  } = {}) {
+    if (!embeddings) {
+      const error = new Error('Semantic search is not configured')
+      error.status = 400
+      error.code = 'embedding_disabled'
+      throw error
+    }
+    const data = await embeddings.searchMatches({
+      query,
+      limit,
+      tags: normalizeTagList(tagList),
+      tagMode,
+      type,
+      includeArchived
+    })
+    const start = Math.max(0, Number(offset) || 0)
+    const page = data.results.slice(start, start + Math.max(1, Math.min(100, Number(limit) || 20)))
+    const results = page.map(match => enrich(match.noteId, {
+      snippet: match.snippet,
+      score: match.similarity,
+      semanticScore: match.similarity,
+      chunkIndex: match.chunkIndex
+    })).filter(Boolean)
+    return {
+      query: String(query || '').trim(),
+      mode: 'semantic',
+      model: data.model,
+      results,
+      total: data.results.length,
+      limit,
+      offset: start
+    }
+  }
+
+  async function hybridSearch(args = {}) {
+    const limit = Math.max(1, Math.min(100, Number(args.limit) || 20))
+    const offset = Math.max(0, Number(args.offset) || 0)
+    const keyword = keywordSearch({ ...args, limit: Math.max(limit * 2, 30), offset: 0 })
+    let semantic
+    try {
+      semantic = await semanticSearch({ ...args, limit: Math.max(limit * 2, 30), offset: 0 })
+    } catch (error) {
+      return {
+        ...keyword,
+        mode: 'hybrid',
+        notice: `Semantic search unavailable: ${error.message}`
+      }
+    }
+
+    const scores = new Map()
+    const byId = new Map()
+    keyword.results.forEach((result, index) => {
+      byId.set(result.note_id, { ...result, keyword_score: result.score })
+      scores.set(result.note_id, (scores.get(result.note_id) || 0) + 1 / (60 + index + 1))
+    })
+    semantic.results.forEach((result, index) => {
+      const existing = byId.get(result.note_id)
+      byId.set(result.note_id, {
+        ...(existing || result),
+        semantic_score: result.semantic_score,
+        snippet: result.snippet || existing?.snippet || '',
+        score: existing?.score ?? result.score
+      })
+      scores.set(result.note_id, (scores.get(result.note_id) || 0) + 1 / (60 + index + 1))
+    })
+
+    const merged = [...byId.values()]
+      .map(result => ({ ...result, rrf_score: scores.get(result.note_id) || 0 }))
+      .sort((a, b) => b.rrf_score - a.rrf_score)
+    const page = merged.slice(offset, offset + limit)
+    return {
+      query: String(args.query || '').trim(),
+      mode: 'hybrid',
+      model: semantic.model,
+      results: page,
+      total: merged.length,
+      limit,
+      offset
+    }
+  }
+
+  async function search(args = {}) {
+    const mode = args.mode || 'keyword'
+    if (mode === 'semantic') return semanticSearch(args)
+    if (mode === 'hybrid') return hybridSearch(args)
+    return keywordSearch(args)
+  }
+
+  return { search, keywordSearch, semanticSearch, hybridSearch }
 }

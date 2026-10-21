@@ -16,11 +16,13 @@ import { createRevisionService } from './src/server/services/revisions.js'
 import { createNoteService } from './src/server/services/notes.js'
 import { createRenderService } from './src/server/services/renders.js'
 import { createSearchService } from './src/server/services/search.js'
+import { createEmbeddingService } from './src/server/services/embeddings.js'
 import { createMcpServer } from './src/mcp/createServer.js'
 import { migration001NoteThreads } from './src/server/migrations/001-note-threads.js'
 import { migration002RelationshipsAndTags } from './src/server/migrations/002-relationships-and-tags.js'
 import { migration003ApiTokens } from './src/server/migrations/003-api-tokens.js'
 import { migration004MultiuserAuth } from './src/server/migrations/004-multiuser-auth.js'
+import { migration005Embeddings } from './src/server/migrations/005-embeddings.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const dataDir = process.env.LOCAL_KEEP_DATA_DIR
@@ -32,7 +34,7 @@ createBaseSchema(db)
 const imageStore = createImageStore({ imagesDir: path.join(dataDir, 'images') })
 runMigrations({
   db,
-  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth],
+  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings],
   backupDir: path.join(dataDir, 'backups'),
   context: { imageStore }
 })
@@ -41,12 +43,14 @@ const bus = createEventBus()
 const imageRefs = createImageRefService({ db, imageStore })
 const tags = createTagService({ db })
 const links = createLinkService({ db })
-const revisions = createRevisionService({ db, imageStore, imageRefs, bus, tags, links })
-const notes = createNoteService({ db, revisions, imageRefs, bus, tags, links })
+const embeddings = createEmbeddingService({ db, dataDir, tags })
+const revisions = createRevisionService({ db, imageStore, imageRefs, bus, tags, links, embeddings })
+const notes = createNoteService({ db, revisions, imageRefs, bus, tags, links, embeddings })
 const renders = createRenderService({ db, imageRefs, bus })
-const search = createSearchService({ db, notes, revisions, tags, renders })
+const search = createSearchService({ db, notes, revisions, tags, renders, embeddings })
+embeddings.initialize()
 
-const services = { db, notes, revisions, tags, links, renders, search, imageStore }
+const services = { db, notes, revisions, tags, links, renders, search, embeddings, imageStore }
 const baseUrl = (process.env.LOCAL_KEEP_PUBLIC_URL || 'http://localhost:5173').replace(/\/$/, '')
 
 void serveStdio(() => createMcpServer({

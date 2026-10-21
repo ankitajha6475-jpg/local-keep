@@ -20,6 +20,8 @@ A Google Keep-like notes app with text notes and Excalidraw whiteboard canvas. V
 - Multi-user accounts with admin/member roles, scrypt passwords, and 30-day signed sessions
 - Admin user management and password reset (UI or `npm run auth:reset`)
 - HTTPS using the shared local mkcert certificate
+- Optional semantic search with OpenAI-compatible embeddings (SiliconFlow/OpenAI), admin-configured and per-model vector tables via `sqlite-vec`
+- Hybrid keyword + vector search in MCP, REST (`/api/search/semantic`, `/api/search/hybrid`), and the UI search toggle
 - Auto-save with debounced persistence
 - Whiteboard checkpoints (leave/manual/interval) create canvas revisions
 
@@ -53,13 +55,16 @@ npm run auth:reset -- <user>  # reset an account password (prints temp password)
 ## Architecture
 
 ```
-Docker "local-keep" (node:22-alpine)
+Docker "local-keep" (node:22-slim)
 ├── node --watch server.js    → Express + WS on :5173
 └── npx vite --host 0.0.0.0   → Vite dev server on :5174
 ```
 
 Vite serves HTTPS on `:5174` and proxies `/api`, `/mcp`, and `/ws` to the HTTP
 Express backend on `:5173`. Browser connects to the HTTPS origin.
+
+The image is Debian slim (not Alpine) because `sqlite-vec` ships a glibc loadable
+extension; `node:sqlite` loads it with `allowExtension: true`.
 
 ## Data Storage
 
@@ -72,6 +77,8 @@ SQLite database in `data/local-keep.db` with tables:
 - `whiteboard_renders` / `whiteboard_tiles` — legacy thumbnail page and future page renders
 - `users` — human accounts (username, display name, scrypt hash, role, disabled state)
 - `sessions` — signed session IDs mapped to users, with expiry
+- `embedding_settings` / `embedding_models` / `embedding_index_state` — admin embedding config and per-model indexing state
+- `embedding_chunks_emb_<hash>` / `embedding_vec_emb_<hash>` — per-model chunk metadata and `sqlite-vec` vectors
 
 Pre-migration backups live in `data/backups/`. Deletion archives by default; use
 `?purge=1` for permanent deletion.
@@ -80,6 +87,7 @@ Pre-migration backups live in `data/backups/`. Deletion archives by default; use
 
 - Vue 3, React 18 (Excalidraw only), @excalidraw/excalidraw 0.18
 - Express, ws, node:sqlite
+- sqlite-vec for cosine vector indexes
 - Vite 5
 
 See [AGENTS.md](AGENTS.md) for detailed architecture, patterns, and conventions.
@@ -89,3 +97,4 @@ User guides:
 - [docs/https.md](docs/https.md) — certificate and TLS setup
 - [docs/auth.md](docs/auth.md) — accounts, roles, and password reset
 - [docs/mcp.md](docs/mcp.md) — MCP endpoint, tokens, tools, and whiteboard recall
+- [docs/embeddings.md](docs/embeddings.md) — semantic search, embeddings, model partitioning, and indexing

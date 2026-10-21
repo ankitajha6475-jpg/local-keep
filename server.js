@@ -26,6 +26,7 @@ import { createRenderService } from './src/server/services/renders.js'
 import { createTagService } from './src/server/services/tags.js'
 import { createLinkService } from './src/server/services/links.js'
 import { createSearchService } from './src/server/services/search.js'
+import { createEmbeddingService } from './src/server/services/embeddings.js'
 import { createTokenService } from './src/server/services/tokens.js'
 import { createUserService } from './src/server/services/users.js'
 import { validatePassword, temporaryPassword } from './src/server/auth/passwords.js'
@@ -40,6 +41,7 @@ import { migration001NoteThreads } from './src/server/migrations/001-note-thread
 import { migration002RelationshipsAndTags } from './src/server/migrations/002-relationships-and-tags.js'
 import { migration003ApiTokens } from './src/server/migrations/003-api-tokens.js'
 import { migration004MultiuserAuth } from './src/server/migrations/004-multiuser-auth.js'
+import { migration005Embeddings } from './src/server/migrations/005-embeddings.js'
 
 import debugLib from 'debug'
 const log = debugLib('local-keep:server')
@@ -313,7 +315,7 @@ try {
 try {
   const migration = runMigrations({
     db,
-    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth],
+    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings],
     backupDir: BACKUPS_DIR,
     context: { imageStore }
   })
@@ -341,16 +343,19 @@ const imageRefs = createImageRefService({ db, imageStore })
 const tags = createTagService({ db })
 const links = createLinkService({ db })
 const tokens = createTokenService({ db })
-const revisions = createRevisionService({ db, imageStore, imageRefs, bus, tags, links })
-const notesService = createNoteService({ db, revisions, imageRefs, bus, tags, links })
+const embeddings = createEmbeddingService({ db, dataDir: DATA_DIR, tags })
+const revisions = createRevisionService({ db, imageStore, imageRefs, bus, tags, links, embeddings })
+const notesService = createNoteService({ db, revisions, imageRefs, bus, tags, links, embeddings })
 const renderService = createRenderService({ db, imageRefs, bus })
 const searchService = createSearchService({
   db,
   notes: notesService,
   revisions,
   tags,
-  renders: renderService
+  renders: renderService,
+  embeddings
 })
+embeddings.initialize()
 
 const pendingRenderRequests = new Map()
 function requestWhiteboardRender(noteId, timeoutMs = 20000) {
@@ -706,6 +711,37 @@ app.post('/api/users/:id/reset-password', checkAuth, requireAdmin, async (req, r
     res.json({ success: true, user, temporaryPassword: generated })
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message })
+  }
+})
+
+// ── Admin: semantic search / embeddings ─────────────────────────────────
+app.get('/api/admin/embeddings', checkAuth, requireAdmin, (req, res) => {
+  try { res.json(embeddings.status()) } catch (error) { sendServiceError(res, error) }
+})
+
+app.put('/api/admin/embeddings', checkAuth, requireAdmin, async (req, res) => {
+  try {
+    const result = await embeddings.saveConfig(req.body || {})
+    res.json({ ...embeddings.status(), ...result })
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message, code: error.code })
+  }
+})
+
+app.post('/api/admin/embeddings/test', checkAuth, requireAdmin, async (req, res) => {
+  try {
+    res.json(await embeddings.testConfig(req.body || {}))
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message, code: error.code })
+  }
+})
+
+app.post('/api/admin/embeddings/reindex', checkAuth, requireAdmin, (req, res) => {
+  try {
+    const queued = embeddings.enqueueAll({ force: true })
+    res.json({ success: true, queued, status: embeddings.status() })
+  } catch (error) {
+    sendServiceError(res, error)
   }
 })
 
@@ -1092,6 +1128,40 @@ app.get('/api/graph', checkAuth, (req, res) => {
       tag: req.query.tag || null,
       limit: req.query.limit != null ? Number(req.query.limit) : 300,
       includeUnresolved: req.query.includeUnresolved === '1' || req.query.includeUnresolved === 'true'
+    }))
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.get('/api/search/semantic', checkAuth, async (req, res) => {
+  try {
+    res.json(await searchService.search({
+      query: req.query.q || '',
+      mode: 'semantic',
+      tags: req.query.tag ? [req.query.tag] : [],
+      tagMode: req.query.tagMode || req.query.tag_mode || 'any',
+      type: req.query.type || null,
+      includeArchived: req.query.includeArchived === '1',
+      limit: req.query.limit != null ? Number(req.query.limit) : 20,
+      offset: req.query.offset != null ? Number(req.query.offset) : 0
+    }))
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.get('/api/search/hybrid', checkAuth, async (req, res) => {
+  try {
+    res.json(await searchService.search({
+      query: req.query.q || '',
+      mode: 'hybrid',
+      tags: req.query.tag ? [req.query.tag] : [],
+      tagMode: req.query.tagMode || req.query.tag_mode || 'any',
+      type: req.query.type || null,
+      includeArchived: req.query.includeArchived === '1',
+      limit: req.query.limit != null ? Number(req.query.limit) : 20,
+      offset: req.query.offset != null ? Number(req.query.offset) : 0
     }))
   } catch (error) {
     sendServiceError(res, error)

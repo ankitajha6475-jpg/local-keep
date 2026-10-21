@@ -14,6 +14,7 @@ import { migration001NoteThreads } from '../src/server/migrations/001-note-threa
 import { migration002RelationshipsAndTags } from '../src/server/migrations/002-relationships-and-tags.js'
 import { migration003ApiTokens } from '../src/server/migrations/003-api-tokens.js'
 import { migration004MultiuserAuth } from '../src/server/migrations/004-multiuser-auth.js'
+import { migration005Embeddings } from '../src/server/migrations/005-embeddings.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const dataDir = process.env.LOCAL_KEEP_DATA_DIR
@@ -24,7 +25,7 @@ const db = openDatabase(path.join(dataDir, 'local-keep.db'))
 createBaseSchema(db)
 runMigrations({
   db,
-  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth],
+  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings],
   backupDir: path.join(dataDir, 'backups'),
   context: { imageStore: createImageStore({ imagesDir: path.join(dataDir, 'images') }) }
 })

@@ -77,7 +77,8 @@ stdio because it runs as a local process with direct database access.
 
 | Tool | What it does |
 |---|---|
-| `search_notes` | Full-text + tag/type/date filters; returns timestamps, revision, tags, links, whiteboard render info |
+| `search_notes` | Full-text or semantic/hybrid search (`mode`), tag/type/date filters; returns timestamps, revision, tags, links, whiteboard render info |
+| `semantic_search` | Vector similarity search using the admin-configured embedding model |
 | `list_notes` | Same summary shape without a query |
 | `get_note` | Markdown, metadata, optional history/links/backlinks, whiteboard summary |
 | `create_note` | Create revision 1; accepts tags and related note ids |
@@ -117,6 +118,22 @@ Every search hit includes:
 ```
 
 Canvas hits also include `tile_count`, `rendered_at`, and `stale`.
+
+### Semantic search
+
+Semantic search is optional and configured by an admin (avatar → **✨ Semantic
+search**). It uses any OpenAI-compatible `/embeddings` API; see
+[`docs/embeddings.md`](embeddings.md).
+
+```json
+{ "name": "search_notes", "arguments": { "query": "how did I set up the local proxy", "mode": "hybrid" } }
+```
+
+`mode` is `keyword` (default), `semantic`, or `hybrid`. The dedicated
+`semantic_search` tool is equivalent to `mode: "semantic"`. Results include
+`semantic_score` and `chunk_index` when applicable. If embeddings are not
+configured, semantic tools return a clear error; hybrid falls back to keyword
+with a notice.
 
 ### Threads and edit notices
 

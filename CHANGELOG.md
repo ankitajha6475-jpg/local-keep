@@ -26,6 +26,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Session cookies are now bound to users; the database is authoritative for validation/revocation
 - HTTPS Vite dev server using the shared mkcert certificate (`https://192.168.3.222:5174`), with REST/WS/MCP proxied same-origin
 - Polished setup/login screens, account menu, account settings, forced password change, and user-management dialogs
+- Admin-configurable semantic search using any OpenAI-compatible `/embeddings` API (SiliconFlow default)
+- AES-256-GCM encrypted embedding API keys; admin UI/API never returns the raw key
+- `sqlite-vec` cosine vector tables partitioned by embedding model name; same model reuses its table, new models get new tables, switching back reuses the old table
+- Paragraph-aware note/canvas chunking (default 1200 chars, 180 overlap) with background indexing on note edits, checkpoints, archive/restore, and config changes
+- `semantic_search` MCP tool plus `search_notes` `mode: keyword|semantic|hybrid`; REST `/api/search/semantic` and `/api/search/hybrid`
+- Hybrid keyword + vector search using reciprocal rank fusion (RRF)
+- ✨ semantic search toggle in the UI search bar with keyword fallback
+- Admin Semantic Search settings dialog: test connection, enable, model/dimensions, chunk settings, status, model list, and rebuild index
+- Migration 5 for `embedding_settings`, `embedding_models`, and `embedding_index_state`
 - `GET /api/auth/status` and `POST /api/auth/logout` endpoints; `sessions` table for session persistence across server restarts
 - Cross-client deletion detection: targeted `{type:'note-deleted'}` broadcast on note deletion; clients editing/viewing the deleted note get an inline overlay (no alert/confirm) offering Save-as / Discard; server rejects further deltas for deleted notes with `{type:'note-gone'}`
 - Architecture plan for note relationships/tags, immutable revisions/threads, markdown-first editing, whiteboard page rendering, and an embedded MCP server (`docs/plan-docs/2026-10-21-relationships-tags-history-mcp-plan.md`)
@@ -70,6 +79,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - MCP end-to-end/token tests (`@modelcontextprotocol/client`) and `docs/mcp.md`
 
 ### Changed
+- Runtime image switched from `node:22-alpine` to `node:22-slim` so the glibc `sqlite-vec` loadable extension can be used
+- `openDatabase` now opens SQLite with `allowExtension: true` for the vector extension
 - Existing single-password installs migrate to `admin` / `Administrator` using the old password; the hash is upgraded on first login
 - Human revision actors are now `user:<username>` instead of the generic `ui`
 - Vite serves HTTPS; direct `:5173` remains an internal HTTP API for MCP/stdio clients

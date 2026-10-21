@@ -10,7 +10,7 @@ import { DatabaseSync } from 'node:sqlite'
  */
 export function openDatabase(dbFile) {
   fs.mkdirSync(path.dirname(dbFile), { recursive: true, mode: 0o700 })
-  const db = new DatabaseSync(dbFile)
+  const db = new DatabaseSync(dbFile, { allowExtension: true })
   db.exec('PRAGMA journal_mode = WAL')
   db.exec('PRAGMA synchronous = NORMAL')
   db.exec('PRAGMA foreign_keys = ON')
