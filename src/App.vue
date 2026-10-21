@@ -172,6 +172,7 @@
                 </div>
                 <button type="button" @click="openAccountSettings()">⚙️ Account settings</button>
                 <button v-if="isAdmin" type="button" @click="openUsers">👥 Manage users</button>
+                <button v-if="isAdmin" type="button" @click="openMcpSettings">🔌 MCP access</button>
                 <button v-if="isAdmin" type="button" @click="openEmbeddingSettings">✨ Semantic search</button>
                 <button type="button" class="account-menu-danger" @click="logout">🔒 Lock workspace</button>
               </div>
@@ -448,6 +449,7 @@
                 <small>
                   {{ token.scopes.join(', ') }}
                   <template v-if="token.createdBy"> · by {{ token.createdBy }}</template>
+                  <template v-if="token.createdAt"> · created {{ formatDate(token.createdAt) }}</template>
                   <template v-if="token.expiresAt"> · expires {{ formatDate(token.expiresAt) }}</template>
                   <template v-if="token.lastUsedAt"> · last used {{ formatDate(token.lastUsedAt) }}</template>
                   <template v-if="token.revokedAt"> · revoked</template>
@@ -2696,6 +2698,7 @@ export default {
     }
 
     const openMcpSettings = async () => {
+      accountMenuOpen.value = false
       mcpSettingsOpen.value = true
       mcpNewToken.value = ''
       mcpTokenName.value = ''

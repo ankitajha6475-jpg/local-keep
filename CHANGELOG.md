@@ -100,6 +100,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - MCP end-to-end/token tests (`@modelcontextprotocol/client`) and `docs/mcp.md`
 
 ### Changed
+- MCP access is now also available from the account menu (not only the header 🔌 button), and the token list shows each token's creation time
 - Editor simplified to **Visual** (rendered markdown, images displayed) and **Source** (raw markdown, images shown as URLs); the redundant Preview mode was removed
 - Source mode inserts/pastes markdown image references; Visual mode inserts/pastes rendered images
 - Editor mode label **Markdown** renamed to **Plain** to avoid confusion with the canonical markdown format
