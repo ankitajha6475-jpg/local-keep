@@ -13,7 +13,7 @@ A Google Keep-like notes app with text notes and Excalidraw whiteboard canvas. V
 - Two editor modes: **Visual** (rendered markdown, images and Mermaid diagrams displayed) and **Source** (raw markdown, images shown as URLs); rich-paste sanitisation and markdown image refs
 - Whiteboard page rendering: ordered page images (left→right, top→bottom) with a Pages drawer
 - Embedded MCP server: search with timestamps, revision threads, links/tags/graph, and whiteboard recall as multiple images
-- Persistent MCP edit sessions: one open note per client, dynamic open/close tools, exact-match incremental edits, and `expected_version` conflict detection
+- Persistent MCP sessions: stable `get_note_state`/`note_session` tools, one write plus multiple read sessions per token, explicit state/guide on session and mutation results, and `expected_version` conflict detection
 - MCP token management via the 🔌 header dialog or `npm run mcp:token`
 - Excalidraw whiteboard canvas with stylus/finger touch support
 - Real-time sync across multiple tabs/devices via WebSocket, including character-level live text collaboration on a shared draft

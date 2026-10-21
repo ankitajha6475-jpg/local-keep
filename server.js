@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 import { createServer } from 'http'
 import multer from 'multer'
-import { createMcpHandler, InMemoryServerEventBus } from '@modelcontextprotocol/server'
+import { createMcpHandler } from '@modelcontextprotocol/server'
 import { toNodeHandler } from '@modelcontextprotocol/node'
 import { createSessionStore } from './src/server/sessionStore.js'
 import { openDatabase, runMigrations } from './src/server/db.js'
@@ -49,6 +49,7 @@ import { migration006OptionalRerank } from './src/server/migrations/006-optional
 import { migration007LiveTextCollab } from './src/server/migrations/007-live-text-collab.js'
 import { migration008EmbeddingVariants } from './src/server/migrations/008-embedding-variants.js'
 import { migration009EmbeddingTuning } from './src/server/migrations/009-embedding-tuning.js'
+import { migration010TokenAdmin } from './src/server/migrations/010-token-admin.js'
 
 import debugLib from 'debug'
 const log = debugLib('local-keep:server')
@@ -81,7 +82,6 @@ const noteStates = new Map()  // noteId -> { elements, files, sessions, pendingP
 const textSessions = new Map() // noteId -> Set<WebSocket> for live text drafts
 const notePresence = new Map() // noteId -> Map<WebSocket, { user, kinds:Set<'text'|'canvas'> }>
 const mcpPresence = new Map() // noteId -> Map<sessionId, { user, kind:'mcp' }>
-const mcpBus = new InMemoryServerEventBus()
 
 function getOrCreateNoteState(noteId) {
   if (!noteStates.has(noteId)) {
@@ -326,7 +326,7 @@ try {
 try {
   const migration = runMigrations({
     db,
-    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning],
+    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin],
     backupDir: BACKUPS_DIR,
     context: { imageStore }
   })
@@ -362,8 +362,10 @@ const renderService = createRenderService({ db, imageRefs, bus })
 const mcpEditing = createMcpEditingService({
   db,
   notes: notesService,
+  revisions,
   textCollab,
   ttlMs: Number(process.env.LOCAL_KEEP_MCP_EDIT_TTL_MS || 30 * 60 * 1000),
+  maxReads: Number(process.env.LOCAL_KEEP_MCP_MAX_READS || 8),
   onOpen(session) {
     addMcpPresence(session.noteId, session)
   },
@@ -388,9 +390,6 @@ const mcpEditing = createMcpEditingService({
       noteId,
       update: bytesToBase64(update)
     })
-  },
-  onToolsChanged() {
-    mcpBus.publish({ kind: 'tools_list_changed' })
   }
 })
 
@@ -649,7 +648,11 @@ function addMcpPresence(noteId, session) {
   const rawName = String(session.actor || 'mcp').replace(/^mcp:/, '') || 'mcp'
   entries.set(session.id, {
     kind: 'mcp',
-    user: { username: `mcp:${rawName}`, displayName: `MCP (${rawName})` }
+    mode: session.mode || 'write',
+    user: {
+      username: `mcp:${rawName}`,
+      displayName: `MCP (${rawName}${session.mode ? ` · ${session.mode}` : ''})`
+    }
   })
   broadcastPresence(noteId)
 }
@@ -794,10 +797,10 @@ function issueSession(res, user) {
 }
 
 function requireAdmin(req, res, next) {
-  if (req.user?.role !== 'admin') {
-    return authError(res, 403, 'Admin access required', 'forbidden')
+  if (req.user?.role === 'admin' || req.auth?.scopes?.includes('admin')) {
+    return next()
   }
-  next()
+  return authError(res, 403, 'Admin access required', 'forbidden')
 }
 
 app.get('/api/auth/bootstrap', (req, res) => {
@@ -1038,11 +1041,16 @@ function authenticate(req) {
   if (header.startsWith('Bearer ')) {
     const token = tokens.verify(header.slice(7).trim())
     if (token) {
-      const clientId = token.name.startsWith('mcp:') ? token.name : `mcp:${token.name}`
+      const actor = token.name.startsWith('mcp:') ? token.name : `mcp:${token.name}`
       return {
-        actor: clientId,
+        actor,
         token,
-        authInfo: { clientId, scopes: token.scopes }
+        authInfo: {
+          clientId: token.id,
+          actor,
+          tokenId: token.id,
+          scopes: token.scopes
+        }
       }
     }
   }
@@ -1062,7 +1070,11 @@ function authenticate(req) {
       session: entry,
       sessionId,
       user,
-      authInfo: { clientId: `user:${user.username}`, scopes: ['read', 'write'] }
+      authInfo: {
+        clientId: `user:${user.username}`,
+        actor: `user:${user.username}`,
+        scopes: ['read', 'write']
+      }
     }
   }
   return null
@@ -1071,7 +1083,8 @@ function authenticate(req) {
 function checkAuth(req, res, next) {
   const auth = authenticate(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
-  if (auth.token && req.method !== 'GET' && !auth.token.scopes.includes('write')) {
+  if (auth.token && req.method !== 'GET' &&
+      !auth.token.scopes.includes('write') && !auth.token.scopes.includes('admin')) {
     return res.status(403).json({ error: 'Token lacks write scope' })
   }
   req.actor = auth.actor
@@ -1112,23 +1125,41 @@ function mcpAuth(req, res, next) {
   next()
 }
 
-// MCP token management (browser session only; bearer tokens cannot mint tokens)
-app.get('/api/mcp/tokens', checkAuth, (req, res) => {
-  if (req.mcpToken) return res.status(403).json({ error: 'Use a browser session to manage MCP tokens' })
+// MCP token management. Human admins and admin-scoped tokens may manage
+// client tokens; only a human admin session may mint another admin token.
+app.get('/api/mcp/tokens', checkAuth, requireAdmin, (req, res) => {
   try { res.json(tokens.list()) } catch (e) { sendServiceError(res, e) }
 })
 
-app.post('/api/mcp/tokens', checkAuth, (req, res) => {
-  if (req.mcpToken) return res.status(403).json({ error: 'Use a browser session to manage MCP tokens' })
+app.post('/api/mcp/tokens', checkAuth, requireAdmin, (req, res) => {
   try {
-    const created = tokens.create({ name: req.body?.name, scopes: req.body?.scopes })
+    const scopes = Array.isArray(req.body?.scopes)
+      ? req.body.scopes
+      : String(req.body?.scopes || 'read,write').split(',')
+    const cleanScopes = [...new Set(scopes.map(scope => String(scope).trim()).filter(Boolean))]
+    if (cleanScopes.includes('admin') && req.mcpToken) {
+      return res.status(403).json({
+        error: 'Admin tokens can only be created from a human admin session',
+        code: 'admin_token_requires_human'
+      })
+    }
+    const created = tokens.create({
+      name: req.body?.name,
+      scopes: cleanScopes,
+      expiresAt: req.body?.expiresAt || null,
+      createdBy: req.actor
+    })
     res.json(created)
   } catch (e) { sendServiceError(res, e) }
 })
 
-app.delete('/api/mcp/tokens/:id', checkAuth, (req, res) => {
-  if (req.mcpToken) return res.status(403).json({ error: 'Use a browser session to manage MCP tokens' })
-  try { res.json(tokens.revoke(req.params.id)) } catch (e) { sendServiceError(res, e) }
+app.delete('/api/mcp/tokens/:id', checkAuth, requireAdmin, (req, res) => {
+  try {
+    const token = tokens.getById(req.params.id)
+    const result = tokens.revoke(req.params.id)
+    if (token) mcpEditing?.closeForToken(token.id, { discard: false, reason: 'token-revoked' })
+    res.json(result)
+  } catch (e) { sendServiceError(res, e) }
 })
 
 app.get('/api/notes', checkAuth, (req, res) => {
@@ -1784,7 +1815,7 @@ const mcpHandler = createMcpHandler(({ authInfo }) => createMcpServer({
   authInfo,
   baseUrl: mcpPublicUrl.replace(/\/$/, ''),
   requestRender: requestWhiteboardRender
-}), { bus: mcpBus })
+}))
 const mcpNodeHandler = toNodeHandler(mcpHandler)
 app.all('/mcp', mcpAuth, (req, res) => mcpNodeHandler(req, res, req.body))
 

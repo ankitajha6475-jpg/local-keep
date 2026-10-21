@@ -70,7 +70,7 @@ src/
     services/embeddings.js        # admin config, vector tables, background indexer, vector search
     services/tags.js              # tag sync, tree, descendant filter
     services/textCollab.js        # Yjs live text docs, persistence, base revision
-    services/mcpEditing.js        # MCP open-note leases, TTL, incremental edits
+    services/mcpEditing.js        # MCP write/read sessions, state/guide, TTL
     services/links.js             # wiki-link sync/resolve, backlinks, graph
     services/renders.js           # whiteboard page manifests + staleness
     images.js, fts.js, canvas.js, events.js, sessionStore.js
@@ -371,32 +371,40 @@ corresponding card while any session has that note open.
   per request with `authInfo`. The Express body is passed to `toNodeHandler`.
 - Auth: `Authorization: Bearer lk_mcp_...` or session cookie. `api_tokens` stores only
   SHA-256 hashes. Token names become actors `mcp:<name>`; `ui` is the browser actor.
+  State is keyed by token id (`authInfo.clientId`), not the display name, so duplicate
+  token names never share sessions.
 - `checkAuth` (REST) and `mcpAuth` share `authenticate()`. Token mutations require the
-  `write` scope; read-only tokens can only GET/MCP read tools.
+  `write` or `admin` scope; read-only tokens can only GET/MCP read tools.
 - Tools call the same services as REST/WS; MCP edits create revisions, branch on stale
   bases, emit `note.revised`, and notify open browsers. `docs/mcp.md` is the user guide.
-- `edit_note` has `mode: oneshot|open` for lifecycle and `commit_mode: append|branch|take_head`
-  for stale-base behavior. Do not overload `mode` with both axes.
-- Open mode is a per-client edit lease keyed by `authInfo.clientId` (`mcp:<token-name>`):
-  one note per client, idempotent reopen, TTL (`LOCAL_KEEP_MCP_EDIT_TTL_MS`, default 30m),
-  and `expected_version` checks on incremental edits. Leases are advisory, never a hard
-  lock; use the shared Yjs draft and normal revision branching instead.
-- `mcpEditing` (`src/server/services/mcpEditing.js`) holds the leases and applies edits to
-  `note_text_docs`; open MCP sessions are added to dashboard presence as `MCP (<name>)`.
-- While a note is open, hide `edit_note`/`append_to_note` and register `read_open_note`,
-  `replace_open_note`, `insert_open_note`, `delete_open_note`, `append_open_note`,
-  `set_open_note_title`, `save_open_note`, and `close_open_note`. Rebuild `tools/list`
-  per request; publish `tools_list_changed` through the MCP bus. Stateless legacy clients
-  must re-list; hidden tool calls fail safely.
-- `save_open_note` commits with source `mcp-open`; the bus updates the draft base and
-  broadcasts `text-saved`. `close_open_note` keeps a dirty draft; discard only when the
-  caller is the last editor. Archive/purge/restore/promote close leases.
+- The MCP tool list is **stable**. `edit_note` is one-shot only; persistent sessions use
+  `get_note_state` + `note_session`. Do not reintroduce dynamic open/close tool
+  registration or rely on `tools/list_changed` for FSM correctness.
+- Session state is per token: one write session and up to `LOCAL_KEEP_MCP_MAX_READS`
+  (default 8) read sessions. Opening write on a note with a read session upgrades it;
+  opening another write while one is open returns `write_session_exists` with the current
+  state and guide. Opening read for a note that already has a write returns the write
+  session (`read_included`).
+- `mcpEditing` (`src/server/services/mcpEditing.js`) holds write/read sessions and applies
+  edits to `note_text_docs`. Sessions are advisory, TTL-based
+  (`LOCAL_KEEP_MCP_EDIT_TTL_MS`, default 30m), and never a hard lock. `get_note_state`
+  is always available. Session and mutation results include `state`, `allowed_actions`,
+  and `guide`; list/text tools keep their native shapes. Errors include the same
+  envelope and a structured `error.code`.
+- `note_session` actions: `open_read`, `open_write`, `read`, `replace`, `insert`,
+  `delete`, `append`, `set_title`, `save`, `close`, `status`. Mutations require a write
+  session; read sessions return `session_mode_mismatch` with a guide to open write.
+- `note_session action=save` commits with source `mcp-open`; it updates the draft base and
+  broadcasts `text-saved`. One-shot MCP edits use `source: 'mcp'` and must not move a live
+  draft base. Archive/purge/restore/promote and token revocation close affected sessions.
 - `get_whiteboard` returns ordered image blocks/markdown/URLs; stale renders can ask a
   connected browser via `render-request`. No server-side rendering.
-- Token management: UI 🔌 modal, `/api/mcp/tokens`, `npm run mcp:token`.
+- Token management: UI 🔌 modal, `/api/mcp/tokens`, `npm run mcp:token`. Human admins and
+  admin-scoped tokens can manage client tokens; only a human admin session can mint a new
+  admin token. Admin tokens can use `/api/admin/*`.
 - stdio adapter (`mcp-stdio.js`) opens the DB directly with WAL; HTTP is preferred because
-  stdio writes cannot push WS events to an open browser. stdio supports open leases too,
-  but cannot see browser presence and never discards a dirty shared draft.
+  stdio writes cannot push WS events to an open browser. stdio supports persistent
+  sessions too, but cannot see browser presence and never discards a dirty shared draft.
 
 ### DB Schema
 
@@ -435,7 +443,8 @@ image_refs (image_hash, note_id)                          -- head/tile refs
 revision_image_refs (image_hash, revision_id)             -- protects old-version images
 whiteboard_renders (id, note_id, revision_id, scene_hash, ...)
 whiteboard_tiles (render_id, page_index, image_hash, ...)
-api_tokens (id, name, token_hash, scopes, created_at, last_used_at, revoked_at)
+api_tokens (id, name, token_hash, scopes, created_at, last_used_at, revoked_at,
+            expires_at, created_by)
 ```
 
 **Critical**: `canvas_text` column exists ONLY in `notes_fts`, NOT in `notes`. The
@@ -489,7 +498,7 @@ All notable changes must be recorded in `CHANGELOG.md`. When making changes:
 18. **Tag filtering**: the UI keeps all active+archived notes in memory and filters tags client-side so link resolution stays complete. The server also supports `tag`/`exactTag` for API/MCP; descendants are included by default.
 19. **Whiteboard page rendering is browser-only**: `exportToBlob` needs DOM/fonts. If no browser is open, the API returns the last manifest with `stale`; MCP will need to request a render rather than synthesize one.
 20. **Page planner order**: never replace the band/x ordering with a simple sort by y; that breaks left-to-right reading within a row. Keep bound arrows/text/frames in one unit.
-21. **MCP auth**: `/mcp` must never be anonymous. Tokens are hashed; token names are actors `mcp:<name>`. Do not log raw tokens. Token-management routes are browser-session only.
+21. **MCP auth**: `/mcp` must never be anonymous. Tokens are hashed; token names are actors `mcp:<name>`. Do not log raw tokens. Human admins and admin-scoped tokens may manage client tokens; only a human admin session may mint another admin token.
 22. **MCP whiteboard recall**: render pages in the browser; if no browser is connected, return the stale manifest with a notice. Do not add headless Chromium to the server for this.
 23. **HTTPS cert SAN**: the shared mkcert cert is for `192.168.3.222`, not `localhost`; use the IP or issue a cert for your hostname. `COOKIE_SECURE=1` means login cookies only work over HTTPS.
 24. **Multiuser migration**: existing installs become `admin` / `Administrator` with the old password. Do not delete `users`/`sessions`; use `npm run auth:reset -- <username>` for recovery and keep at least one active admin.
@@ -502,6 +511,6 @@ All notable changes must be recorded in `CHANGELOG.md`. When making changes:
 31. **Live text is draft-only**: `note_text_docs` must never update `notes.content`, `head_revision_id`, tags, or links. Only an explicit Save commits a revision. Do not make live typing bypass optimistic concurrency.
 32. **Text presence and canvas presence share `notePresence`**: add/remove both kinds on join/leave/close so dashboard dots never stick. Only text sessions use `textSessions`; canvas sessions remain in `noteStates`.
 33. **Remote text re-render and caret**: the Visual editor must capture/restore the caret around a remote re-render and defer during IME composition. Without this, two clients typing makes the local caret jump or the editor goes stale.
-34. **MCP edit leases are per token, not per process**: `authInfo.clientId` is the only stable identity in the stateless transport. Use one token per agent. A shared token intentionally shares one open note; do not use a global note lock.
-35. **MCP open tools are state-dependent**: `createMcpServer` rebuilds `tools/list` from `mcpEditing.get(clientKey)` on every request. Never register open tools unconditionally; hidden one-shot tools must fail rather than silently edit another note.
-36. **MCP save source**: `save_open_note` commits with `source: 'mcp-open'` so the draft base moves and browsers get `text-saved`. One-shot MCP edits use `source: 'mcp'` and must not move a live draft base.
+34. **MCP sessions are per token, not per process**: `authInfo.clientId` is the stable token id in the stateless transport. Use one token per agent. A shared token intentionally shares one write session and its read sessions; do not use a global note lock.
+35. **MCP tools stay stable**: `get_note_state` and `note_session` are always registered. Every result/error includes `state`, `allowed_actions`, and `guide`; do not derive FSM state from `tools/list` or dynamic tool visibility.
+36. **MCP session save source**: `note_session action=save` commits with `source: 'mcp-open'` so the draft base moves and browsers get `text-saved`. One-shot `edit_note`/`append_to_note` use `source: 'mcp'` and must not move a live draft base.

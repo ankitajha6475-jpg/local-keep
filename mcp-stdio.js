@@ -29,6 +29,7 @@ import { migration006OptionalRerank } from './src/server/migrations/006-optional
 import { migration007LiveTextCollab } from './src/server/migrations/007-live-text-collab.js'
 import { migration008EmbeddingVariants } from './src/server/migrations/008-embedding-variants.js'
 import { migration009EmbeddingTuning } from './src/server/migrations/009-embedding-tuning.js'
+import { migration010TokenAdmin } from './src/server/migrations/010-token-admin.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const dataDir = process.env.LOCAL_KEEP_DATA_DIR
@@ -40,7 +41,7 @@ createBaseSchema(db)
 const imageStore = createImageStore({ imagesDir: path.join(dataDir, 'images') })
 runMigrations({
   db,
-  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning],
+  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin],
   backupDir: path.join(dataDir, 'backups'),
   context: { imageStore }
 })
@@ -60,7 +61,9 @@ embeddings.initialize()
 const mcpEditing = createMcpEditingService({
   db,
   notes,
+  revisions,
   textCollab,
+  maxReads: Number(process.env.LOCAL_KEEP_MCP_MAX_READS || 8),
   onOpen() {},
   onClose(session, { discard }) {
     // stdio cannot see browser/HTTP presence, so never erase a dirty shared
@@ -69,8 +72,7 @@ const mcpEditing = createMcpEditingService({
     return { discarded: removed, remaining: null, discard_ignored: !!discard && !removed }
   },
   onSaved() {},
-  onDraftChange() {},
-  onToolsChanged() {}
+  onDraftChange() {}
 })
 
 const services = { db, notes, revisions, tags, links, renders, search, embeddings, imageStore, textCollab, mcpEditing }
@@ -78,7 +80,7 @@ const baseUrl = (process.env.LOCAL_KEEP_PUBLIC_URL || 'http://localhost:5173').r
 
 void serveStdio(() => createMcpServer({
   services,
-  authInfo: { clientId: 'mcp:stdio', scopes: ['read', 'write'] },
+  authInfo: { clientId: 'mcp:stdio', actor: 'mcp:stdio', scopes: ['read', 'write'] },
   baseUrl,
   requestRender: async () => ({ requested: false, reason: 'no-client' })
 }))

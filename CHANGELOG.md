@@ -11,11 +11,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Embedding variants: table partitions are keyed by model **and** dimensions, so `Qwen/Qwen3-Embedding-8B` at 4096 and 1024 dims use independent tables; Qwen3 defaults to 4096
 - Admin embedding dimensions field and `Reset index` action/API to drop all embedding tables and reindex cleanly
 - Migration 8 resets the embedding index for the variant-aware table scheme and queues a rebuild
-- Embedding indexing now sends chunk arrays in batches and runs bounded parallel requests/notes (`LOCAL_KEEP_EMBEDDING_BATCH_SIZE`, `_CONCURRENCY`, `_NOTE_CONCURRENCY`, `_MAX_BATCH_CHARS`); `429`/`5xx` retries honor `Retry-After`
-- Persistent MCP edit sessions: `edit_note` `mode: open|oneshot`, per-token one-note leases with TTL, dynamic open/close tool lists, and `tools_list_changed` notifications
-- MCP incremental editing tools: read, exact replace, line insert, delete, append, title, save, and close on the shared Yjs draft
+- Embedding indexing now sends chunk arrays in batches and runs bounded parallel requests/notes; tuning lives in `embedding_settings` and `429`/`5xx` retries honor `Retry-After`
+- Persistent MCP sessions with a stable tool list: `get_note_state` plus `note_session` actions for open/read/replace/insert/delete/append/title/save/close; session and mutation results include `state`, `allowed_actions`, and `guide`
+- Per-token session state: one write session and multiple read sessions, read-to-write upgrade, TTL, and structured `write_session_exists`/`session_mode_mismatch` errors with recovery guides
 - `expected_version` conflict detection for MCP edits and `source: mcp-open` revision saves that update the live draft base
-- MCP edit sessions appear in dashboard presence as `MCP (<token name>)`
+- MCP read/write sessions appear in dashboard presence as `MCP (<token name> · read|write>)`
+- Admin MCP tokens with `admin` scope can manage client tokens and use `/api/admin/*`; only a human admin session can mint another admin token
+- Migration 10 adds token expiry (`expires_at`) and `created_by`; token state is keyed by token id, not display name
 - Live text collaboration: Yjs CRDT shared drafts over the existing WebSocket, character-level merge, reconnect recovery, and Visual/Source caret restoration
 - `note_text_docs` table and migration 7 for persisted live text drafts with a base revision
 - Presence tracking for text and whiteboard sessions; dashboard cards show a green dot and tooltip while the note is open elsewhere

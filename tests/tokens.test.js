@@ -27,6 +27,24 @@ test('MCP tokens are created hashed, verified, listed, and revoked', () => {
     const readOnly = service.create({ name: 'Reader', scopes: 'read' })
     const readToken = service.verify(readOnly.token)
     assert.equal(service.hasScope(readToken, 'write'), false)
+
+    const admin = service.create({
+      name: 'Admin',
+      scopes: ['read', 'write', 'admin'],
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      createdBy: 'user:admin'
+    })
+    const adminToken = service.verify(admin.token)
+    assert.deepEqual(adminToken.scopes, ['read', 'write', 'admin'])
+    assert.equal(service.hasScope(adminToken, 'write'), true)
+    assert.equal(service.hasScope(adminToken, 'admin'), true)
+    assert.ok(admin.record.expiresAt)
+    assert.equal(admin.record.createdBy, 'user:admin')
+
+    assert.throws(
+      () => service.create({ name: 'Expired', expiresAt: '2000-01-01T00:00:00.000Z' }),
+      error => error.status === 400
+    )
   } finally {
     ctx.cleanup()
   }

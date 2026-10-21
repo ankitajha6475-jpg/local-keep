@@ -20,6 +20,7 @@ import { migration006OptionalRerank } from '../../src/server/migrations/006-opti
 import { migration007LiveTextCollab } from '../../src/server/migrations/007-live-text-collab.js'
 import { migration008EmbeddingVariants } from '../../src/server/migrations/008-embedding-variants.js'
 import { migration009EmbeddingTuning } from '../../src/server/migrations/009-embedding-tuning.js'
+import { migration010TokenAdmin } from '../../src/server/migrations/010-token-admin.js'
 
 function makeDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'local-keep-test-'))
@@ -76,7 +77,7 @@ export function createFreshContext() {
   const ctx = openContext()
   const result = runMigrations({
     db: ctx.db,
-    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning],
+    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin],
     backupDir: ctx.backupDir,
     context: { imageStore: ctx.imageStore }
   })
@@ -93,7 +94,7 @@ export function createLegacyContext() {
   const migrate = () => {
     const result = runMigrations({
       db: ctx.db,
-      migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning],
+      migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin],
       backupDir: ctx.backupDir,
       context: { imageStore: ctx.imageStore }
     })

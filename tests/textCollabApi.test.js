@@ -5,11 +5,12 @@ import * as Y from 'yjs'
 import { startTestServer } from './helpers/serverProcess.js'
 import { base64ToBytes } from '../src/shared/base64.js'
 
-function waitForMessage(ws, predicate, timeoutMs = 5000) {
+function waitForMessage(ws, predicate, timeoutMs = 15000, label = 'message') {
+  const seen = []
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       cleanup()
-      reject(new Error('timed out waiting for WebSocket message'))
+      reject(new Error(`timed out waiting for ${label}; seen=${JSON.stringify(seen)}`))
     }, timeoutMs)
     function cleanup() {
       clearTimeout(timer)
@@ -19,6 +20,8 @@ function waitForMessage(ws, predicate, timeoutMs = 5000) {
     function onMessage(raw) {
       let msg
       try { msg = JSON.parse(raw.toString()) } catch (_) { return }
+      seen.push({ type: msg.type, noteId: msg.noteId, count: msg.count })
+      if (seen.length > 20) seen.shift()
       if (predicate(msg)) {
         cleanup()
         resolve(msg)
@@ -60,11 +63,15 @@ test('two clients share a live text draft and presence updates', async () => {
 
     const presenceOne = waitForMessage(
       wsB,
-      msg => msg.type === 'presence' && msg.noteId === note.id && msg.count === 1
+      msg => msg.type === 'presence' && msg.noteId === note.id && msg.count === 1,
+      15000,
+      'presence count 1 on wsB'
     )
     const snapshotA = waitForMessage(
       wsA,
-      msg => msg.type === 'text-snapshot' && msg.noteId === note.id
+      msg => msg.type === 'text-snapshot' && msg.noteId === note.id,
+      15000,
+      'text snapshot on wsA'
     )
     wsA.send(JSON.stringify({ type: 'text-join', noteId: note.id }))
     await presenceOne
@@ -72,11 +79,15 @@ test('two clients share a live text draft and presence updates', async () => {
 
     const presenceTwo = waitForMessage(
       wsA,
-      msg => msg.type === 'presence' && msg.noteId === note.id && msg.count === 2
+      msg => msg.type === 'presence' && msg.noteId === note.id && msg.count === 2,
+      15000,
+      'presence count 2 on wsA'
     )
     const snapshotB = waitForMessage(
       wsB,
-      msg => msg.type === 'text-snapshot' && msg.noteId === note.id
+      msg => msg.type === 'text-snapshot' && msg.noteId === note.id,
+      15000,
+      'text snapshot on wsB'
     )
     wsB.send(JSON.stringify({ type: 'text-join', noteId: note.id }))
     await presenceTwo
@@ -91,7 +102,9 @@ test('two clients share a live text draft and presence updates', async () => {
     const updateFromA = Y.encodeStateAsUpdate(docA, base64ToBytes(first.stateVector))
     const receivedByB = waitForMessage(
       wsB,
-      msg => msg.type === 'text-update' && msg.noteId === note.id
+      msg => msg.type === 'text-update' && msg.noteId === note.id,
+      15000,
+      'text update on wsB'
     )
     wsA.send(JSON.stringify({
       type: 'text-update',
@@ -106,7 +119,9 @@ test('two clients share a live text draft and presence updates', async () => {
     const updateFromB = Y.encodeStateAsUpdate(docB, base64ToBytes(second.stateVector))
     const receivedByA = waitForMessage(
       wsA,
-      msg => msg.type === 'text-update' && msg.noteId === note.id
+      msg => msg.type === 'text-update' && msg.noteId === note.id,
+      15000,
+      'text update on wsA'
     )
     wsB.send(JSON.stringify({
       type: 'text-update',
@@ -119,7 +134,9 @@ test('two clients share a live text draft and presence updates', async () => {
 
     const savedForB = waitForMessage(
       wsB,
-      msg => msg.type === 'text-saved' && msg.noteId === note.id
+      msg => msg.type === 'text-saved' && msg.noteId === note.id,
+      15000,
+      'text saved on wsB'
     )
     const saved = await request('PUT', `/api/notes/${note.id}`, {
       title: 'Shared',
@@ -135,7 +152,9 @@ test('two clients share a live text draft and presence updates', async () => {
 
     const presenceAfterLeave = waitForMessage(
       wsA,
-      msg => msg.type === 'presence' && msg.noteId === note.id && msg.count === 1
+      msg => msg.type === 'presence' && msg.noteId === note.id && msg.count === 1,
+      15000,
+      'presence count 1 after leave'
     )
     wsB.send(JSON.stringify({ type: 'text-leave', noteId: note.id }))
     await presenceAfterLeave

@@ -1,22 +1,8 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/server'
 import * as z from 'zod/v4'
 
-function text(value) {
-  return { content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }] }
-}
-
-function fail(message) {
-  return { content: [{ type: 'text', text: String(message) }], isError: true }
-}
-
-function failError(error) {
-  const payload = { error: error?.message || String(error) }
-  if (error?.code) payload.code = error.code
-  if (error?.data && typeof error.data === 'object') Object.assign(payload, error.data)
-  return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], isError: true }
-}
-
 function actorFor(authInfo) {
+  if (authInfo?.actor) return authInfo.actor
   const id = authInfo?.clientId || ''
   if (id.startsWith('mcp:') || id.startsWith('user:')) return id
   return id === 'ui' ? 'ui' : 'mcp:anonymous'
@@ -24,9 +10,10 @@ function actorFor(authInfo) {
 
 function requireWrite(authInfo) {
   const scopes = authInfo?.scopes || []
-  if (scopes.length > 0 && !scopes.includes('write')) {
+  if (scopes.length > 0 && !scopes.includes('write') && !scopes.includes('admin')) {
     const error = new Error('This MCP token does not have the write scope')
     error.code = 'forbidden'
+    error.guide = 'Ask an admin to issue a token with the write scope.'
     throw error
   }
 }
@@ -49,11 +36,134 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
   const { notes, revisions, tags, links, renders, search, imageStore, mcpEditing } = services
   const actor = actorFor(authInfo)
   const clientKey = authInfo?.clientId || 'mcp:anonymous'
-  const openSession = mcpEditing?.get(clientKey) || null
   const server = new McpServer({ name: 'local-keep', version: '1.0.0' })
 
-  function notifyToolListChanged() {
-    try { server.sendToolListChanged() } catch (_) { /* best effort */ }
+  function canWrite() {
+    const scopes = authInfo?.scopes || []
+    return scopes.length === 0 || scopes.includes('write') || scopes.includes('admin')
+  }
+
+  function sessionState() {
+    try {
+      return mcpEditing?.getState ? mcpEditing.getState(clientKey) : { write: null, reads: [] }
+    } catch (_) {
+      return { write: null, reads: [] }
+    }
+  }
+
+  function allowedActionsFor(state) {
+    const actions = ['open_read']
+    if (canWrite() && !state.write) actions.push('open_write')
+    if (state.write) {
+      actions.push('read')
+      if (canWrite()) actions.push('replace', 'insert', 'delete', 'append', 'set_title', 'save')
+      actions.push('close')
+    }
+    if (state.reads?.length) actions.push('read', 'close')
+    return [...new Set(actions)]
+  }
+
+  function guideFor(state, error = null) {
+    if (error?.guide) return error.guide
+    const code = error?.code
+    if (code === 'write_session_exists' && state.write) {
+      return `A write session is already open on note ${state.write.note_id}. Call note_session action=close with session_id ${state.write.session_id} (or action=save first), then open the other note.`
+    }
+    if (code === 'session_mode_mismatch') {
+      return 'This action requires a write session. Call note_session action=open_write for the note, then retry.'
+    }
+    if (code === 'stale_version') {
+      return 'The shared draft changed. Call note_session action=read with the same session_id, then retry with the returned version.'
+    }
+    if (code === 'session_not_found' || code === 'session_id_required') {
+      return 'Call get_note_state to list the current write/read sessions and their session_id values.'
+    }
+    if (code === 'forbidden') {
+      return 'This token does not have write scope. Ask an admin for a write token, or use a read session.'
+    }
+    if (code === 'ttl_expired') {
+      return 'The session expired. Open a new write/read session with note_session.'
+    }
+    if (!canWrite()) {
+      return state.reads?.length
+        ? 'This token is read-only. Use note_session action=read; ask an admin for a write token to edit.'
+        : 'This token is read-only. Use note_session action=open_read to read; ask an admin for a write token to edit.'
+    }
+    if (state.write) {
+      return `Write session ${state.write.session_id} is open on note ${state.write.note_id}. Use note_session action=read/replace/insert/delete/append/set_title, then action=save or action=close.`
+    }
+    if (state.reads?.length) {
+      const ids = state.reads.map(session => `${session.session_id} (${session.note_id})`).join(', ')
+      return `Read session(s) open: ${ids}. Use note_session action=read; use action=open_write to edit.`
+    }
+    return 'No session is open for this token. Use note_session action=open_write to edit or action=open_read to read.'
+  }
+
+  function text(value) {
+    if (Array.isArray(value)) {
+      return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }] }
+    }
+    if (typeof value === 'string') {
+      return { content: [{ type: 'text', text: value }] }
+    }
+    const state = sessionState()
+    const meta = {
+      state,
+      allowed_actions: allowedActionsFor(state),
+      guide: guideFor(state)
+    }
+    if (value && typeof value === 'object') {
+      return { content: [{ type: 'text', text: JSON.stringify({ ...value, ...meta }, null, 2) }] }
+    }
+    return { content: [{ type: 'text', text: JSON.stringify({ result: value, ...meta }, null, 2) }] }
+  }
+
+  function fail(message) {
+    const state = sessionState()
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: false,
+          error: { code: 'tool_error', message: String(message) },
+          state,
+          allowed_actions: allowedActionsFor(state),
+          guide: guideFor(state)
+        }, null, 2)
+      }],
+      isError: true
+    }
+  }
+
+  function failError(error) {
+    const state = sessionState()
+    const data = error?.data && typeof error.data === 'object' ? error.data : {}
+    return {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: false,
+          error: {
+            code: error?.code || 'tool_error',
+            message: error?.message || String(error),
+            ...data
+          },
+          state,
+          allowed_actions: allowedActionsFor(state),
+          guide: guideFor(state, error)
+        }, null, 2)
+      }],
+      isError: true
+    }
+  }
+
+  function assertNoWriteSession() {
+    const state = sessionState()
+    if (!state.write) return
+    const error = new Error(`A write session is already open on note ${state.write.note_id}`)
+    error.code = 'active_write_session'
+    error.guide = `Use note_session action=read/replace/insert/delete/append/set_title, then action=save or action=close. For a one-shot edit, close the session first.`
+    throw error
   }
 
   function relatedAppendix(ids) {
@@ -221,266 +331,218 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     } catch (e) { return fail(e.message) }
   })
 
-  if (!openSession) {
-    server.registerTool('edit_note', {
-      description: 'Edit a note as a new revision, or open a persistent editing session. mode=oneshot is atomic; mode=open holds the note until close_open_note. Use commit_mode for stale-base handling.',
-      inputSchema: z.object({
-        note_id: z.string(),
-        mode: z.enum(['oneshot', 'open']).optional(),
-        commit_mode: z.enum(['append', 'branch', 'take_head']).optional(),
-        base_revision_id: z.string().optional(),
-        title: z.string().optional(),
-        content: z.string().optional(),
-        message: z.string().optional(),
-        related_note_ids: z.array(z.string()).optional()
-      })
-    }, async (args) => {
-      try {
-        requireWrite(authInfo)
-        const mode = args.mode || 'oneshot'
-        if (mode === 'open') {
-          if (!mcpEditing) throw new Error('Persistent MCP editing is unavailable')
-          if (args.content !== undefined || args.title !== undefined) {
-            throw new Error('mode=open does not accept title/content; open the note, then use the open-note editing tools')
-          }
-          const opened = mcpEditing.open({ clientKey, noteId: args.note_id, actor })
-          notifyToolListChanged()
-          return text({
-            ...opened.snapshot,
-            mode: 'open',
-            tools_changed: true,
-            next_tools: [
-              'read_open_note',
-              'replace_open_note',
-              'insert_open_note',
-              'delete_open_note',
-              'append_open_note',
-              'set_open_note_title',
-              'save_open_note',
-              'close_open_note'
-            ]
-          })
-        }
-
-        let content = args.content
-        if (args.related_note_ids?.length) {
-          const note = notes.getNote(args.note_id)
-          content = (content !== undefined ? content : note.content) + relatedAppendix(args.related_note_ids)
-        }
-        if (content === undefined && args.title === undefined) {
-          throw new Error('edit_note requires title or content in oneshot mode')
-        }
-        const result = notes.updateNote({
-          id: args.note_id,
-          title: args.title,
-          content,
-          baseRevisionId: args.base_revision_id || null,
-          mode: args.commit_mode || 'append',
-          actor,
-          source: 'mcp',
-          message: args.message || null
-        })
-        return text({
-          note: result,
-          revision: result.revision,
-          previous_revision: result.previousRevision,
-          conflict: result.conflict,
-          notice: result.notice,
-          history_url: `${baseUrl}/#/note/${encodeURIComponent(args.note_id)}/history`
-        })
-      } catch (e) { return failError(e) }
+  server.registerTool('edit_note', {
+    description: 'Edit a note as a new revision in one shot. Use note_session for persistent read/write sessions. commit_mode controls stale-base handling.',
+    inputSchema: z.object({
+      note_id: z.string(),
+      commit_mode: z.enum(['append', 'branch', 'take_head']).optional(),
+      base_revision_id: z.string().optional(),
+      title: z.string().optional(),
+      content: z.string().optional(),
+      message: z.string().optional(),
+      related_note_ids: z.array(z.string()).optional()
     })
-
-    server.registerTool('append_to_note', {
-      description: 'Append markdown to a note as a new revision without opening a persistent session.',
-      inputSchema: z.object({
-        note_id: z.string(),
-        content: z.string(),
-        commit_mode: z.enum(['append', 'branch', 'take_head']).optional(),
-        base_revision_id: z.string().optional(),
-        title: z.string().optional()
-      })
-    }, async (args) => {
-      try {
-        requireWrite(authInfo)
+  }, async (args) => {
+    try {
+      requireWrite(authInfo)
+      assertNoWriteSession()
+      let content = args.content
+      if (args.related_note_ids?.length) {
         const note = notes.getNote(args.note_id)
-        const content = `${note.content || ''}\n\n${args.content}`
-        const result = notes.updateNote({
-          id: args.note_id,
-          title: args.title !== undefined ? args.title : note.title,
-          content,
-          baseRevisionId: args.base_revision_id || note.revisionId,
-          mode: args.commit_mode || 'append',
-          actor,
-          source: 'mcp',
-          message: 'append via MCP'
-        })
-        return text({
-          note: result,
-          revision: result.revision,
-          previous_revision: result.previousRevision,
-          conflict: result.conflict,
-          notice: result.notice,
-          history_url: `${baseUrl}/#/note/${encodeURIComponent(args.note_id)}/history`
-        })
-      } catch (e) { return failError(e) }
-    })
-  } else {
-    server.registerTool('read_open_note', {
-      description: 'Read the current shared draft for the note opened by this MCP client.',
-      inputSchema: z.object({ session_id: z.string() })
-    }, async (args) => {
-      try {
-        requireWrite(authInfo)
-        return text(mcpEditing.read({ clientKey, sessionId: args.session_id }))
-      } catch (e) { return failError(e) }
-    })
-
-    server.registerTool('replace_open_note', {
-      description: 'Replace exact text in the open note. Requires a unique match unless replace_all is true. Pass expected_version from read_open_note to detect concurrent browser edits.',
-      inputSchema: z.object({
-        session_id: z.string(),
-        old_text: z.string(),
-        new_text: z.string(),
-        replace_all: z.boolean().optional(),
-        expected_version: z.string().optional()
+        content = (content !== undefined ? content : note.content) + relatedAppendix(args.related_note_ids)
+      }
+      if (content === undefined && args.title === undefined) {
+        throw new Error('edit_note requires title or content')
+      }
+      const result = notes.updateNote({
+        id: args.note_id,
+        title: args.title,
+        content,
+        baseRevisionId: args.base_revision_id || null,
+        mode: args.commit_mode || 'append',
+        actor,
+        source: 'mcp',
+        message: args.message || null
       })
-    }, async (args) => {
-      try {
-        requireWrite(authInfo)
-        return text(mcpEditing.replace({
+      return text({
+        note: result,
+        revision: result.revision,
+        previous_revision: result.previousRevision,
+        conflict: result.conflict,
+        notice: result.notice,
+        history_url: `${baseUrl}/#/note/${encodeURIComponent(args.note_id)}/history`
+      })
+    } catch (e) { return failError(e) }
+  })
+
+  server.registerTool('append_to_note', {
+    description: 'Append markdown to a note as a new revision in one shot. Use note_session for persistent sessions.',
+    inputSchema: z.object({
+      note_id: z.string(),
+      content: z.string(),
+      commit_mode: z.enum(['append', 'branch', 'take_head']).optional(),
+      base_revision_id: z.string().optional(),
+      title: z.string().optional()
+    })
+  }, async (args) => {
+    try {
+      requireWrite(authInfo)
+      assertNoWriteSession()
+      const note = notes.getNote(args.note_id)
+      const content = `${note.content || ''}\n\n${args.content}`
+      const result = notes.updateNote({
+        id: args.note_id,
+        title: args.title !== undefined ? args.title : note.title,
+        content,
+        baseRevisionId: args.base_revision_id || note.revisionId,
+        mode: args.commit_mode || 'append',
+        actor,
+        source: 'mcp',
+        message: 'append via MCP'
+      })
+      return text({
+        note: result,
+        revision: result.revision,
+        previous_revision: result.previousRevision,
+        conflict: result.conflict,
+        notice: result.notice,
+        history_url: `${baseUrl}/#/note/${encodeURIComponent(args.note_id)}/history`
+      })
+    } catch (e) { return failError(e) }
+  })
+
+  server.registerTool('get_note_state', {
+    description: 'Return the current read/write session state for this MCP token, including allowed actions and a next-step guide.',
+    inputSchema: z.object({})
+  }, async () => {
+    try {
+      return text({})
+    } catch (e) { return failError(e) }
+  })
+
+  server.registerTool('note_session', {
+    description: 'Manage persistent note sessions. State is explicit: one write session and multiple read sessions per token. Every result includes state, allowed_actions, and a guide.',
+    inputSchema: z.object({
+      action: z.enum([
+        'status',
+        'open_read',
+        'open_write',
+        'read',
+        'replace',
+        'insert',
+        'delete',
+        'append',
+        'set_title',
+        'save',
+        'close'
+      ]),
+      note_id: z.string().optional(),
+      session_id: z.string().optional(),
+      old_text: z.string().optional(),
+      new_text: z.string().optional(),
+      replace_all: z.boolean().optional(),
+      line: z.number().int().min(1).optional(),
+      text: z.string().optional(),
+      start_line: z.number().int().min(1).optional(),
+      end_line: z.number().int().min(1).optional(),
+      title: z.string().optional(),
+      expected_version: z.string().optional(),
+      message: z.string().optional(),
+      commit_mode: z.enum(['append', 'branch', 'take_head']).optional(),
+      discard: z.boolean().optional()
+    })
+  }, async (args) => {
+    try {
+      if (!mcpEditing) throw new Error('Persistent MCP sessions are unavailable')
+
+      if (args.action === 'status') return text({})
+
+      if (args.action === 'open_read' || args.action === 'open_write') {
+        if (!args.note_id) {
+          const error = new Error('note_id is required for open_read/open_write')
+          error.code = 'note_id_required'
+          error.guide = 'Pass note_id from list_notes or search_notes.'
+          throw error
+        }
+        if (args.action === 'open_write') requireWrite(authInfo)
+        return text(mcpEditing.open({
           clientKey,
-          sessionId: args.session_id,
-          oldText: args.old_text,
-          newText: args.new_text,
-          replaceAll: !!args.replace_all,
-          expectedVersion: args.expected_version
+          noteId: args.note_id,
+          mode: args.action === 'open_write' ? 'write' : 'read',
+          actor
         }))
-      } catch (e) { return failError(e) }
-    })
+      }
 
-    server.registerTool('insert_open_note', {
-      description: 'Insert text at a 1-based line in the open note. line = line_count + 1 appends. Text is newline-terminated if needed.',
-      inputSchema: z.object({
-        session_id: z.string(),
-        line: z.number().int().min(1),
-        text: z.string(),
-        expected_version: z.string().optional()
-      })
-    }, async (args) => {
-      try {
+      if (args.action === 'save' || args.action === 'replace' || args.action === 'insert' ||
+          args.action === 'delete' || args.action === 'append' || args.action === 'set_title') {
         requireWrite(authInfo)
-        return text(mcpEditing.insert({
-          clientKey,
-          sessionId: args.session_id,
-          line: args.line,
-          text: args.text,
-          expectedVersion: args.expected_version
-        }))
-      } catch (e) { return failError(e) }
-    })
+      }
 
-    server.registerTool('delete_open_note', {
-      description: 'Delete exact text or a 1-based inclusive line range from the open note.',
-      inputSchema: z.object({
-        session_id: z.string(),
-        old_text: z.string().optional(),
-        start_line: z.number().int().min(1).optional(),
-        end_line: z.number().int().min(1).optional(),
-        replace_all: z.boolean().optional(),
-        expected_version: z.string().optional()
-      })
-    }, async (args) => {
-      try {
-        requireWrite(authInfo)
-        return text(mcpEditing.remove({
-          clientKey,
-          sessionId: args.session_id,
-          oldText: args.old_text,
-          startLine: args.start_line,
-          endLine: args.end_line,
-          replaceAll: !!args.replace_all,
-          expectedVersion: args.expected_version
-        }))
-      } catch (e) { return failError(e) }
-    })
-
-    server.registerTool('append_open_note', {
-      description: 'Append markdown to the open note draft.',
-      inputSchema: z.object({
-        session_id: z.string(),
-        text: z.string(),
-        expected_version: z.string().optional()
-      })
-    }, async (args) => {
-      try {
-        requireWrite(authInfo)
-        return text(mcpEditing.append({
-          clientKey,
-          sessionId: args.session_id,
-          text: args.text,
-          expectedVersion: args.expected_version
-        }))
-      } catch (e) { return failError(e) }
-    })
-
-    server.registerTool('set_open_note_title', {
-      description: 'Change the title of the open note draft.',
-      inputSchema: z.object({
-        session_id: z.string(),
-        title: z.string(),
-        expected_version: z.string().optional()
-      })
-    }, async (args) => {
-      try {
-        requireWrite(authInfo)
-        return text(mcpEditing.setTitle({
-          clientKey,
-          sessionId: args.session_id,
-          title: args.title,
-          expectedVersion: args.expected_version
-        }))
-      } catch (e) { return failError(e) }
-    })
-
-    server.registerTool('save_open_note', {
-      description: 'Commit the current open-note draft as a revision. The session remains open with the new base revision.',
-      inputSchema: z.object({
-        session_id: z.string(),
-        message: z.string().optional(),
-        commit_mode: z.enum(['append', 'branch', 'take_head']).optional()
-      })
-    }, async (args) => {
-      try {
-        requireWrite(authInfo)
-        return text(mcpEditing.save({
-          clientKey,
-          sessionId: args.session_id,
-          message: args.message || null,
-          commitMode: args.commit_mode || 'append'
-        }))
-      } catch (e) { return failError(e) }
-    })
-
-    server.registerTool('close_open_note', {
-      description: 'Release the open-note lease. By default the shared draft is kept; discard=true deletes it only when this is the last editor.',
-      inputSchema: z.object({
-        session_id: z.string(),
-        discard: z.boolean().optional()
-      })
-    }, async (args) => {
-      try {
-        requireWrite(authInfo)
-        const result = mcpEditing.close({
-          clientKey,
-          sessionId: args.session_id,
-          discard: !!args.discard
-        })
-        notifyToolListChanged()
-        return text({ ...result, tools_changed: true, next_tools: ['edit_note', 'append_to_note'] })
-      } catch (e) { return failError(e) }
-    })
-  }
+      switch (args.action) {
+        case 'read':
+          return text(mcpEditing.read({ clientKey, sessionId: args.session_id }))
+        case 'replace':
+          return text(mcpEditing.replace({
+            clientKey,
+            sessionId: args.session_id,
+            oldText: args.old_text,
+            newText: args.new_text,
+            replaceAll: !!args.replace_all,
+            expectedVersion: args.expected_version
+          }))
+        case 'insert':
+          return text(mcpEditing.insert({
+            clientKey,
+            sessionId: args.session_id,
+            line: args.line,
+            text: args.text,
+            expectedVersion: args.expected_version
+          }))
+        case 'delete':
+          return text(mcpEditing.remove({
+            clientKey,
+            sessionId: args.session_id,
+            oldText: args.old_text,
+            startLine: args.start_line,
+            endLine: args.end_line,
+            replaceAll: !!args.replace_all,
+            expectedVersion: args.expected_version
+          }))
+        case 'append':
+          return text(mcpEditing.append({
+            clientKey,
+            sessionId: args.session_id,
+            text: args.text,
+            expectedVersion: args.expected_version
+          }))
+        case 'set_title':
+          return text(mcpEditing.setTitle({
+            clientKey,
+            sessionId: args.session_id,
+            title: args.title,
+            expectedVersion: args.expected_version
+          }))
+        case 'save':
+          return text(mcpEditing.save({
+            clientKey,
+            sessionId: args.session_id,
+            message: args.message || null,
+            commitMode: args.commit_mode || 'append'
+          }))
+        case 'close':
+          return text(mcpEditing.close({
+            clientKey,
+            sessionId: args.session_id,
+            discard: !!args.discard
+          }))
+        default: {
+          const error = new Error(`Unknown note_session action: ${args.action}`)
+          error.code = 'unknown_action'
+          throw error
+        }
+      }
+    } catch (e) { return failError(e) }
+  })
 
   server.registerTool('get_thread', {
     description: 'Read the revision tree of a note, including branches and head-chain markers.',
@@ -592,10 +654,14 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
         return text(lines.join('\n'))
       }
 
+      const state = sessionState()
       const content = [{
         type: 'text',
         text: JSON.stringify({
           ...meta,
+          state,
+          allowed_actions: allowedActionsFor(state),
+          guide: guideFor(state),
           notice: manifest.stale
             ? 'The render is stale; call request_whiteboard_render or pass render_if_stale with a connected browser.'
             : undefined

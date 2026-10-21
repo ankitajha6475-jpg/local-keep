@@ -47,7 +47,11 @@ async function connectAgent(baseUrl, token, name) {
   return client
 }
 
-test('MCP open-note session switches tools and edits the shared draft', async () => {
+function toolNames(result) {
+  return result.tools.map(tool => tool.name).sort()
+}
+
+test('MCP sessions use stable tools, explicit state, one write, and multiple reads', async () => {
   const server = await startTestServer()
   let clientA
   let clientB
@@ -64,59 +68,126 @@ test('MCP open-note session switches tools and edits the shared draft', async ()
       name: 'create_note',
       arguments: { title: 'Draft', content: 'hello' }
     })).note
+    const other = jsonResult(await clientA.callTool({
+      name: 'create_note',
+      arguments: { title: 'Other', content: 'other body' }
+    })).note
 
-    const closedTools = (await clientA.listTools()).tools.map(tool => tool.name)
-    assert.ok(closedTools.includes('edit_note'))
-    assert.ok(closedTools.includes('append_to_note'))
-    assert.equal(closedTools.includes('read_open_note'), false)
+    const beforeTools = toolNames(await clientA.listTools())
+    for (const name of ['get_note_state', 'note_session', 'edit_note', 'append_to_note']) {
+      assert.ok(beforeTools.includes(name), `missing stable tool ${name}`)
+    }
+    assert.equal(beforeTools.includes('read_open_note'), false)
+
+    const initial = jsonResult(await clientA.callTool({ name: 'get_note_state', arguments: {} }))
+    assert.equal(initial.state.write, null)
+    assert.deepEqual(initial.state.reads, [])
+    assert.ok(initial.guide)
 
     const opened = jsonResult(await clientA.callTool({
-      name: 'edit_note',
-      arguments: { note_id: note.id, mode: 'open' }
+      name: 'note_session',
+      arguments: { action: 'open_write', note_id: note.id }
     }))
-    assert.ok(opened.session_id)
-    assert.equal(opened.note_id, note.id)
-    assert.equal(opened.content, 'hello')
-    assert.equal(opened.tools_changed, true)
+    assert.ok(opened.session.session_id)
+    assert.equal(opened.session.mode, 'write')
+    assert.equal(opened.session.note_id, note.id)
+    assert.equal(opened.snapshot.content, 'hello')
+    assert.equal(opened.state.write.session_id, opened.session.session_id)
+    assert.match(opened.guide, /Write session/i)
 
-    const openTools = (await clientA.listTools()).tools.map(tool => tool.name)
-    for (const name of [
-      'read_open_note',
-      'replace_open_note',
-      'insert_open_note',
-      'delete_open_note',
-      'append_open_note',
-      'set_open_note_title',
-      'save_open_note',
-      'close_open_note'
-    ]) {
-      assert.ok(openTools.includes(name), `missing open tool ${name}`)
-    }
-    assert.equal(openTools.includes('edit_note'), false)
-    assert.equal(openTools.includes('append_to_note'), false)
+    const afterTools = toolNames(await clientA.listTools())
+    assert.deepEqual(afterTools, beforeTools, 'tool list must stay stable while a session is open')
 
+    const oneShotWhileOpen = await clientA.callTool({
+      name: 'edit_note',
+      arguments: { note_id: note.id, content: 'should not be written' }
+    })
+    const oneShotWhileOpenPayload = jsonResult(oneShotWhileOpen)
+    assert.equal(oneShotWhileOpen.isError, true)
+    assert.equal(oneShotWhileOpenPayload.error.code, 'active_write_session')
+
+    const secondWrite = await clientA.callTool({
+      name: 'note_session',
+      arguments: { action: 'open_write', note_id: other.id }
+    })
+    const secondWritePayload = jsonResult(secondWrite)
+    assert.equal(secondWrite.isError, true)
+    assert.equal(secondWritePayload.error.code, 'write_session_exists')
+    assert.equal(secondWritePayload.state.write.note_id, note.id)
+    assert.match(secondWritePayload.guide, /close/i)
+
+    const readOther = jsonResult(await clientA.callTool({
+      name: 'note_session',
+      arguments: { action: 'open_read', note_id: other.id }
+    }))
+    assert.equal(readOther.session.mode, 'read')
+    assert.equal(readOther.state.reads.length, 1)
+
+    const readEdit = await clientA.callTool({
+      name: 'note_session',
+      arguments: {
+        action: 'replace',
+        session_id: readOther.session.session_id,
+        old_text: 'other body',
+        new_text: 'changed'
+      }
+    })
+    const readEditPayload = jsonResult(readEdit)
+    assert.equal(readEdit.isError, true)
+    assert.equal(readEditPayload.error.code, 'session_mode_mismatch')
+    assert.match(readEditPayload.guide, /open_write/i)
+
+    const closedFirst = jsonResult(await clientA.callTool({
+      name: 'note_session',
+      arguments: { action: 'close', session_id: opened.session.session_id, discard: true }
+    }))
+    assert.equal(closedFirst.state.write, null)
+
+    const upgraded = jsonResult(await clientA.callTool({
+      name: 'note_session',
+      arguments: { action: 'open_write', note_id: other.id }
+    }))
+    assert.equal(upgraded.upgraded_from_read, true)
+    assert.equal(upgraded.state.write.note_id, other.id)
+    assert.equal(upgraded.state.reads.length, 0)
+
+    const closedOther = jsonResult(await clientA.callTool({
+      name: 'note_session',
+      arguments: { action: 'close', session_id: upgraded.session.session_id, discard: true }
+    }))
+    assert.equal(closedOther.closed, true)
+    assert.equal(closedOther.state.write, null)
+
+    const reopened = jsonResult(await clientA.callTool({
+      name: 'note_session',
+      arguments: { action: 'open_write', note_id: note.id }
+    }))
+    const sessionId = reopened.session.session_id
     const read = jsonResult(await clientA.callTool({
-      name: 'read_open_note',
-      arguments: { session_id: opened.session_id }
+      name: 'note_session',
+      arguments: { action: 'read', session_id: sessionId }
     }))
     assert.equal(read.content, 'hello')
     assert.ok(read.version)
 
     const replaced = jsonResult(await clientA.callTool({
-      name: 'replace_open_note',
+      name: 'note_session',
       arguments: {
-        session_id: opened.session_id,
+        action: 'replace',
+        session_id: sessionId,
         old_text: 'hello',
         new_text: 'hello from A',
         expected_version: read.version
       }
     }))
     assert.equal(replaced.content, 'hello from A')
+    assert.equal(replaced.dirty, true)
 
     const inserted = jsonResult(await clientA.callTool({
-      name: 'insert_open_note',
+      name: 'note_session',
       arguments: {
-        session_id: opened.session_id,
+        action: 'insert',
+        session_id: sessionId,
         line: 2,
         text: 'second line',
         expected_version: replaced.version
@@ -125,9 +196,10 @@ test('MCP open-note session switches tools and edits the shared draft', async ()
     assert.match(inserted.content, /hello from A\nsecond line/)
 
     const appended = jsonResult(await clientA.callTool({
-      name: 'append_open_note',
+      name: 'note_session',
       arguments: {
-        session_id: opened.session_id,
+        action: 'append',
+        session_id: sessionId,
         text: 'tail',
         expected_version: inserted.version
       }
@@ -135,9 +207,10 @@ test('MCP open-note session switches tools and edits the shared draft', async ()
     assert.match(appended.content, /tail/)
 
     const titled = jsonResult(await clientA.callTool({
-      name: 'set_open_note_title',
+      name: 'note_session',
       arguments: {
-        session_id: opened.session_id,
+        action: 'set_title',
+        session_id: sessionId,
         title: 'Draft A',
         expected_version: appended.version
       }
@@ -145,37 +218,38 @@ test('MCP open-note session switches tools and edits the shared draft', async ()
     assert.equal(titled.title, 'Draft A')
 
     const saved = jsonResult(await clientA.callTool({
-      name: 'save_open_note',
-      arguments: { session_id: opened.session_id, message: 'MCP checkpoint' }
+      name: 'note_session',
+      arguments: { action: 'save', session_id: sessionId, message: 'MCP checkpoint' }
     }))
     assert.equal(saved.saved, true)
     assert.equal(saved.revision_no, 2)
     assert.equal(saved.conflict, false)
     assert.ok(saved.version)
 
-    // A second MCP client may open the same note. Its edit invalidates A's
-    // version, which must produce an explicit stale_version error.
+    // Another token may write the same note; A's version must be rejected.
     const openedB = jsonResult(await clientB.callTool({
-      name: 'edit_note',
-      arguments: { note_id: note.id, mode: 'open' }
+      name: 'note_session',
+      arguments: { action: 'open_write', note_id: note.id }
     }))
     const readB = jsonResult(await clientB.callTool({
-      name: 'read_open_note',
-      arguments: { session_id: openedB.session_id }
+      name: 'note_session',
+      arguments: { action: 'read', session_id: openedB.session.session_id }
     }))
     jsonResult(await clientB.callTool({
-      name: 'append_open_note',
+      name: 'note_session',
       arguments: {
-        session_id: openedB.session_id,
+        action: 'append',
+        session_id: openedB.session.session_id,
         text: 'from B',
         expected_version: readB.version
       }
     }))
 
     const stale = await clientA.callTool({
-      name: 'replace_open_note',
+      name: 'note_session',
       arguments: {
-        session_id: opened.session_id,
+        action: 'replace',
+        session_id: sessionId,
         old_text: 'tail',
         new_text: 'tail A',
         expected_version: saved.version
@@ -183,25 +257,21 @@ test('MCP open-note session switches tools and edits the shared draft', async ()
     })
     const stalePayload = jsonResult(stale)
     assert.equal(stale.isError, true)
-    assert.equal(stalePayload.code, 'stale_version')
-    assert.match(stalePayload.content, /from B/)
+    assert.equal(stalePayload.error.code, 'stale_version')
+    assert.match(stalePayload.error.content, /from B/)
 
     const closedA = jsonResult(await clientA.callTool({
-      name: 'close_open_note',
-      arguments: { session_id: opened.session_id }
+      name: 'note_session',
+      arguments: { action: 'close', session_id: sessionId }
     }))
     assert.equal(closedA.closed, true)
-    const closedToolsAgain = (await clientA.listTools()).tools.map(tool => tool.name)
-    assert.ok(closedToolsAgain.includes('edit_note'))
-    assert.equal(closedToolsAgain.includes('read_open_note'), false)
 
     const closedB = jsonResult(await clientB.callTool({
-      name: 'close_open_note',
-      arguments: { session_id: openedB.session_id, discard: true }
+      name: 'note_session',
+      arguments: { action: 'close', session_id: openedB.session.session_id, discard: true }
     }))
     assert.equal(closedB.closed, true)
 
-    // A one-shot edit still works after closing.
     const oneshot = jsonResult(await clientA.callTool({
       name: 'edit_note',
       arguments: {
@@ -219,7 +289,58 @@ test('MCP open-note session switches tools and edits the shared draft', async ()
   }
 })
 
-test('MCP open-note sessions participate in dashboard presence', async () => {
+test('read-only MCP tokens can read but cannot open a write session', async () => {
+  const server = await startTestServer()
+  let client
+  try {
+    const sessionToken = await server.setupAuth()
+    const request = server.client(sessionToken)
+    const readToken = (await request('POST', '/api/mcp/tokens', {
+      name: 'Reader',
+      scopes: ['read']
+    })).token
+    const note = await request('POST', '/api/notes', { title: 'Read only', content: 'body' })
+
+    client = await connectAgent(server.baseUrl, readToken, 'reader')
+    const read = jsonResult(await client.callTool({
+      name: 'note_session',
+      arguments: { action: 'open_read', note_id: note.id }
+    }))
+    assert.equal(read.session.mode, 'read')
+
+    const write = await client.callTool({
+      name: 'note_session',
+      arguments: { action: 'open_write', note_id: note.id }
+    })
+    const writePayload = jsonResult(write)
+    assert.equal(write.isError, true)
+    assert.equal(writePayload.error.code, 'forbidden')
+
+    const edit = await client.callTool({
+      name: 'note_session',
+      arguments: {
+        action: 'replace',
+        session_id: read.session.session_id,
+        old_text: 'body',
+        new_text: 'changed'
+      }
+    })
+    const editPayload = jsonResult(edit)
+    assert.equal(edit.isError, true)
+    assert.equal(editPayload.error.code, 'forbidden')
+
+    const closed = jsonResult(await client.callTool({
+      name: 'note_session',
+      arguments: { action: 'close', session_id: read.session.session_id }
+    }))
+    assert.equal(closed.closed, true)
+  } finally {
+    if (client) await client.close().catch(() => {})
+    await server.stop()
+  }
+})
+
+test('MCP sessions participate in dashboard presence', async () => {
   const server = await startTestServer()
   let client
   let ws
@@ -241,8 +362,8 @@ test('MCP open-note sessions participate in dashboard presence', async () => {
       msg => msg.type === 'presence' && msg.noteId === note.id && msg.count === 1
     )
     const opened = jsonResult(await client.callTool({
-      name: 'edit_note',
-      arguments: { note_id: note.id, mode: 'open' }
+      name: 'note_session',
+      arguments: { action: 'open_write', note_id: note.id }
     }))
     const presence = await presenceOpen
     assert.equal(presence.users.some(user => user.username.includes('Presence Agent')), true)
@@ -252,8 +373,8 @@ test('MCP open-note sessions participate in dashboard presence', async () => {
       msg => msg.type === 'presence' && msg.noteId === note.id && msg.count === 0
     )
     await client.callTool({
-      name: 'close_open_note',
-      arguments: { session_id: opened.session_id }
+      name: 'note_session',
+      arguments: { action: 'close', session_id: opened.session.session_id }
     })
     await presenceClosed
   } finally {
@@ -263,7 +384,7 @@ test('MCP open-note sessions participate in dashboard presence', async () => {
   }
 })
 
-test('MCP edit leases enforce one note per client and expire', async () => {
+test('MCP session state enforces one write, multiple reads, upgrade, close, and TTL', async () => {
   const { createFreshContext } = await import('./helpers/testDb.js')
   const { createTextCollabService } = await import('../src/server/services/textCollab.js')
   const { createMcpEditingService } = await import('../src/server/services/mcpEditing.js')
@@ -271,33 +392,57 @@ test('MCP edit leases enforce one note per client and expire', async () => {
   try {
     const first = ctx.notes.createNote({ title: 'First', content: 'one' })
     const second = ctx.notes.createNote({ title: 'Second', content: 'two' })
+    const third = ctx.notes.createNote({ title: 'Third', content: 'three' })
+    const fourth = ctx.notes.createNote({ title: 'Fourth', content: 'four' })
     const textCollab = createTextCollabService({ db: ctx.db, persistDelay: 10 })
     let closed = 0
     const editing = createMcpEditingService({
       db: ctx.db,
       notes: ctx.notes,
+      revisions: ctx.revisions,
       textCollab,
       ttlMs: 1000,
+      maxReads: 2,
       onClose() { closed += 1; return { discarded: false, remaining: 0 } }
     })
 
-    const opened = editing.open({ clientKey: 'mcp:one', noteId: first.id, actor: 'mcp:one' })
-    assert.ok(opened.session.session_id)
-    const again = editing.open({ clientKey: 'mcp:one', noteId: first.id, actor: 'mcp:one' })
-    assert.equal(again.session.session_id, opened.session.session_id)
+    const write = editing.open({ clientKey: 'token:one', noteId: first.id, actor: 'mcp:one' })
+    assert.equal(write.session.mode, 'write')
+    const readSecond = editing.open({ clientKey: 'token:one', noteId: second.id, mode: 'read', actor: 'mcp:one' })
+    assert.equal(readSecond.session.mode, 'read')
+    const readThird = editing.open({ clientKey: 'token:one', noteId: third.id, mode: 'read', actor: 'mcp:one' })
+    assert.equal(readThird.session.mode, 'read')
+    assert.equal(editing.getState('token:one').reads.length, 2)
 
     assert.throws(
-      () => editing.open({ clientKey: 'mcp:one', noteId: second.id, actor: 'mcp:one' }),
-      error => error.code === 'already_open' && error.data.open_note_id === first.id
+      () => editing.open({ clientKey: 'token:one', noteId: fourth.id, mode: 'read', actor: 'mcp:one' }),
+      error => error.code === 'too_many_reads'
     )
 
-    editing.close({ clientKey: 'mcp:one', sessionId: opened.session.session_id })
-    assert.equal(closed, 1)
+    editing.close({ clientKey: 'token:one', sessionId: write.session.session_id, discard: true })
+    const upgrade = editing.open({ clientKey: 'token:one', noteId: second.id, actor: 'mcp:one' })
+    assert.equal(upgrade.upgraded_from_read, true)
+    assert.equal(editing.getState('token:one').write.note_id, second.id)
+    assert.equal(editing.getState('token:one').reads.length, 1)
 
-    const reopened = editing.open({ clientKey: 'mcp:one', noteId: first.id, actor: 'mcp:one' })
+    assert.throws(
+      () => editing.open({ clientKey: 'token:one', noteId: first.id, actor: 'mcp:one' }),
+      error => error.code === 'write_session_exists' && error.data.write.note_id === second.id
+    )
+
+    editing.close({ clientKey: 'token:one', sessionId: upgrade.session.session_id, discard: true })
+    assert.equal(editing.getState('token:one').write, null)
+
+    const reopened = editing.open({ clientKey: 'token:one', noteId: first.id, actor: 'mcp:one' })
+    const tokenTwo = editing.open({ clientKey: 'token:two', noteId: second.id, mode: 'read', actor: 'mcp:two' })
+    assert.equal(editing.getState('token:two').reads.length, 1)
+    editing.closeForToken('token:two')
+    assert.deepEqual(editing.getState('token:two'), { write: null, reads: [] })
+    assert.ok(tokenTwo.session.session_id)
+
     await new Promise(resolve => setTimeout(resolve, 1150))
-    assert.equal(editing.get('mcp:one'), null)
-    assert.equal(closed, 2)
+    assert.deepEqual(editing.getState('token:one'), { write: null, reads: [] })
+    assert.equal(closed >= 3, true)
     assert.ok(reopened.session.session_id)
   } finally {
     ctx.cleanup()

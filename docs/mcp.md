@@ -15,22 +15,35 @@ the existing WebSocket events.
 - Auth: `Authorization: Bearer lk_mcp_...` or a valid browser session cookie
 - No anonymous access
 
-## Create a token
+## Tokens
 
-Web UI: click the 🔌 button in the header, enter a name, create, copy the token once.
-
-CLI:
+Create tokens from the 🔌 button in the header (human admins), `/api/mcp/tokens`, or the CLI:
 
 ```bash
 npm run mcp:token -- create "Claude Desktop"
-# prints lk_mcp_... once
+npm run mcp:token -- create "Claude Desktop" read,write
+npm run mcp:token -- create "Claude Desktop" read,write 30   # optional expiry in days
+npm run mcp:token -- create "Admin" read,write,admin
 npm run mcp:token -- list
 npm run mcp:token -- revoke <id>
 ```
 
-Tokens are stored as SHA-256 hashes; the raw value is never shown again. The token name
-becomes the revision actor (`mcp:<name>`). Tokens default to `read,write`; `read`-only
-tokens can read but cannot mutate.
+Tokens are stored as SHA-256 hashes; the raw value is shown once. Token names become
+revision actors (`mcp:<name>`), but session state is keyed by the token id, so two tokens
+with the same display name never share a session.
+
+Scopes:
+
+- `read`: read/search tools and read-only sessions
+- `write`: create/edit/archive and write sessions
+- `admin`: admin API access and token management
+
+A token with `write` can read. An admin token normally has `read,write,admin`.
+
+Human admins and admin-scoped tokens can manage client tokens. Only a human admin session
+can mint another admin token; an admin token cannot clone itself. Client tokens cannot
+list or mint tokens. The CLI is a local trusted path and can create any scope. Tokens may
+have an optional expiry date.
 
 ## Client configuration
 
@@ -82,8 +95,10 @@ stdio because it runs as a local process with direct database access.
 | `list_notes` | Same summary shape without a query |
 | `get_note` | Markdown, metadata, optional history/links/backlinks, whiteboard summary |
 | `create_note` | Create revision 1; accepts tags and related note ids |
-| `edit_note` | `mode: "oneshot"` (default) commits a revision; `mode: "open"` acquires a persistent edit session. `commit_mode` controls stale-base behavior (`append`, `branch`, `take_head`) |
-| `append_to_note` | Append markdown as a new revision; hidden while a note is open |
+| `edit_note` | One-shot edit; commits a revision. `commit_mode` controls stale-base behavior (`append`, `branch`, `take_head`) |
+| `append_to_note` | One-shot append as a new revision |
+| `get_note_state` | Always available; return the token's write/read sessions, allowed actions, and next-step guide |
+| `note_session` | Always available; open/read/edit/save/close persistent sessions |
 | `get_thread` | Revision tree / head-chain markers; `format: "text"` for ASCII |
 | `get_links` / `get_backlinks` | Outgoing/incoming relationships with context |
 | `get_graph` | Relationship graph; neighbourhood via `note_id` + `depth` |
@@ -93,6 +108,67 @@ stdio because it runs as a local process with direct database access.
 | `list_changes` | Lifecycle events since an ISO timestamp |
 | `archive_note` / `restore_note` | Archive retention / restore |
 | `promote_revision` | Promote a branch into a new head revision |
+
+The tool list is **stable**: opening or closing a session never adds or removes tools.
+State is returned as data, so Code Mode and clients with cached tool catalogs do not need
+to rely on `tools/list_changed`.
+
+### Result envelope
+
+Session and mutation results include:
+
+```json
+{
+  "state": {
+    "write": null,
+    "reads": []
+  },
+  "allowed_actions": ["open_read", "open_write"],
+  "guide": "No session is open for this token. Use note_session action=open_write to edit or action=open_read to read."
+}
+```
+
+A session has this shape:
+
+```json
+{
+  "session_id": "uuid",
+  "mode": "read",
+  "note_id": "stable-note-id",
+  "base_revision_id": "revision-id",
+  "revision_no": 3,
+  "version": "sha256-of-title-and-draft",
+  "expires_at": "2026-10-21T10:30:00.000Z",
+  "dirty": false
+}
+```
+
+`state.write` holds at most one write session; `state.reads` holds zero or more read
+sessions. `get_note_state` returns the full state; session/mutation tools include the same
+block. Plain list/text tools keep their native array/text shape so existing clients can
+still parse them.
+
+Errors use the same envelope plus `ok: false` and a structured error:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "write_session_exists",
+    "message": "This MCP token already has a write session on note A"
+  },
+  "state": {
+    "write": { "session_id": "sess_A", "note_id": "note_A", "...": "..." },
+    "reads": []
+  },
+  "allowed_actions": ["read", "save", "close"],
+  "guide": "Call note_session action=close with session_id sess_A (or action=save first), then open the other note."
+}
+```
+
+Common error codes: `write_session_exists`, `too_many_reads`,
+`session_mode_mismatch`, `session_not_found`, `session_id_required`, `stale_version`,
+`note_archived`, `ttl_expired`, `forbidden`.
 
 ### Search timestamps
 
@@ -149,7 +225,10 @@ notice.
   "previous_revision": { "id": "...", "revisionNo": 2 },
   "conflict": false,
   "notice": "Saved revision 3; revision 2 kept.",
-  "history_url": "http://localhost:5173/#/note/<id>/history"
+  "history_url": "http://localhost:5173/#/note/<id>/history",
+  "state": { "write": null, "reads": [] },
+  "allowed_actions": ["open_read", "open_write"],
+  "guide": "No session is open for this token. ..."
 }
 ```
 
@@ -157,89 +236,138 @@ If `base_revision_id` is stale, the default is to keep the edit as a **branch** 
 the head unchanged. Use `commit_mode: "take_head"` only when you intentionally want to
 replace the head. The note id never changes.
 
-### Persistent edit sessions
+## Persistent sessions
 
-`edit_note` has two modes:
+`get_note_state` is always available and is the authoritative source of session state.
+`edit_note` is one-shot only; use `note_session` for persistent work. While a write
+session is open, `edit_note`/`append_to_note` return `active_write_session`; use
+`note_session` or close the session first.
 
 ```json
-{ "name": "edit_note", "arguments": { "note_id": "...", "mode": "oneshot", "content": "..." } }
+{ "name": "get_note_state", "arguments": {} }
 ```
-
-- `oneshot` is the default. It commits atomically and releases nothing.
-- `open` acquires a persistent edit lease and returns the shared draft:
 
 ```json
 {
-  "name": "edit_note",
-  "arguments": { "note_id": "...", "mode": "open" }
+  "name": "note_session",
+  "arguments": {
+    "action": "open_write",
+    "note_id": "stable-note-id"
+  }
 }
 ```
 
-`mode: "open"` does **not** accept `title` or `content`. Open first, then use the
-incremental tools.
+Open write returns the shared draft plus state:
 
-Each MCP client (bearer token) may hold **one** note open at a time. Opening the same
-note again is idempotent; opening a different note returns `409 already_open` with the
-currently open note id. Close the current session first.
+```json
+{
+  "session": {
+    "session_id": "...",
+    "mode": "write",
+    "note_id": "...",
+    "version": "...",
+    "expires_at": "..."
+  },
+  "snapshot": {
+    "title": "Draft",
+    "content": "hello",
+    "line_count": 1
+  },
+  "mode": "write",
+  "state": {
+    "write": { "...": "..." },
+    "reads": []
+  },
+  "allowed_actions": ["read", "replace", "insert", "delete", "append", "set_title", "save", "close", "open_read"],
+  "guide": "Write session ... is open. Use note_session ... then action=save or action=close."
+}
+```
 
-Open sessions expire after `LOCAL_KEEP_MCP_EDIT_TTL_MS` (default 30 minutes). Every
-open-note call refreshes the lease. The lease is advisory: browsers and other MCP
-clients may edit the same note; use `expected_version` to detect concurrent changes.
+### Session rules
 
-The lease is keyed by the MCP token, so use one token per agent. A shared token means a
-shared open note.
+- A token may hold **one write session** and up to `LOCAL_KEEP_MCP_MAX_READS`
+  (default 8) read sessions.
+- One read session per note per token. Opening the same read note again is idempotent.
+- Opening a second write note returns `write_session_exists` with the current write
+  session and a guide to close/save it first.
+- Opening write on a note that already has a read session upgrades it
+  (`upgraded_from_read: true`).
+- Opening read on a note that already has a write session returns the write session with
+  `read_included: true`.
+- Read sessions can read; only write sessions can replace/insert/delete/append/set_title/save.
+  A write session can also read.
+- Sessions expire after `LOCAL_KEEP_MCP_EDIT_TTL_MS` (default 30 minutes). Every session
+  action refreshes its lease.
+- Sessions are advisory and never lock other tokens out. Use `expected_version` to detect
+  concurrent browser/other-token edits.
 
-#### Incremental tools
+### Actions
 
-Available only while a note is open:
+| Action | Required session | What it does |
+|---|---|---|
+| `open_read` | none | Open a read session for `note_id` |
+| `open_write` | none | Open the token's write session for `note_id` |
+| `read` | read or write | Return title, content, line count, version, and state |
+| `replace` | write | Replace exact `old_text` with `new_text`; unique match unless `replace_all` |
+| `insert` | write | Insert at a 1-based line; `line_count + 1` appends |
+| `delete` | write | Delete exact text or an inclusive line range |
+| `append` | write | Append markdown |
+| `set_title` | write | Change the draft title |
+| `save` | write | Commit the draft as a revision; the session stays open |
+| `close` | read or write | Release the session; for a write session, `discard: true` deletes the draft only when this is the last editor |
+| `status` | none | Alias for `get_note_state` |
 
-| Tool | What it does |
-|---|---|
-| `read_open_note` | Return current title, content, line count, base revision, and `version` |
-| `replace_open_note` | Replace exact `old_text` with `new_text`; unique match unless `replace_all` |
-| `insert_open_note` | Insert at a 1-based line; `line_count + 1` appends |
-| `delete_open_note` | Delete exact text or an inclusive line range |
-| `append_open_note` | Append markdown |
-| `set_open_note_title` | Change the draft title |
-| `save_open_note` | Commit the draft as a revision; the session stays open |
-| `close_open_note` | Release the lease; `discard: true` only deletes the draft when this is the last editor |
+All mutation actions accept `expected_version`. If the shared draft changed, the tool
+returns `stale_version` with the latest content and version. Re-read with the same
+`session_id`, then retry; the server does not auto-retry.
 
-All mutation tools accept `expected_version`. If the shared draft changed since
-`read_open_note`, the tool returns `409 stale_version` with the latest content and
-version. Re-read and retry; the server does not auto-retry.
-
-Edits are applied to the same Yjs `note_text_docs` draft used by the browser, so open
-browsers see MCP edits live. `save_open_note` creates a normal revision with source
+Edits go to the same Yjs `note_text_docs` draft used by the browser, so open browsers see
+MCP edits live. `note_session action=save` creates a normal revision with source
 `mcp-open`; a stale base still creates a branch.
 
-`close_open_note` releases the lease but keeps the draft by default. `discard: true`
-removes it only if no browser or other MCP client is still editing.
+`close` releases the session but keeps the draft by default. `discard: true` removes it
+only if no browser or other MCP session is still editing the note.
 
-#### Dynamic tool list
+### Example: already-open write
 
-The MCP server is stateless per HTTP request. `tools/list` is rebuilt on every request
-from the token's edit lease:
+```json
+{
+  "name": "note_session",
+  "arguments": {
+    "action": "open_write",
+    "note_id": "note_B"
+  }
+}
+```
 
-- no open note: `edit_note`, `append_to_note`, and the usual read/search tools;
-- open note: `edit_note`/`append_to_note` disappear; incremental and close tools appear.
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "write_session_exists",
+    "message": "This MCP token already has a write session on note note_A"
+  },
+  "state": {
+    "write": { "session_id": "sess_A", "note_id": "note_A" },
+    "reads": []
+  },
+  "allowed_actions": ["read", "save", "close"],
+  "guide": "Call note_session action=close with session_id sess_A (or action=save first), then open the other note."
+}
+```
 
-The server publishes `notifications/tools/list_changed` through the MCP event bus and
-returns `tools_changed: true` from open/close calls. Modern clients using
-`subscriptions/listen` receive the notification. Legacy stateless clients should call
-`tools/list` again; if a client calls a hidden tool by name, the request fails rather
-than silently editing the wrong note.
+## Presence
 
-### Presence
+An open MCP session appears in the browser dashboard presence count. The label includes
+the token name and session mode, e.g. `MCP (Claude Desktop · write)` or
+`MCP (Claude Desktop · read)`. TTL expiry, `note_session action=close`, archive,
+restore, purge, and token revocation all remove it.
 
-An open MCP edit session appears in the browser dashboard presence count, with the user
-label `MCP (<token name>)`. TTL expiry, `close_open_note`, archive, restore, and purge all
-remove it.
-
-### Whiteboard images
+## Whiteboard images
 
 `get_whiteboard` default format is `images`:
 
-- a text block with `tile_count`, `rendered_at`, `stale`, and page URLs;
+- a text block with `tile_count`, `rendered_at`, `stale`, page URLs, state, and guide;
 - up to `max_tiles` (default 4, max 20) `image` blocks in page order (base64 PNG).
 
 `format: "markdown"` returns ordered markdown image refs under a `# Whiteboard (N pages)`
@@ -258,26 +386,4 @@ local-keep://notes/{noteId}/revisions/{revisionId}  historical markdown
 local-keep://notes/{noteId}/thread                  revision tree JSON
 local-keep://notes/{noteId}/backlinks               backlinks JSON
 local-keep://tags                                   tag tree JSON
-local-keep://whiteboards/{noteId}/pages/{page}      image/png (1-based page)
 ```
-
-## Security
-
-- Tokens are hashed at rest and can be revoked immediately.
-- The MCP endpoint is protected by bearer token/session auth; do not expose port 5173 to
-  the public internet without a reverse proxy/TLS.
-- If binding to a LAN interface, set `LOCAL_KEEP_PUBLIC_URL` for generated markdown URLs
-  and consider restricting hosts/origins at the proxy.
-- `express.json` accepts up to 10 MB; whiteboard image responses are capped by `max_tiles`.
-- MCP write tools require a `write` scope; read-only tokens cannot mutate.
-
-## Troubleshooting
-
-- **401 Unauthorized**: check the `Authorization: Bearer lk_mcp_...` header and that the
-  token is not revoked.
-- **No tools / connection error**: use `http://localhost:5173/mcp`, not the Vite page URL,
-  and include `Accept: application/json, text/event-stream`.
-- **Whiteboard has no images**: open the board in the browser and click Pages → Render now,
-  or call `get_whiteboard` with `render_if_stale: true` while a browser is open.
-- **stdio sees an older state**: it reads SQLite directly; refresh/restart the HTTP server
-  or prefer the HTTP endpoint for live collaboration.

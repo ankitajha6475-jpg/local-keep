@@ -1,12 +1,14 @@
 import crypto from 'node:crypto'
 
 const DEFAULT_TTL_MS = 30 * 60 * 1000
+const DEFAULT_MAX_READS = 8
 
-function fail(status, message, code, data = null) {
+function fail(status, message, code, data = null, guide = null) {
   const error = new Error(message)
   error.status = status
   error.code = code
   if (data) error.data = data
+  if (guide) error.guide = guide
   return error
 }
 
@@ -38,56 +40,93 @@ function lineStartOffset(text, line) {
 }
 
 /**
- * Persistent MCP edit leases.
+ * Persistent MCP editing sessions.
  *
- * One MCP client (identified by the bearer token's clientId) may hold one text
- * note open at a time. A lease is advisory: it never locks other clients out;
- * all edits operate on the shared Yjs draft and use optimistic versions.
+ * State is held per MCP token (clientKey):
+ *   - at most one write session
+ *   - any number of read sessions (bounded by maxReads)
+ *
+ * The state is advisory. It never locks other tokens out; every write uses
+ * optimistic versions against the shared Yjs draft.
  */
 export function createMcpEditingService({
   db,
   notes,
+  revisions,
   textCollab,
   onOpen,
   onClose,
   onSaved,
   onDraftChange,
-  onToolsChanged,
-  ttlMs = DEFAULT_TTL_MS
+  ttlMs = DEFAULT_TTL_MS,
+  maxReads = DEFAULT_MAX_READS
 }) {
-  const sessions = new Map() // clientKey -> session
-  const timers = new Map() // clientKey -> timeout
+  const states = new Map() // clientKey -> { write: session|null, reads: Map<sessionId, session> }
+  const sessionsById = new Map()
+  const timers = new Map()
+  const readLimit = Math.max(1, Math.min(64, Number(maxReads) || DEFAULT_MAX_READS))
+  const sessionTtl = Math.max(1000, Number(ttlMs) || DEFAULT_TTL_MS)
 
   const selectHead = db.prepare('SELECT id, type, archived_at FROM notes WHERE id = ?')
 
+  function emptyState() {
+    return { write: null, reads: new Map() }
+  }
+
   function schedule(session) {
-    clearTimeout(timers.get(session.clientKey))
-    const timer = setTimeout(() => expire(session.clientKey), Math.max(1000, ttlMs))
+    clearTimeout(timers.get(session.id))
+    const timer = setTimeout(() => expire(session.id), sessionTtl)
     if (typeof timer.unref === 'function') timer.unref()
-    timers.set(session.clientKey, timer)
+    timers.set(session.id, timer)
   }
 
   function touch(session) {
     session.lastSeenAt = Date.now()
-    session.expiresAt = Date.now() + ttlMs
+    session.expiresAt = Date.now() + sessionTtl
     schedule(session)
   }
 
   function publicSession(session) {
     return {
       session_id: session.id,
+      mode: session.mode,
       note_id: session.noteId,
       base_revision_id: session.baseRevisionId,
       revision_no: session.revisionNo,
       version: session.version,
-      expires_at: new Date(session.expiresAt).toISOString()
+      expires_at: new Date(session.expiresAt).toISOString(),
+      dirty: !!session.dirty
     }
+  }
+
+  function baseContent(session) {
+    const revision = session.baseRevisionId ? revisions?.getRevision(session.baseRevisionId) : null
+    if (revision) return { title: revision.title || '', text: revision.content || '' }
+    try {
+      const note = notes.getNote(session.noteId)
+      return { title: note.title || '', text: note.content || '' }
+    } catch (_) {
+      return null
+    }
+  }
+
+  function refreshSession(session) {
+    const snapshot = textCollab.snapshot(session.noteId)
+    if (!snapshot) return false
+    session.version = versionOf(snapshot.title, snapshot.text)
+    const base = baseContent(session)
+    session.dirty = base
+      ? (snapshot.title || '') !== base.title || (snapshot.text || '') !== base.text
+      : false
+    return true
   }
 
   function describe(session, snapshot) {
     const title = snapshot.title || ''
     const text = snapshot.text || ''
     session.version = versionOf(title, text)
+    const base = baseContent(session)
+    session.dirty = base ? title !== base.title || text !== base.text : false
     return {
       ...publicSession(session),
       title,
@@ -96,84 +135,254 @@ export function createMcpEditingService({
     }
   }
 
-  function currentSnapshot(session) {
-    const snapshot = textCollab.snapshot(session.noteId)
-    if (!snapshot) throw fail(404, 'The open note no longer exists', 'note_gone')
-    return snapshot
+  function detachSession(session, { discard = false, reason = 'close' } = {}) {
+    const state = states.get(session.clientKey)
+    clearTimeout(timers.get(session.id))
+    timers.delete(session.id)
+    sessionsById.delete(session.id)
+    if (state) {
+      if (state.write?.id === session.id) state.write = null
+      else state.reads.delete(session.id)
+      if (!state.write && state.reads.size === 0) states.delete(session.clientKey)
+    }
+    return onClose?.(session, { discard: !!discard, reason }) || {}
+  }
+
+  function closeInternal(session, { discard = false, reason = 'close' } = {}) {
+    // A read session never owns the draft; discard only applies to write sessions.
+    const closeResult = detachSession(session, { discard: session.mode === 'write' ? discard : false, reason })
+    return {
+      closed: true,
+      note_id: session.noteId,
+      session_id: session.id,
+      mode: session.mode,
+      discarded: !!closeResult.discarded,
+      draft_kept: !closeResult.discarded,
+      remaining_editors: closeResult.remaining ?? null
+    }
+  }
+
+  function expire(sessionId) {
+    const session = sessionsById.get(sessionId)
+    if (!session) return
+    closeInternal(session, { discard: false, reason: 'expired' })
+  }
+
+  function cleanupState(clientKey) {
+    const state = states.get(clientKey)
+    if (!state) return null
+    const sessions = [
+      ...(state.write ? [state.write] : []),
+      ...state.reads.values()
+    ]
+    for (const session of sessions) {
+      if (Date.now() > session.expiresAt) {
+        closeInternal(session, { discard: false, reason: 'expired' })
+        continue
+      }
+      if (!refreshSession(session)) {
+        closeInternal(session, { discard: false, reason: 'note-gone' })
+      }
+    }
+    const current = states.get(clientKey)
+    if (!current || (!current.write && current.reads.size === 0)) {
+      states.delete(clientKey)
+      return null
+    }
+    return current
+  }
+
+  function stateFor(clientKey) {
+    cleanupState(clientKey)
+    let state = states.get(clientKey)
+    if (!state) {
+      state = emptyState()
+      states.set(clientKey, state)
+    }
+    return state
+  }
+
+  function getState(clientKey) {
+    const state = cleanupState(clientKey)
+    if (!state) return { write: null, reads: [] }
+    return {
+      write: state.write ? publicSession(state.write) : null,
+      reads: [...state.reads.values()]
+        .sort((left, right) => left.openedAt - right.openedAt)
+        .map(publicSession)
+    }
   }
 
   function get(clientKey) {
-    const session = sessions.get(clientKey)
-    if (!session) return null
-    if (Date.now() > session.expiresAt) {
-      closeInternal(clientKey, { discard: false, reason: 'expired' })
-      return null
-    }
-    return session
+    const state = cleanupState(clientKey)
+    return state?.write || null
   }
 
-  function requireSession(clientKey, sessionId) {
-    const session = get(clientKey)
-    if (!session) throw fail(404, 'No note is open for this MCP client', 'no_open_note')
-    if (sessionId && sessionId !== session.id) {
-      throw fail(409, 'The session id does not belong to this client', 'session_mismatch')
-    }
-    if (session.noteId && selectHead.get(session.noteId)?.archived_at) {
-      closeInternal(clientKey, { discard: false, reason: 'archived' })
-      throw fail(410, 'The open note was archived', 'note_archived')
-    }
-    touch(session)
-    return session
-  }
-
-  function open({ clientKey, noteId, actor = 'mcp' }) {
-    const existing = get(clientKey)
-    if (existing) {
-      if (existing.noteId === noteId) {
-        touch(existing)
-        return { session: publicSession(existing), snapshot: describe(existing, currentSnapshot(existing)) }
-      }
-      throw fail(
-        409,
-        'This MCP client already has another note open; close it first',
-        'already_open',
-        { open_note_id: existing.noteId, open_session_id: existing.id }
-      )
-    }
-
-    const head = selectHead.get(noteId)
-    if (!head || head.archived_at) throw fail(404, 'Note not found', 'note_not_found')
-    if (head.type !== 'text') {
-      throw fail(400, 'Persistent MCP editing is only available for text notes', 'unsupported_note_type')
-    }
-
-    const snapshot = textCollab.snapshot(noteId)
-    if (!snapshot) throw fail(404, 'Note not found', 'note_not_found')
-
+  function newSession({ clientKey, noteId, mode, actor, snapshot }) {
     const now = Date.now()
-    const session = {
+    return {
       id: crypto.randomUUID(),
       clientKey,
       noteId,
+      mode,
       actor,
       baseRevisionId: snapshot.baseRevisionId,
       revisionNo: snapshot.revisionNo || 1,
       version: versionOf(snapshot.title, snapshot.text),
+      dirty: false,
       openedAt: now,
       lastSeenAt: now,
-      expiresAt: now + ttlMs
+      expiresAt: now + sessionTtl
     }
-    sessions.set(clientKey, session)
+  }
+
+  function attachSession(state, session) {
+    sessionsById.set(session.id, session)
+    if (session.mode === 'write') state.write = session
+    else state.reads.set(session.id, session)
     schedule(session)
-    touch(session)
     onOpen?.(session)
-    onToolsChanged?.('open', session)
-    return { session: publicSession(session), snapshot: describe(session, snapshot) }
+  }
+
+  function openResult(session, snapshot, extra = {}) {
+    const described = describe(session, snapshot)
+    return { session: publicSession(session), snapshot: described, ...extra }
+  }
+
+  function open({ clientKey, noteId, mode = 'write', actor = 'mcp' }) {
+    if (!noteId) throw fail(400, 'note_id is required', 'note_id_required', null, 'Pass note_id from list_notes or search_notes.')
+    if (mode !== 'read' && mode !== 'write') {
+      throw fail(400, 'mode must be read or write', 'invalid_mode')
+    }
+    const head = selectHead.get(noteId)
+    if (!head || head.archived_at) {
+      throw fail(404, 'Note not found', 'note_not_found', null, 'Choose an active text note from list_notes/search_notes.')
+    }
+    if (head.type !== 'text') {
+      throw fail(400, 'Persistent MCP sessions are only available for text notes', 'unsupported_note_type', null, 'Open a text note instead of a whiteboard.')
+    }
+    const snapshot = textCollab.snapshot(noteId)
+    if (!snapshot) {
+      throw fail(404, 'Note not found', 'note_not_found', null, 'Choose an active text note from list_notes/search_notes.')
+    }
+
+    const state = stateFor(clientKey)
+
+    if (mode === 'read') {
+      if (state.write?.noteId === noteId) {
+        touch(state.write)
+        return openResult(state.write, snapshot, { mode: 'write', existing: true, read_included: true })
+      }
+      const existing = [...state.reads.values()].find(session => session.noteId === noteId)
+      if (existing) {
+        touch(existing)
+        return openResult(existing, snapshot, { mode: 'read', existing: true })
+      }
+      if (state.reads.size >= readLimit) {
+        throw fail(
+          429,
+          `This MCP token already has ${readLimit} read sessions open`,
+          'too_many_reads',
+          { max_reads: readLimit },
+          'Close an existing read session with note_session action=close before opening another.'
+        )
+      }
+      const session = newSession({ clientKey, noteId, mode: 'read', actor, snapshot })
+      attachSession(state, session)
+      return openResult(session, snapshot, { mode: 'read', existing: false })
+    }
+
+    if (state.write) {
+      if (state.write.noteId === noteId) {
+        touch(state.write)
+        return openResult(state.write, snapshot, { mode: 'write', existing: true })
+      }
+      throw fail(
+        409,
+        `This MCP token already has a write session on note ${state.write.noteId}`,
+        'write_session_exists',
+        { write: publicSession(state.write) },
+        `Call note_session action=close with session_id ${state.write.id} (or action=save first), then open the other note.`
+      )
+    }
+
+    let upgraded = false
+    const readSame = [...state.reads.values()].find(session => session.noteId === noteId)
+    if (readSame) {
+      detachSession(readSame, { discard: false, reason: 'upgrade' })
+      upgraded = true
+    }
+
+    const current = upgraded ? stateFor(clientKey) : state
+    const session = newSession({ clientKey, noteId, mode: 'write', actor, snapshot })
+    attachSession(current, session)
+    return openResult(session, snapshot, { mode: 'write', existing: false, upgraded_from_read: upgraded })
+  }
+
+  function requireSession(clientKey, sessionId, mode = null) {
+    if (!sessionId) {
+      throw fail(
+        400,
+        'session_id is required for this action',
+        'session_id_required',
+        null,
+        'Call get_note_state to list your open sessions, then pass the matching session_id.'
+      )
+    }
+    const session = sessionsById.get(sessionId)
+    if (!session || session.clientKey !== clientKey) {
+      throw fail(
+        404,
+        'No open session with that id belongs to this MCP token',
+        'session_not_found',
+        null,
+        'Call get_note_state to list your current session ids.'
+      )
+    }
+    if (Date.now() > session.expiresAt) {
+      closeInternal(session, { discard: false, reason: 'expired' })
+      throw fail(
+        410,
+        'The session expired',
+        'ttl_expired',
+        null,
+        'Call note_session action=open_write or action=open_read to start a new session.'
+      )
+    }
+    if (mode && session.mode !== mode) {
+      throw fail(
+        409,
+        `Session ${session.id} is a ${session.mode} session, not a ${mode} session`,
+        'session_mode_mismatch',
+        { session: publicSession(session) },
+        session.mode === 'read'
+          ? `This is a read session. Call note_session action=open_write for note ${session.noteId} to edit it.`
+          : 'This is a write session; read and edit actions use it directly.'
+      )
+    }
+    const head = selectHead.get(session.noteId)
+    if (!head || head.archived_at) {
+      closeInternal(session, { discard: false, reason: 'archived' })
+      throw fail(
+        410,
+        'The open note was archived',
+        'note_archived',
+        null,
+        'Restore the note or open another note.'
+      )
+    }
+    if (!refreshSession(session)) {
+      closeInternal(session, { discard: false, reason: 'note-gone' })
+      throw fail(404, 'The open note no longer exists', 'note_gone', null, 'Open another note from list_notes/search_notes.')
+    }
+    touch(session)
+    return session
   }
 
   function read({ clientKey, sessionId }) {
     const session = requireSession(clientKey, sessionId)
-    const snapshot = currentSnapshot(session)
+    const snapshot = textCollab.snapshot(session.noteId)
+    if (!snapshot) throw fail(404, 'The open note no longer exists', 'note_gone')
     return describe(session, snapshot)
   }
 
@@ -184,15 +393,17 @@ export function createMcpEditingService({
         409,
         'The shared draft changed since it was read; re-read before editing',
         'stale_version',
-        { version, title: snapshot.title, content: snapshot.text, line_count: lineCount(snapshot.text) }
+        { version, title: snapshot.title, content: snapshot.text, line_count: lineCount(snapshot.text) },
+        `Call note_session action=read with session_id ${session.id}, then retry with the returned version.`
       )
     }
     return version
   }
 
   function applyMutation({ clientKey, sessionId, expectedVersion, mutate }) {
-    const session = requireSession(clientKey, sessionId)
-    const snapshot = currentSnapshot(session)
+    const session = requireSession(clientKey, sessionId, 'write')
+    const snapshot = textCollab.snapshot(session.noteId)
+    if (!snapshot) throw fail(404, 'The open note no longer exists', 'note_gone')
     assertVersion(session, expectedVersion, snapshot)
 
     const next = mutate({ title: snapshot.title || '', text: snapshot.text || '' })
@@ -221,6 +432,7 @@ export function createMcpEditingService({
     }
 
     session.version = versionOf(title, text)
+    if (changed) session.dirty = true
     touch(session)
     return { ...describe(session, { title, text }), changed }
   }
@@ -232,6 +444,7 @@ export function createMcpEditingService({
       expectedVersion,
       mutate: ({ title, text }) => {
         if (!oldText) throw fail(400, 'old_text is required', 'invalid_edit')
+        if (newText === undefined) throw fail(400, 'new_text is required', 'new_text_required')
         const occurrences = text.split(oldText).length - 1
         if (occurrences === 0) {
           throw fail(404, 'old_text was not found in the open note', 'text_not_found')
@@ -258,6 +471,7 @@ export function createMcpEditingService({
       sessionId,
       expectedVersion,
       mutate: ({ title, text }) => {
+        if (insertText === undefined) throw fail(400, 'text is required', 'text_required')
         const lines = lineCount(text)
         const target = Number(line)
         if (!Number.isInteger(target) || target < 1 || target > lines + 1) {
@@ -266,10 +480,8 @@ export function createMcpEditingService({
         const offset = target === lines + 1 ? text.length : lineStartOffset(text, target)
         if (offset < 0) throw fail(400, 'line is outside the open note', 'invalid_line')
         let block = String(insertText ?? '')
+        if (block && offset === text.length && text && !text.endsWith('\n')) block = `\n${block}`
         if (block && !block.endsWith('\n')) block += '\n'
-        if (offset > 0 && text[offset - 1] !== '\n' && block && !block.startsWith('\n')) {
-          block = `\n${block}`
-        }
         return { title, text: text.slice(0, offset) + block + text.slice(offset) }
       }
     })
@@ -293,6 +505,9 @@ export function createMcpEditingService({
       sessionId,
       expectedVersion,
       mutate: ({ title, text }) => {
+        if (!oldText && startLine === undefined && endLine === undefined) {
+          throw fail(400, 'old_text or start_line/end_line is required', 'delete_range_required')
+        }
         if (oldText) {
           const occurrences = text.split(oldText).length - 1
           if (occurrences === 0) throw fail(404, 'old_text was not found in the open note', 'text_not_found')
@@ -318,13 +533,17 @@ export function createMcpEditingService({
       clientKey,
       sessionId,
       expectedVersion,
-      mutate: ({ title, text }) => ({ title: String(nextTitle ?? ''), text })
+      mutate: ({ title, text }) => {
+        if (nextTitle === undefined) throw fail(400, 'title is required', 'title_required')
+        return { title: String(nextTitle), text }
+      }
     })
   }
 
   function save({ clientKey, sessionId, message = null, commitMode = 'append' }) {
-    const session = requireSession(clientKey, sessionId)
-    const snapshot = currentSnapshot(session)
+    const session = requireSession(clientKey, sessionId, 'write')
+    const snapshot = textCollab.snapshot(session.noteId)
+    if (!snapshot) throw fail(404, 'The open note no longer exists', 'note_gone')
     const result = notes.updateNote({
       id: session.noteId,
       title: snapshot.title || '',
@@ -339,6 +558,7 @@ export function createMcpEditingService({
       session.baseRevisionId = result.revisionId || result.headRevisionId || session.baseRevisionId
       session.revisionNo = result.revisionNo || session.revisionNo
       session.version = versionOf(snapshot.title, snapshot.text)
+      session.dirty = false
       textCollab.setBaseRevision(session.noteId, session.baseRevisionId)
     }
     touch(session)
@@ -353,62 +573,68 @@ export function createMcpEditingService({
     }
   }
 
-  function closeInternal(clientKey, { discard = false, reason = 'close' } = {}) {
-    const session = sessions.get(clientKey)
-    if (!session) return null
-    clearTimeout(timers.get(clientKey))
-    timers.delete(clientKey)
-    sessions.delete(clientKey)
-    const closeResult = onClose?.(session, { discard: !!discard, reason }) || {}
-    onToolsChanged?.(reason, session)
-    return {
-      closed: true,
-      note_id: session.noteId,
-      session_id: session.id,
-      discarded: !!closeResult.discarded,
-      draft_kept: !closeResult.discarded,
-      remaining_editors: closeResult.remaining ?? null
-    }
-  }
-
   function close({ clientKey, sessionId, discard = false }) {
-    const session = requireSession(clientKey, sessionId)
-    return closeInternal(clientKey, { discard: !!discard, reason: 'close' })
-  }
-
-  function expire(clientKey) {
-    closeInternal(clientKey, { discard: false, reason: 'expired' })
+    if (!sessionId) {
+      throw fail(
+        400,
+        'session_id is required for close',
+        'session_id_required',
+        null,
+        'Call get_note_state to list your open sessions, then pass the matching session_id.'
+      )
+    }
+    const session = sessionsById.get(sessionId)
+    if (!session || session.clientKey !== clientKey) {
+      throw fail(
+        404,
+        'No open session with that id belongs to this MCP token',
+        'session_not_found',
+        null,
+        'Call get_note_state to list your current session ids.'
+      )
+    }
+    return closeInternal(session, { discard: !!discard, reason: 'close' })
   }
 
   function closeForNote(noteId, { discard = false, reason = 'note-closed' } = {}) {
     let closed = 0
-    for (const [clientKey, session] of [...sessions.entries()]) {
-      if (session.noteId === noteId) {
-        closeInternal(clientKey, { discard, reason })
-        closed += 1
-      }
+    for (const session of [...sessionsById.values()]) {
+      if (session.noteId !== noteId) continue
+      closeInternal(session, { discard, reason })
+      closed += 1
+    }
+    return closed
+  }
+
+  function closeForToken(clientKey, { discard = false, reason = 'token-revoked' } = {}) {
+    let closed = 0
+    for (const session of [...sessionsById.values()]) {
+      if (session.clientKey !== clientKey) continue
+      closeInternal(session, { discard, reason })
+      closed += 1
     }
     return closed
   }
 
   function applySavedHead(noteId, revisionId, revisionNo) {
     if (!revisionId) return
-    for (const session of sessions.values()) {
-      if (session.noteId === noteId) {
-        session.baseRevisionId = revisionId
-        if (revisionNo) session.revisionNo = revisionNo
-      }
+    for (const session of sessionsById.values()) {
+      if (session.noteId !== noteId) continue
+      session.baseRevisionId = revisionId
+      if (revisionNo) session.revisionNo = revisionNo
+      if (session.mode === 'write') session.dirty = false
     }
   }
 
   function closeAll() {
-    for (const clientKey of [...sessions.keys()]) {
-      closeInternal(clientKey, { discard: false, reason: 'shutdown' })
+    for (const session of [...sessionsById.values()]) {
+      closeInternal(session, { discard: false, reason: 'shutdown' })
     }
   }
 
   return {
     get,
+    getState,
     open,
     read,
     replace,
@@ -419,6 +645,7 @@ export function createMcpEditingService({
     save,
     close,
     closeForNote,
+    closeForToken,
     applySavedHead,
     closeAll
   }

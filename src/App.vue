@@ -156,7 +156,7 @@
             <button @click="loadNotes" class="refresh-btn" title="Refresh notes">↻</button>
             <button @click="tagSidebarOpen = !tagSidebarOpen" class="search-toggle-btn" :class="{ active: tagSidebarOpen }" title="Toggle tags">🏷</button>
             <button @click="openGraph()" class="search-toggle-btn" title="Relationship graph">🕸</button>
-            <button @click="openMcpSettings" class="search-toggle-btn" title="MCP access tokens">🔌</button>
+            <button v-if="isAdmin" @click="openMcpSettings" class="search-toggle-btn" title="MCP access tokens">🔌</button>
             <button @click="openSearch" class="search-toggle-btn" title="Search (Ctrl+I)">🔍</button>
             <button @click="cleanupImages" class="cleanup-btn" :disabled="cleanupRunning" title="Clean unused images">🧹</button>
             <div class="account-menu-wrap" @click.stop>
@@ -420,11 +420,18 @@
             <button class="close-modal-btn" @click="mcpSettingsOpen = false">×</button>
           </div>
           <p class="mcp-hint">
-            Any MCP client with a token can search, read, create, edit, inspect threads, and
-            recall whiteboards. Tokens are shown once and stored hashed.
+            MCP clients use one token per client. Read/write tokens can search, read, and edit;
+            admin tokens can also manage tokens and configuration. Tokens are shown once and
+            stored hashed. Only a human admin session can create another admin token.
           </p>
           <form class="mcp-token-form" @submit.prevent="createMcpToken">
             <input v-model="mcpTokenName" type="text" placeholder="Token name (e.g. Claude Desktop)">
+            <select v-model="mcpTokenScopes" aria-label="Token scopes">
+              <option value="read">read (read-only)</option>
+              <option value="read,write">read, write (client)</option>
+              <option value="read,write,admin">read, write, admin</option>
+            </select>
+            <input v-model.number="mcpTokenExpiresDays" type="number" min="0" placeholder="Expires in days">
             <button type="submit" class="save-btn" :disabled="!mcpTokenName.trim()">Create token</button>
           </form>
           <div v-if="mcpNewToken" class="mcp-token-reveal">
@@ -440,6 +447,8 @@
                 <strong>{{ token.name }}</strong>
                 <small>
                   {{ token.scopes.join(', ') }}
+                  <template v-if="token.createdBy"> · by {{ token.createdBy }}</template>
+                  <template v-if="token.expiresAt"> · expires {{ formatDate(token.expiresAt) }}</template>
                   <template v-if="token.lastUsedAt"> · last used {{ formatDate(token.lastUsedAt) }}</template>
                   <template v-if="token.revokedAt"> · revoked</template>
                 </small>
@@ -1153,6 +1162,8 @@ export default {
     const mcpSettingsOpen = ref(false)
     const mcpTokens = ref([])
     const mcpTokenName = ref('')
+    const mcpTokenScopes = ref('read,write')
+    const mcpTokenExpiresDays = ref(null)
     const mcpNewToken = ref('')
     const mcpTokenError = ref('')
     const mcpTokenLoading = ref(false)
@@ -2687,15 +2698,26 @@ export default {
       mcpSettingsOpen.value = true
       mcpNewToken.value = ''
       mcpTokenName.value = ''
+      mcpTokenScopes.value = 'read,write'
+      mcpTokenExpiresDays.value = null
       await loadMcpTokens()
     }
 
     const createMcpToken = async () => {
       try {
         mcpTokenError.value = ''
+        const scopes = mcpTokenScopes.value.split(',').map(scope => scope.trim()).filter(Boolean)
+        const days = Number(mcpTokenExpiresDays.value)
+        const expiresAt = Number.isFinite(days) && days > 0
+          ? new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString()
+          : null
         const created = await api('/api/mcp/tokens', {
           method: 'POST',
-          body: JSON.stringify({ name: mcpTokenName.value.trim() })
+          body: JSON.stringify({
+            name: mcpTokenName.value.trim(),
+            scopes,
+            expiresAt
+          })
         })
         mcpNewToken.value = created.token
         mcpTokenName.value = ''
@@ -3352,6 +3374,8 @@ export default {
       mcpSettingsOpen,
       mcpTokens,
       mcpTokenName,
+      mcpTokenScopes,
+      mcpTokenExpiresDays,
       mcpNewToken,
       mcpTokenError,
       mcpTokenLoading,
@@ -6362,16 +6386,30 @@ main {
 
 .mcp-token-form {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.5rem;
   margin: 0.75rem 0;
 }
 
-.mcp-token-form input {
-  flex: 1;
+.mcp-token-form input,
+.mcp-token-form select {
   padding: 0.45rem 0.6rem;
   border: 1px solid #dadce0;
   border-radius: 5px;
   font-size: 0.85rem;
+  background: #fff;
+}
+
+.mcp-token-form input[type="text"] {
+  flex: 2 1 180px;
+}
+
+.mcp-token-form select {
+  flex: 1 1 160px;
+}
+
+.mcp-token-form input[type="number"] {
+  flex: 0 1 140px;
 }
 
 .mcp-token-reveal {
