@@ -63,7 +63,11 @@ export function createEmbeddingService({
   clientFactory = createEmbeddingClient,
   rerankClientFactory = createRerankClient,
   fetchImpl,
-  autoIndex = true
+  autoIndex = true,
+  embeddingBatchSize = Number(process.env.LOCAL_KEEP_EMBEDDING_BATCH_SIZE || 32),
+  embeddingConcurrency = Number(process.env.LOCAL_KEEP_EMBEDDING_CONCURRENCY || 2),
+  embeddingMaxBatchChars = Number(process.env.LOCAL_KEEP_EMBEDDING_MAX_BATCH_CHARS || 48_000),
+  noteConcurrency = Number(process.env.LOCAL_KEEP_EMBEDDING_NOTE_CONCURRENCY || 2)
 }) {
   const SECRET = loadOrCreateSecret(path.join(dataDir, 'server_secret'))
   const queue = new Map() // noteId -> force
@@ -74,6 +78,7 @@ export function createEmbeddingService({
   let workerRunning = false
   let workerTimer = null
   let currentNote = null
+  const runningNotes = new Set()
 
   function settingsRow() {
     const row = db.prepare('SELECT * FROM embedding_settings WHERE id = 1').get()
@@ -206,7 +211,10 @@ export function createEmbeddingService({
       apiKey,
       model,
       dimensions,
-      fetchImpl
+      fetchImpl,
+      batchSize: Math.max(1, Math.min(128, Number(embeddingBatchSize) || 32)),
+      concurrency: Math.max(1, Math.min(8, Number(embeddingConcurrency) || 2)),
+      maxBatchChars: Math.max(1_000, Number(embeddingMaxBatchChars) || 48_000)
     })
   }
 
@@ -574,22 +582,31 @@ export function createEmbeddingService({
   async function runWorker() {
     if (workerRunning) return
     workerRunning = true
+    const workers = Math.max(1, Math.min(8, Number(noteConcurrency) || 2))
     try {
-      while (queue.size > 0) {
-        const [noteId, force] = queue.entries().next().value
-        queue.delete(noteId)
-        currentNote = noteId
-        try {
-          await processNote(noteId, { force })
-          stats.indexed += 1
-        } catch (error) {
-          stats.failed += 1
-          stats.lastError = error.message
+      await Promise.all(Array.from({ length: workers }, async () => {
+        while (queue.size > 0) {
+          const [noteId, force] = queue.entries().next().value
+          queue.delete(noteId)
+          runningNotes.add(noteId)
+          currentNote = [...runningNotes][0] || null
+          try {
+            await processNote(noteId, { force })
+            stats.indexed += 1
+          } catch (error) {
+            stats.failed += 1
+            stats.lastError = error.message
+          } finally {
+            runningNotes.delete(noteId)
+            currentNote = [...runningNotes][0] || null
+          }
         }
-      }
+      }))
     } finally {
       workerRunning = false
+      runningNotes.clear()
       currentNote = null
+      if (queue.size > 0) wakeWorker()
     }
   }
 
@@ -782,6 +799,7 @@ export function createEmbeddingService({
         queued: queue.size,
         running: workerRunning,
         currentNote,
+        currentNotes: [...runningNotes],
         indexed: stats.indexed,
         failed: stats.failed,
         lastError: stats.lastError

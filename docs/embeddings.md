@@ -96,9 +96,26 @@ operation in a future version.
   chunk body does not include the prefix.
 - Chunk rows record note/revision, chunk index, content, char count, and content
   hash.
-- Indexing is queued per note and processed sequentially in a background worker.
+- Indexing is queued per note and processed by a bounded background worker pool.
+  Each note's chunks are sent as **array inputs** (`input: ["...", "..."]`) in
+  batches, and up to `LOCAL_KEEP_EMBEDDING_CONCURRENCY` batches run in parallel.
+  Notes can also be processed in parallel with
+  `LOCAL_KEEP_EMBEDDING_NOTE_CONCURRENCY` (both default to `2`).
   Head edits, canvas checkpoints, archive/restore, and note creation enqueue the
   note automatically. Archived/purged notes remove their chunks.
+- Batch controls:
+  - `LOCAL_KEEP_EMBEDDING_BATCH_SIZE` (default `32`, max `128`)
+  - `LOCAL_KEEP_EMBEDDING_MAX_BATCH_CHARS` (default `48000`)
+  - `LOCAL_KEEP_EMBEDDING_CONCURRENCY` (parallel requests per note, default `2`, max `8`)
+  - `LOCAL_KEEP_EMBEDDING_NOTE_CONCURRENCY` (parallel notes, default `2`, max `8`)
+  These are env-level controls, not per-model settings. The total in-flight
+  request count is roughly `noteConcurrency × concurrency`; lower them if the
+  provider returns `429`/TPM limits.
+- The SiliconFlow embeddings endpoint accepts an array of strings in one request;
+  each item is still subject to the model's per-input token limit (e.g. 512 for
+  `BAAI/bge-large-*`, 8192 for `BAAI/bge-m3`). Keep the chunk size within that
+  limit; batching does not make an overlong individual chunk valid.
+- `429` and `5xx` responses are retried with `Retry-After`/exponential backoff.
 - If the note changes while embeddings are in flight, the result is discarded and
   the note is queued again.
 - Old vectors remain searchable until the new transaction commits, so a provider
