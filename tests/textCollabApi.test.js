@@ -38,11 +38,15 @@ function waitForMessage(ws, predicate, timeoutMs = 15000, label = 'message') {
 
 async function openSocket(port, token) {
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${token}`)
+  // Attach the message listener before awaiting `open`: the server can send
+  // the initial `notes` message immediately after the handshake, and waiting
+  // for `open` first can miss it under load.
+  const notes = waitForMessage(ws, msg => msg.type === 'notes', 15000, 'initial notes')
   await new Promise((resolve, reject) => {
     ws.once('open', resolve)
     ws.once('error', reject)
   })
-  await waitForMessage(ws, msg => msg.type === 'notes')
+  await notes
   return ws
 }
 

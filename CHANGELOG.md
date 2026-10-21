@@ -136,6 +136,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Whiteboard touch handling now allows single-finger pan in drawing tools while keeping stylus input free, instead of requiring a two-finger gesture to switch to hand mode
 
 ### Fixed
+- Whiteboard title edits now persist through the WebSocket session, create a revision, update the gallery, and sync to other open whiteboard editors
+- Whiteboard checkpoints/deltas without a freshly generated thumbnail now preserve the last good cover instead of replacing it with the default placeholder
 - Opening a note and switching between Visual / Source no longer marks it dirty or prompts to save when nothing was edited; serialisation now runs only after real editor changes
 - Pasted/inserted whiteboard images now render correctly on all clients and on reload (server no longer strips Excalidraw's required dataURL; sender excluded from its own delta echo)
 - Legacy whiteboard entries stored without `dataURL` are hydrated from disk on next load

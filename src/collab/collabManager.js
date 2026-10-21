@@ -6,7 +6,7 @@ const DEBOUNCE_MS = 500
 const isMac = /Mac|iPod|iPhone|iPad/.test(navigator.platform)
 const CTRL_OR_CMD = isMac ? 'metaKey' : 'ctrlKey'
 
-export function createCollabManager({ noteId, generateThumbnail, onStatus, onNoteGone, onRenderRequest, onRenderUpdated }) {
+export function createCollabManager({ noteId, generateThumbnail, onStatus, onNoteGone, onRenderRequest, onRenderUpdated, onTitle }) {
   // ── State ──
   let ws = null
   let api = null
@@ -239,6 +239,7 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus, onNot
       update.files = currentFiles
     }
     api.updateScene(update)
+    if (typeof msg.title === 'string') onTitle?.(msg.title)
     onStatus?.('loaded')
 
     applyingRemote = false
@@ -400,6 +401,8 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus, onNot
         if (typeof onNoteGone === 'function') {
           try { onNoteGone(data.noteId) } catch (_) { /* best-effort */ }
         }
+      } else if (data.type === 'title-updated') {
+        if (typeof data.title === 'string') onTitle?.(data.title)
       } else if (data.type === 'render-request') {
         if (typeof onRenderRequest === 'function') {
           try { onRenderRequest(data) } catch (e) { console.error('[collab] render request failed:', e) }
@@ -410,6 +413,10 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus, onNot
         }
       }
     } catch (e) { /* ignore non-collab messages */ }
+  }
+
+  function setTitle(nextTitle) {
+    sendMessage({ type: 'title', noteId, title: String(nextTitle ?? '') })
   }
 
   // ── Public: checkpoint (used when leaving a whiteboard) ──
@@ -472,6 +479,7 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus, onNot
     handleChange,
     handleRemoteDelta,
     handleSnapshot,
+    setTitle,
     checkpoint,
     getCurrentScene() {
       return { elements: currentElements, files: currentFiles }

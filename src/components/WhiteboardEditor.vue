@@ -6,6 +6,8 @@
         v-model="title"
         class="wb-title-input"
         placeholder="Whiteboard title..."
+        @change="flushTitle"
+        @keyup.enter="flushTitle"
         @keydown.enter.prevent
       />
       <div class="wb-header-actions">
@@ -264,8 +266,15 @@ export default {
       },
       onRenderUpdated() {
         loadLatestRender()
+      },
+      onTitle(nextTitle) {
+        title.value = nextTitle || ''
       }
     })
+
+    function flushTitle() {
+      collab.setTitle(title.value)
+    }
 
     // ── Stylus button pen/eraser toggle (via keyup: Unidentified, keyCode=0) ──
     function handleStylusKeyUp(e) {
@@ -408,6 +417,7 @@ export default {
     }
 
     async function goBack() {
+      flushTitle()
       try {
         await collab.checkpoint()
       } catch (_) { /* best effort */ }
@@ -716,6 +726,7 @@ export default {
     })
 
     onUnmounted(() => {
+      flushTitle()
       collab.detach()
       window.removeEventListener('keyup', handleStylusKeyUp)
       const el = canvasContainer.value
@@ -756,6 +767,7 @@ export default {
       goBack,
       toggleFullscreen,
       getCurrentScene,
+      flushTitle,
       pagesOpen,
       latestRender,
       renderLoading,

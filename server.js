@@ -182,7 +182,7 @@ function mergeFiles(state, incomingFiles) {
 function persistNoteState(noteId) {
   const state = noteStates.get(noteId)
   if (!state) return
-  const noteRow = db.prepare('SELECT id, title, content, archived_at FROM notes WHERE id = ?').get(noteId)
+  const noteRow = db.prepare('SELECT id, title, content, thumbnail, archived_at FROM notes WHERE id = ?').get(noteId)
   if (!noteRow || noteRow.archived_at) {
     clearNoteState(noteId)
     return
@@ -202,11 +202,21 @@ function persistNoteState(noteId) {
 
   const data = JSON.stringify({ elements: cleanElements, files: state.files || {} })
   const updatedAt = new Date().toISOString()
-  const thumbnail = state._thumbnail
-  state._thumbnail = null
+  // A persist without a freshly generated thumbnail must not erase the last
+  // good cover. The client only sends thumbnails on actual scene deltas.
+  let thumbnail = state._thumbnail || noteRow.thumbnail || null
+  if (!thumbnail) {
+    // Recover a missing cover from the latest rendered page (legacy boards
+    // whose thumbnail was previously cleared by a checkpoint).
+    try {
+      const manifest = renderService?.latest?.(noteId)
+      thumbnail = manifest?.tiles?.[0]?.url || null
+    } catch (_) { /* best effort */ }
+  }
 
   db.prepare('UPDATE notes SET canvasData = ?, thumbnail = ?, updatedAt = ? WHERE id = ?')
     .run(data, thumbnail, updatedAt, noteId)
+  state._thumbnail = null
 
   imageRefs.syncHeadRefs(noteId, noteRow.content || '', data)
 
@@ -1644,7 +1654,7 @@ wss.on('connection', (ws, req) => {
       const msg = JSON.parse(data.toString())
       switch (msg.type) {
         case 'join': {
-          const noteRow = db.prepare('SELECT id, archived_at FROM notes WHERE id = ?').get(msg.noteId)
+          const noteRow = db.prepare('SELECT id, title, archived_at FROM notes WHERE id = ?').get(msg.noteId)
           if (!noteRow || noteRow.archived_at) {
             ws.send(JSON.stringify({ type: 'note-gone', noteId: msg.noteId }))
             break
@@ -1658,6 +1668,7 @@ wss.on('connection', (ws, req) => {
           ws.send(JSON.stringify({
             type: 'snapshot',
             noteId: msg.noteId,
+            title: noteRow.title || '',
             elements,
             files: state.files || {}
           }))
@@ -1729,6 +1740,52 @@ wss.on('connection', (ws, req) => {
           if (sessions.size <= 1) {
             textCollab.discard(msg.noteId)
             ws.send(JSON.stringify({ type: 'text-discarded', noteId: msg.noteId }))
+          }
+          break
+        }
+        case 'title': {
+          if (!msg.noteId) break
+          const row = db.prepare(
+            'SELECT id, type, title, archived_at, head_revision_id FROM notes WHERE id = ?'
+          ).get(msg.noteId)
+          if (!row || row.archived_at) {
+            ws.send(JSON.stringify({ type: 'note-gone', noteId: msg.noteId }))
+            break
+          }
+          const title = String(msg.title ?? '')
+          if (title === (row.title || '')) {
+            ws.send(JSON.stringify({ type: 'title-saved', noteId: msg.noteId, title }))
+            break
+          }
+          try {
+            const result = notesService.updateNote({
+              id: msg.noteId,
+              title,
+              type: row.type || 'canvas',
+              baseRevisionId: row.head_revision_id || null,
+              mode: 'append',
+              actor: ws._actor || 'ui',
+              source: 'title',
+              message: 'Whiteboard title'
+            })
+            broadcastToNote(msg.noteId, {
+              type: 'title-updated',
+              noteId: msg.noteId,
+              title: result.title || title
+            }, ws)
+            broadcastNotes()
+            ws.send(JSON.stringify({
+              type: 'title-saved',
+              noteId: msg.noteId,
+              title: result.title || title,
+              revisionNo: result.revisionNo
+            }))
+          } catch (error) {
+            ws.send(JSON.stringify({
+              type: 'title-error',
+              noteId: msg.noteId,
+              error: error.message
+            }))
           }
           break
         }

@@ -364,6 +364,11 @@ corresponding card while any session has that note open.
   `render-updated`.
 - Tile hashes are referenced by `whiteboard_tiles` and protected from image cleanup;
   old renders can be pruned only by an explicit policy.
+- Whiteboard titles use a WS `title` message (client -> server) and `title-updated`
+  (server -> other editors). The server commits the title through `notes.updateNote`
+  with the current head as base; do not persist titles only in client state.
+- `persistNoteState` must preserve `noteRow.thumbnail` when `state._thumbnail` is null.
+  Checkpoints and deltas without a fresh thumbnail must not erase the last good cover.
 
 ### Embedded MCP
 

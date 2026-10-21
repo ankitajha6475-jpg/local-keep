@@ -1302,7 +1302,8 @@ export default {
                 recentLocalRevision.id === data.noteId &&
                 Date.now() - recentLocalRevision.at < 5000
               const isCheckpoint = data.source === 'checkpoint'
-              if (!isRecentLocal && !isCheckpoint) {
+              const isTitle = data.source === 'title'
+              if (!isRecentLocal && !isCheckpoint && !isTitle) {
                 const isOpen = isModalOpen.value && editingId.value === data.noteId
                 const sharedSave = isOpen && textCollabManager &&
                   textCollabNoteId === data.noteId &&
