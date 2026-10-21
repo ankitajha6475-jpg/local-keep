@@ -32,6 +32,8 @@ import { createUserService } from './src/server/services/users.js'
 import { validatePassword, temporaryPassword } from './src/server/auth/passwords.js'
 import { createMcpServer } from './src/mcp/createServer.js'
 import { createEventBus, EVENTS } from './src/server/events.js'
+import { createTextCollabService } from './src/server/services/textCollab.js'
+import { bytesToBase64, base64ToBytes } from './src/shared/base64.js'
 import {
   extractCanvasText,
   indexNote,
@@ -43,6 +45,7 @@ import { migration003ApiTokens } from './src/server/migrations/003-api-tokens.js
 import { migration004MultiuserAuth } from './src/server/migrations/004-multiuser-auth.js'
 import { migration005Embeddings } from './src/server/migrations/005-embeddings.js'
 import { migration006OptionalRerank } from './src/server/migrations/006-optional-rerank.js'
+import { migration007LiveTextCollab } from './src/server/migrations/007-live-text-collab.js'
 
 import debugLib from 'debug'
 const log = debugLib('local-keep:server')
@@ -72,6 +75,8 @@ const clients = new Map()
 
 // Collaboration: per-note state for real-time sync
 const noteStates = new Map()  // noteId -> { elements, files, sessions, pendingPersist, _thumbnail }
+const textSessions = new Map() // noteId -> Set<WebSocket> for live text drafts
+const notePresence = new Map() // noteId -> Map<WebSocket, { user, kinds:Set<'text'|'canvas'> }>
 
 function getOrCreateNoteState(noteId) {
   if (!noteStates.has(noteId)) {
@@ -316,7 +321,7 @@ try {
 try {
   const migration = runMigrations({
     db,
-    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank],
+    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab],
     backupDir: BACKUPS_DIR,
     context: { imageStore }
   })
@@ -346,6 +351,7 @@ const links = createLinkService({ db })
 const tokens = createTokenService({ db })
 const embeddings = createEmbeddingService({ db, dataDir: DATA_DIR, tags })
 const revisions = createRevisionService({ db, imageStore, imageRefs, bus, tags, links, embeddings })
+const textCollab = createTextCollabService({ db })
 const notesService = createNoteService({ db, revisions, imageRefs, bus, tags, links, embeddings })
 const renderService = createRenderService({ db, imageRefs, bus })
 const searchService = createSearchService({
@@ -512,6 +518,154 @@ function broadcastToAllClients(message) {
     }
   }
   return sent
+}
+
+// ── Live presence (dashboard dots) ───────────────────────────────────────
+function presenceUser(ws) {
+  if (!ws._presenceUser) {
+    ws._presenceUser = {
+      id: randomUUID(),
+      username: ws._user?.username || 'unknown',
+      displayName: ws._user?.displayName || ws._user?.username || 'Unknown'
+    }
+  }
+  return ws._presenceUser
+}
+
+function presencePayload(noteId) {
+  const entries = notePresence.get(noteId)
+  if (!entries || entries.size === 0) return { noteId, count: 0, users: [] }
+  const users = []
+  const seen = new Set()
+  for (const info of entries.values()) {
+    const key = info.user.username
+    if (seen.has(key)) continue
+    seen.add(key)
+    users.push({ username: info.user.username, displayName: info.user.displayName })
+  }
+  return { noteId, count: entries.size, users }
+}
+
+function presenceSnapshot() {
+  const result = {}
+  for (const noteId of notePresence.keys()) {
+    const payload = presencePayload(noteId)
+    if (payload.count > 0) result[noteId] = payload
+  }
+  return result
+}
+
+function broadcastPresence(noteId) {
+  broadcastToAllClients({ type: 'presence', ...presencePayload(noteId) })
+}
+
+function addNotePresence(noteId, ws, kind) {
+  let entries = notePresence.get(noteId)
+  if (!entries) {
+    entries = new Map()
+    notePresence.set(noteId, entries)
+  }
+  let record = entries.get(ws)
+  if (!record) {
+    record = { user: presenceUser(ws), kinds: new Set() }
+    entries.set(ws, record)
+  }
+  const before = record.kinds.size
+  record.kinds.add(kind)
+  if (record.kinds.size !== before || before === 0) broadcastPresence(noteId)
+}
+
+function removeNotePresence(noteId, ws, kind = null) {
+  const entries = notePresence.get(noteId)
+  if (!entries) return
+  const record = entries.get(ws)
+  if (!record) return
+  if (kind) record.kinds.delete(kind)
+  else record.kinds.clear()
+  if (record.kinds.size === 0) entries.delete(ws)
+  if (entries.size === 0) notePresence.delete(noteId)
+  broadcastPresence(noteId)
+}
+
+function removeAllPresenceForSocket(ws) {
+  for (const noteId of [...notePresence.keys()]) {
+    const entries = notePresence.get(noteId)
+    if (entries?.has(ws)) removeNotePresence(noteId, ws)
+  }
+}
+
+// ── Live text sessions ────────────────────────────────────────────────────
+function getTextSessions(noteId) {
+  let sessions = textSessions.get(noteId)
+  if (!sessions) {
+    sessions = new Set()
+    textSessions.set(noteId, sessions)
+  }
+  return sessions
+}
+
+function addTextSession(noteId, ws) {
+  getTextSessions(noteId).add(ws)
+  ws._textNoteId = noteId
+  addNotePresence(noteId, ws, 'text')
+}
+
+function removeTextSession(noteId, ws) {
+  const sessions = textSessions.get(noteId)
+  if (!sessions) return
+  sessions.delete(ws)
+  if (sessions.size === 0) {
+    textSessions.delete(noteId)
+    try {
+      textCollab.persistNow(noteId)
+      textCollab.discardIfClean(noteId)
+    } catch (error) {
+      console.error('Text draft persist failed:', error.message)
+    }
+  }
+  if (ws._textNoteId === noteId) ws._textNoteId = null
+  removeNotePresence(noteId, ws, 'text')
+}
+
+function broadcastToTextSessions(noteId, message, excludeWs = null) {
+  const sessions = textSessions.get(noteId)
+  if (!sessions) return
+  const str = JSON.stringify(message)
+  for (const ws of sessions) {
+    if (ws !== excludeWs && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(str) } catch (_) { /* ignore individual socket failures */ }
+    }
+  }
+}
+
+function broadcastTextReset(noteId) {
+  const snapshot = textCollab.resetToHead(noteId)
+  if (!snapshot) return
+  broadcastToTextSessions(noteId, {
+    type: 'text-reset',
+    noteId,
+    update: bytesToBase64(snapshot.update),
+    stateVector: bytesToBase64(snapshot.stateVector),
+    baseRevisionId: snapshot.baseRevisionId,
+    revisionNo: snapshot.revisionNo
+  })
+}
+
+function sendTextSnapshot(ws, noteId, { reset = false } = {}) {
+  const snapshot = textCollab.snapshot(noteId)
+  if (!snapshot) {
+    ws.send(JSON.stringify({ type: 'note-gone', noteId }))
+    return false
+  }
+  ws.send(JSON.stringify({
+    type: reset ? 'text-reset' : 'text-snapshot',
+    noteId,
+    update: bytesToBase64(snapshot.update),
+    stateVector: bytesToBase64(snapshot.stateVector),
+    baseRevisionId: snapshot.baseRevisionId,
+    revisionNo: snapshot.revisionNo
+  }))
+  return true
 }
 
 // Close live WebSocket connections for a user when their sessions are revoked
@@ -1223,14 +1377,39 @@ bus.on(EVENTS.NOTE_CREATED, payload => {
 })
 bus.on(EVENTS.NOTE_REVISED, payload => {
   broadcastToAllClients({ type: 'note-revised', ...payload })
+
+  // A browser Save is the shared draft's commit point. Do not move the draft
+  // base for a branch or for an external/MCP edit: the next Save must still
+  // detect the stale base and preserve history.
+  if (payload.source === 'ui' && !payload.conflict && payload.headRevisionId) {
+    textCollab.setBaseRevision(payload.noteId, payload.headRevisionId)
+    const savedHead = revisions.getHead(payload.noteId)
+    broadcastToTextSessions(payload.noteId, {
+      type: 'text-saved',
+      noteId: payload.noteId,
+      baseRevisionId: payload.headRevisionId,
+      revisionNo: payload.revisionNo,
+      title: savedHead?.title || '',
+      content: savedHead?.content || ''
+    })
+  }
+
+  // Restore/promote replace the head by design. Reset any live draft so open
+  // editors do not continue editing a document based on the replaced version.
+  if (payload.source === 'restore' || payload.source === 'promote') {
+    broadcastTextReset(payload.noteId)
+  }
 })
 bus.on(EVENTS.NOTE_ARCHIVED, payload => {
+  textCollab.discard(payload.noteId)
   broadcastToAllClients({ type: 'note-archived', ...payload })
 })
 bus.on(EVENTS.NOTE_RESTORED, payload => {
+  textCollab.discard(payload.noteId)
   broadcastToAllClients({ type: 'note-restored', ...payload })
 })
 bus.on(EVENTS.NOTE_PURGED, payload => {
+  textCollab.discard(payload.noteId)
   broadcastToAllClients({ type: 'note-purged', ...payload })
 })
 bus.on(EVENTS.RENDER_UPDATED, payload => {
@@ -1290,6 +1469,7 @@ wss.on('connection', (ws, req) => {
   // Send current notes immediately on connection
   const notes = getAllNotes()
   ws.send(JSON.stringify({ type: 'notes', notes }))
+  ws.send(JSON.stringify({ type: 'presence', presence: presenceSnapshot() }))
 
   ws.on('close', () => {
     const wsSet = clients.get(token)
@@ -1311,7 +1491,12 @@ wss.on('connection', (ws, req) => {
         }
       }
       ws._collabNoteId = null
+      removeNotePresence(noteId, ws, 'canvas')
     }
+    if (ws._textNoteId) {
+      removeTextSession(ws._textNoteId, ws)
+    }
+    removeAllPresenceForSocket(ws)
     console.log(`WebSocket client disconnected. Total clients: ${countClients()}`)
   })
 
@@ -1346,6 +1531,7 @@ wss.on('connection', (ws, req) => {
           state.sessions.add(ws)
           state.lastActor = ws._actor || 'ui'
           ws._collabNoteId = msg.noteId
+          addNotePresence(msg.noteId, ws, 'canvas')
           const elements = [...state.elements.values()]
           ws.send(JSON.stringify({
             type: 'snapshot',
@@ -1367,7 +1553,61 @@ wss.on('connection', (ws, req) => {
             }
           }
           ws._collabNoteId = null
+          removeNotePresence(msg.noteId, ws, 'canvas')
           console.log(`👋 Client left note ${msg.noteId}`)
+          break
+        }
+        case 'text-join': {
+          const noteRow = db.prepare('SELECT id, archived_at FROM notes WHERE id = ?').get(msg.noteId)
+          if (!noteRow || noteRow.archived_at) {
+            ws.send(JSON.stringify({ type: 'note-gone', noteId: msg.noteId }))
+            break
+          }
+          if (ws._textNoteId && ws._textNoteId !== msg.noteId) {
+            removeTextSession(ws._textNoteId, ws)
+          }
+          addTextSession(msg.noteId, ws)
+          if (!sendTextSnapshot(ws, msg.noteId)) {
+            removeTextSession(msg.noteId, ws)
+            break
+          }
+          console.log(`📝 Text join ${msg.noteId} (${getTextSessions(msg.noteId).size})`)
+          break
+        }
+        case 'text-leave': {
+          if (!msg.noteId) break
+          removeTextSession(msg.noteId, ws)
+          console.log(`📝 Text leave ${msg.noteId}`)
+          break
+        }
+        case 'text-update': {
+          if (!ws._textNoteId || ws._textNoteId !== msg.noteId) break
+          let update
+          try {
+            update = base64ToBytes(msg.update)
+          } catch (_) {
+            break
+          }
+          if (!textCollab.applyUpdate(msg.noteId, update)) {
+            ws.send(JSON.stringify({ type: 'note-gone', noteId: msg.noteId }))
+            break
+          }
+          broadcastToTextSessions(msg.noteId, {
+            type: 'text-update',
+            noteId: msg.noteId,
+            update: msg.update
+          }, ws)
+          break
+        }
+        case 'text-discard': {
+          if (!ws._textNoteId || ws._textNoteId !== msg.noteId) break
+          const sessions = getTextSessions(msg.noteId)
+          // Do not let one client erase a shared draft that other editors are
+          // still using. The last editor may discard it explicitly.
+          if (sessions.size <= 1) {
+            textCollab.discard(msg.noteId)
+            ws.send(JSON.stringify({ type: 'text-discarded', noteId: msg.noteId }))
+          }
           break
         }
         case 'checkpoint': {

@@ -69,6 +69,7 @@ src/
     services/users.js             # accounts, roles, password reset, last-admin guard
     services/embeddings.js        # admin config, vector tables, background indexer, vector search
     services/tags.js              # tag sync, tree, descendant filter
+    services/textCollab.js        # Yjs live text docs, persistence, base revision
     services/links.js             # wiki-link sync/resolve, backlinks, graph
     services/renders.js           # whiteboard page manifests + staleness
     images.js, fts.js, canvas.js, events.js, sessionStore.js
@@ -119,7 +120,7 @@ reactRoot.render(React.createElement(Excalidraw, { ... }))
 
 ### Real-time Collaboration
 
-Single user, multiple terminals. Same note, same WS endpoint (`/ws?token=`).
+Multiple users, tabs, and devices. Same note, same WS endpoint (`/ws?token=`).
 
 **Client** (`collabManager.js`):
 - Factory function `createCollabManager({ noteId, generateThumbnail, onStatus })`
@@ -150,6 +151,54 @@ Single user, multiple terminals. Same note, same WS endpoint (`/ws?token=`).
 - `{ type: 'note-deleted', noteId }` — archive notification used by the deletion mask
 - `{ type: 'note-gone', noteId }` — delta rejected
 
+### Live Text Collaboration
+
+Text notes use a Yjs CRDT document per note, shared over the existing `/ws`
+socket. The live document is a **shared draft**: it syncs on every edit, survives
+reconnects, and is persisted in `note_text_docs`, but it is not a revision until
+a client explicitly saves.
+
+**Client** (`src/collab/textCollabManager.js`):
+- Creates a local `Y.Doc` and binds `content` (`Y.Text`) and `meta.title` (`Y.Map`).
+- Sends only local Yjs updates (`text-update`); applies remote updates and asks
+  the editor to re-render.
+- `applyMarkdown()` converts the editor snapshot into one contiguous Yjs
+  delete/insert. The Visual editor captures/restores the text caret around a
+  remote re-render; Source restores the textarea selection.
+- `attach(socket)` / `detach()` handle reconnect. The snapshot includes the
+  server state vector; the client sends any local-only state after applying it.
+
+**Server** (`src/server/services/textCollab.js`, `server.js`):
+- `note_text_docs(note_id, update_data, base_revision_id, updated_at)` stores the
+  Yjs state. Loading creates a doc from the head when no row exists.
+- `textSessions` tracks sockets per note; updates are applied to the server doc,
+  broadcast to the other text sessions, and persisted with a 400 ms debounce.
+- On the last leave, a clean draft (same content/title as the head) is deleted.
+  `text-discard` deletes a draft only when the sender is the last editor.
+- A browser Save (`source: 'ui'`, no conflict) updates the draft base revision
+  and broadcasts `text-saved` with the committed head content. MCP/external edits
+  do not move the draft base, so the next Save branches as usual.
+- Restore/promote broadcasts `text-reset`; clients replace their local Y.Doc
+  rather than merging (Yjs updates are additive).
+
+**Protocol** (client → server):
+- `{ type: 'text-join', noteId }`
+- `{ type: 'text-leave', noteId }`
+- `{ type: 'text-update', noteId, update }` (`update` is base64)
+- `{ type: 'text-discard', noteId }`
+
+**Protocol** (server → client):
+- `{ type: 'text-snapshot', noteId, update, stateVector, baseRevisionId, revisionNo }`
+- `{ type: 'text-update', noteId, update }`
+- `{ type: 'text-saved', noteId, baseRevisionId, revisionNo, title, content }`
+- `{ type: 'text-reset', noteId, update, baseRevisionId, revisionNo }`
+- `{ type: 'text-discarded', noteId }`
+
+**Presence**: `notePresence` tracks text and canvas sessions per note. Every
+join/leave broadcasts `{ type: 'presence', noteId, count, users }`; a full
+`presence` snapshot is sent on connect. The dashboard renders a green dot on the
+corresponding card while any session has that note open.
+
 ### Note Threads and Revisions
 
 - `notes.id` is the **stable document identity** for life. Never replace it with a
@@ -165,8 +214,9 @@ Single user, multiple terminals. Same note, same WS endpoint (`/ws?token=`).
   never rewrite history.
 - Editing sessions are identity-stable. The client holds
   `{ editingId, editingBaseRevisionId, editingRevisionNo }`; `editingId` never changes
-  while the editor is open. `note_drafts` exists for a future autosave layer and must
-  never create revisions or move the head until an explicit commit.
+  while the editor is open. `note_text_docs` holds the shared live draft; it must
+  never create revisions or move the head until an explicit Save. `note_drafts`
+  remains reserved for a future per-session autosave layer.
 - `DELETE /api/notes/:id` **archives** (`archived_at`); revisions/images remain.
   `?purge=1` is the explicit permanent delete. Lists/search exclude archived notes by
   default (`includeArchived=1` to show them).
@@ -338,6 +388,7 @@ note_revisions (
   type, canvas_data, thumbnail, snapshot_hash, actor, source, message, created_at
 )
 note_drafts (note_id, session_id, base_revision_id, title, content, updated_at)
+note_text_docs (note_id PK, update_data BLOB, base_revision_id, updated_at)
 note_events (id, note_id, revision_id, type, actor, payload, created_at)
 note_tags (note_id, tag, source, created_at)              -- head-level tag paths
 note_links (id, source_note_id, source_revision_id, target_note_id, target_label,
@@ -421,3 +472,7 @@ All notable changes must be recorded in `CHANGELOG.md`. When making changes:
 27. **Embedding key**: only decrypt in the server; never return `api_key_encrypted` or log the key. The admin API returns `hasApiKey`/mask only.
 28. **Embedding index freshness**: note head edits/checkpoints and archive/restore must enqueue the note. A failed embedding call must not delete the previous vector rows; index atomically after all vectors succeed.
 29. **Rerank is optional**: never make semantic search depend on a reranker. If it is unset or fails, return vector order and expose `rerank.error`; do not fail the request.
+30. **Yjs resets need a fresh doc**: Yjs updates are additive. `text-reset` must replace the local `Y.Doc`, not apply the head update to the old doc, or discarded draft text remains merged in.
+31. **Live text is draft-only**: `note_text_docs` must never update `notes.content`, `head_revision_id`, tags, or links. Only an explicit Save commits a revision. Do not make live typing bypass optimistic concurrency.
+32. **Text presence and canvas presence share `notePresence`**: add/remove both kinds on join/leave/close so dashboard dots never stick. Only text sessions use `textSessions`; canvas sessions remain in `noteStates`.
+33. **Remote text re-render and caret**: the Visual editor must capture/restore the caret around a remote re-render and defer during IME composition. Without this, two clients typing makes the local caret jump or the editor goes stale.

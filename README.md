@@ -15,7 +15,7 @@ A Google Keep-like notes app with text notes and Excalidraw whiteboard canvas. V
 - Embedded MCP server: search with timestamps, revision threads, links/tags/graph, and whiteboard recall as multiple images
 - MCP token management via the 🔌 header dialog or `npm run mcp:token`
 - Excalidraw whiteboard canvas with stylus/finger touch support
-- Real-time sync across multiple tabs/devices via WebSocket
+- Real-time sync across multiple tabs/devices via WebSocket, including character-level live text collaboration on a shared draft
 - Full-text search (FTS5) across notes and canvas text
 - Multi-user accounts with admin/member roles, scrypt passwords, and 30-day signed sessions
 - Admin user management and password reset (UI or `npm run auth:reset`)
@@ -24,6 +24,8 @@ A Google Keep-like notes app with text notes and Excalidraw whiteboard canvas. V
 - Hybrid keyword + vector search in MCP, REST (`/api/search/semantic`, `/api/search/hybrid`), and the UI search toggle
 - Optional admin-configured rerank (`BAAI/bge-reranker-v2-m3` etc.); vector search works without it
 - Mermaid fenced diagrams rendered lazily in Visual/gallery; Source shows the diagram code
+- Shared live text drafts with explicit Save-to-revision semantics; Yjs CRDT merge and reconnect recovery
+- Presence dots on dashboard cards while a text note or whiteboard is open in another tab/device
 - Auto-save with debounced persistence
 - Whiteboard checkpoints (leave/manual/interval) create canvas revisions
 

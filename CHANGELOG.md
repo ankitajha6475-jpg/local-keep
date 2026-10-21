@@ -7,6 +7,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Live text collaboration: Yjs CRDT shared drafts over the existing WebSocket, character-level merge, reconnect recovery, and Visual/Source caret restoration
+- `note_text_docs` table and migration 7 for persisted live text drafts with a base revision
+- Presence tracking for text and whiteboard sessions; dashboard cards show a green dot and tooltip while the note is open elsewhere
+- `text-snapshot`, `text-update`, `text-saved`, `text-reset`, `text-discard`, and `presence` WebSocket messages
+- Explicit shared-draft discard when the last editor chooses Discard; Save commits a revision and updates every open editor's base
+- Tests for Yjs merge/persistence/reset and two-client WebSocket text sync/presence
 - Mermaid fenced diagrams render lazily in Visual/gallery; Source shows the diagram source and serialization round-trips the fence
 - Image insertion in whiteboard: Excalidraw image tool enabled, paste support, real-time sync via WebSocket
 - Image insertion in text notes: upload button, clipboard paste, markdown image rendering

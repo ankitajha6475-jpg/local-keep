@@ -351,6 +351,12 @@
             </div>
 
             <div class="note-content">
+              <span
+                v-if="presenceCount(note.id)"
+                class="presence-dot"
+                :title="presenceTitle(note.id)"
+                :aria-label="presenceTitle(note.id)"
+              ></span>
               <!-- Canvas note: show thumbnail -->
               <div v-if="note.type === 'canvas'" class="canvas-thumbnail-wrapper">
                 <img 
@@ -696,6 +702,11 @@
             <h2>
               {{ editingId ? 'Editing Note' : 'New Note' }}
               <span v-if="editingId" class="revision-badge">v{{ editingRevisionNo }}</span>
+              <span
+                v-if="editingId && textCollabReady"
+                class="text-collab-badge"
+                :title="textCollabPeers ? `${textCollabPeers} other editor${textCollabPeers === 1 ? '' : 's'}` : 'Live shared draft'"
+              >● Live<span v-if="textCollabPeers"> · {{ textCollabPeers + 1 }}</span></span>
             </h2>
             <div class="modal-header-actions">
               <button
@@ -731,6 +742,7 @@
               class="note-title-input"
               @keydown.ctrl.enter.stop.prevent="editingId ? saveEdit() : addNote()"
               @keydown.meta.enter.stop.prevent="editingId ? saveEdit() : addNote()"
+              @blur="applyPendingRemoteTitle"
             >
             <div class="note-editor-toolbar">
               <div class="editor-mode-switch">
@@ -773,6 +785,8 @@
               @focus="onEditorFocus"
               @blur="onEditorBlur"
               @click="onEditorClick"
+              @compositionstart="onEditorCompositionStart"
+              @compositionend="onEditorCompositionEnd"
             ></div>
             <textarea
               v-else
@@ -936,7 +950,7 @@
 </template>
 
 <script>
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import debug from 'debug'
 import WhiteboardEditor from './components/WhiteboardEditor.vue'
 import TagSidebar from './components/TagSidebar.vue'
@@ -952,6 +966,7 @@ import {
   normalizePlainText
 } from './utils/markdown.js'
 import { serializeEditorToMarkdown as serializeEditorRoot } from './utils/editorSerialize.js'
+import { createTextCollabManager } from './collab/textCollabManager.js'
 
 const log = debug('local-keep:client')
 const API_BASE = window.location.origin
@@ -1046,6 +1061,7 @@ export default {
 
     // Notes state
     const notes = ref([])
+    const notePresence = ref({})
     const newNoteTitle = ref('')
     const newNoteContent = ref('')
     const editingId = ref(null)
@@ -1053,6 +1069,15 @@ export default {
     // The base revision is only used for optimistic concurrency.
     const editingBaseRevisionId = ref(null)
     const editingRevisionNo = ref(1)
+    let textCollabManager = null
+    let textCollabNoteId = null
+    const textCollabReady = ref(false)
+    const textCollabPeers = ref(0)
+    const textCollabStatus = ref('')
+    let applyingRemoteText = false
+    let pendingRemoteText = null
+    let pendingRemoteTitle = null
+    let compositionActive = false
     const editorMode = ref('write') // 'write' (Visual) | 'plain' (Source)
     let editorDirty = false
     const revisionNotice = ref('')
@@ -1182,6 +1207,26 @@ export default {
           console.log(`[${now}] 📨 WS received`)
           try {
             const data = JSON.parse(event.data)
+            if (textCollabManager?.handleMessage(data)) return
+            if (data.type === 'presence') {
+              if (data.presence && typeof data.presence === 'object') {
+                notePresence.value = data.presence
+              } else if (data.noteId) {
+                const next = { ...notePresence.value }
+                if (data.count > 0) {
+                  next[data.noteId] = { count: data.count, users: data.users || [] }
+                } else {
+                  delete next[data.noteId]
+                }
+                notePresence.value = next
+              }
+              if (editingId.value && notePresence.value[editingId.value]) {
+                textCollabPeers.value = Math.max(0, (notePresence.value[editingId.value].count || 1) - 1)
+              } else if (editingId.value) {
+                textCollabPeers.value = 0
+              }
+              return
+            }
             if (data.type === 'notes' && Array.isArray(data.notes)) {
               console.log(`[${now}] 📨 Updating notes, count: ${data.notes.length}`)
               // Only update notes if the editor modal is not open
@@ -1203,7 +1248,7 @@ export default {
                 console.log(`[${now}] 📨 Skipping - modal open. Buffering update.`)
                 pendingNotes.value = [...data.notes]
               }
-            } else if (data.type === 'note-deleted' && data.noteId) {
+            } else if ((data.type === 'note-deleted' || data.type === 'note-gone') && data.noteId) {
               handleNoteDeletedElsewhere(data.noteId)
             } else if (data.type === 'note-revised' && data.noteId) {
               // Remind the user when another tab/client (or a future MCP
@@ -1214,7 +1259,12 @@ export default {
               const isCheckpoint = data.source === 'checkpoint'
               if (!isRecentLocal && !isCheckpoint) {
                 const isOpen = isModalOpen.value && editingId.value === data.noteId
-                if (isOpen) {
+                const sharedSave = isOpen && textCollabManager &&
+                  textCollabNoteId === data.noteId &&
+                  data.source === 'ui' && !data.conflict
+                if (sharedSave) {
+                  showRevisionNotice(`Another client saved revision ${data.revisionNo}.`)
+                } else if (isOpen) {
                   showRevisionNotice(
                     `This note was updated elsewhere (revision ${data.revisionNo}). Your open copy will be kept as a branch if you save.`
                   )
@@ -1834,6 +1884,7 @@ export default {
     }
 
     const openNewNoteModal = () => {
+      teardownTextCollab()
       isModalOpen.value = true
       editingId.value = null
       editingBaseRevisionId.value = null
@@ -1871,6 +1922,7 @@ export default {
       if (!markdown.trim()) return
       markdown = (await normalizeDataUrlImages(markdown)).markdown
       log('paste intercepted: markdownLength=%d', markdown.length)
+      teardownTextCollab()
       isModalOpen.value = true
       editingId.value = null
       editingBaseRevisionId.value = null
@@ -1907,6 +1959,7 @@ export default {
         isUnsavedChangesOpen.value = true
         return
       }
+      teardownTextCollab()
       isModalOpen.value = false
       editingId.value = null
       editingBaseRevisionId.value = null
@@ -1931,8 +1984,14 @@ export default {
       modalSize.value = { width: null, height: null }
     }
 
+    const discardSharedDraftIfAlone = () => {
+      if (!textCollabManager || textCollabPeers.value > 0) return
+      textCollabManager.discardDraft()
+    }
+
     const discardChanges = () => {
       isUnsavedChangesOpen.value = false
+      discardSharedDraftIfAlone()
       closeModal(true)
     }
 
@@ -2107,6 +2166,7 @@ export default {
     }
 
     const startEditing = (note) => {
+      teardownTextCollab()
       pendingNotes.value = null
       editingId.value = note.id
       editingBaseRevisionId.value = note.revisionId || null
@@ -2127,6 +2187,233 @@ export default {
         renderEditorContent()
         if (modalTitleInput.value) modalTitleInput.value.focus()
       })
+      startTextCollab(note)
+    }
+
+    // ── Live text collaboration ──────────────────────────────────────────
+    function teardownTextCollab() {
+      if (textCollabManager) {
+        textCollabManager.destroy()
+        textCollabManager = null
+      }
+      textCollabNoteId = null
+      textCollabReady.value = false
+      textCollabPeers.value = 0
+      textCollabStatus.value = ''
+      applyingRemoteText = false
+      pendingRemoteText = null
+      pendingRemoteTitle = null
+      compositionActive = false
+    }
+
+    function startTextCollab(note) {
+      teardownTextCollab()
+      if (!note?.id || note.type === 'canvas') return
+      textCollabNoteId = note.id
+      textCollabManager = createTextCollabManager({
+        noteId: note.id,
+        onSnapshot(next, { reset = false } = {}) {
+          const previousBase = editingBaseRevisionId.value
+          textCollabReady.value = true
+          if (next.baseRevisionId) editingBaseRevisionId.value = next.baseRevisionId
+          if (next.revisionNo) editingRevisionNo.value = next.revisionNo
+          applySharedText(next, { initial: true })
+          if (reset) {
+            showRevisionNotice('The shared draft was reset to the new head revision.')
+          } else if (previousBase && next.baseRevisionId && previousBase !== next.baseRevisionId) {
+            showRevisionNotice(
+              'A shared draft based on an older revision was restored. Saving it will keep it as a branch.'
+            )
+          }
+        },
+        onRemoteChange(next) {
+          if (compositionActive) {
+            pendingRemoteText = next
+            return
+          }
+          applySharedText(next)
+        },
+        onSaved(message) {
+          if (message.baseRevisionId) {
+            editingBaseRevisionId.value = message.baseRevisionId
+            textCollabManager?.setBaseRevision(message.baseRevisionId)
+          }
+          if (message.revisionNo) editingRevisionNo.value = message.revisionNo
+          const index = notes.value.findIndex(n => n.id === note.id)
+          if (index !== -1) {
+            notes.value[index] = {
+              ...notes.value[index],
+              title: message.title ?? notes.value[index].title,
+              content: message.content ?? notes.value[index].content,
+              revisionId: message.baseRevisionId || notes.value[index].revisionId,
+              revisionNo: message.revisionNo || notes.value[index].revisionNo
+            }
+          }
+        },
+        onStatus(status) {
+          textCollabStatus.value = status
+        }
+      })
+      textCollabManager.attach(wsRef.value)
+      textCollabPeers.value = Math.max(0, (notePresence.value[note.id]?.count || 1) - 1)
+    }
+
+    function captureEditorCaret() {
+      const el = imageEditor.value
+      const sel = window.getSelection()
+      if (!el || !sel || !sel.rangeCount) return null
+      const range = sel.getRangeAt(0)
+      if (!el.contains(range.startContainer) || !el.contains(range.endContainer)) return null
+      const startRange = document.createRange()
+      startRange.selectNodeContents(el)
+      startRange.setEnd(range.startContainer, range.startOffset)
+      const endRange = document.createRange()
+      endRange.selectNodeContents(el)
+      endRange.setEnd(range.endContainer, range.endOffset)
+      return {
+        start: startRange.toString().length,
+        end: endRange.toString().length
+      }
+    }
+
+    function restoreEditorCaret(position) {
+      const el = imageEditor.value
+      if (!el || !position) return
+      const start = Math.min(position.start, position.end)
+      const end = Math.max(position.start, position.end)
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+      let node = null
+      let offset = 0
+      let startNode = null
+      let startOffset = 0
+      let endNode = null
+      let endOffset = 0
+      while ((node = walker.nextNode())) {
+        const length = node.nodeValue?.length || 0
+        if (!startNode && start <= offset + length) {
+          startNode = node
+          startOffset = start - offset
+        }
+        if (!endNode && end <= offset + length) {
+          endNode = node
+          endOffset = end - offset
+          break
+        }
+        offset += length
+      }
+      const range = document.createRange()
+      if (startNode) {
+        range.setStart(startNode, Math.max(0, Math.min(startOffset, startNode.nodeValue.length)))
+        const finalNode = endNode || startNode
+        range.setEnd(finalNode, Math.max(0, Math.min(endOffset || startOffset, finalNode.nodeValue.length)))
+      } else {
+        range.selectNodeContents(el)
+        range.collapse(false)
+      }
+      const sel = window.getSelection()
+      if (!sel) return
+      sel.removeAllRanges()
+      sel.addRange(range)
+    }
+
+    function applySharedText(next, { initial = false } = {}) {
+      if (!textCollabManager || textCollabNoteId !== editingId.value) return
+      const textChanged = next.text !== newNoteContent.value
+      const titleChanged = next.title !== newNoteTitle.value
+      const editorFocused = editorMode.value === 'write' && (
+        document.activeElement === imageEditor.value ||
+        imageEditor.value?.contains(document.activeElement)
+      )
+      const caret = editorFocused ? captureEditorCaret() : null
+      const sourceSelection = editorMode.value === 'plain' && markdownTextarea.value
+        ? [markdownTextarea.value.selectionStart, markdownTextarea.value.selectionEnd]
+        : null
+
+      applyingRemoteText = true
+      try {
+        if (textChanged) newNoteContent.value = next.text
+        if (titleChanged) {
+          if (document.activeElement === modalTitleInput.value) {
+            pendingRemoteTitle = next.title
+          } else {
+            newNoteTitle.value = next.title
+          }
+        }
+      } finally {
+        applyingRemoteText = false
+      }
+
+      if (textChanged) {
+        if (editorMode.value === 'write') {
+          renderEditorContent()
+          if (editorFocused && caret) {
+            imageEditor.value?.focus({ preventScroll: true })
+            restoreEditorCaret(caret)
+          }
+        } else if (sourceSelection && markdownTextarea.value) {
+          nextTick(() => {
+            if (!markdownTextarea.value) return
+            markdownTextarea.value.focus()
+            markdownTextarea.value.setSelectionRange(sourceSelection[0], sourceSelection[1])
+          })
+        }
+      }
+
+      const original = notes.value.find(n => n.id === editingId.value)
+      editorDirty = !original ||
+        newNoteContent.value !== original.content ||
+        newNoteTitle.value !== original.title
+      if (initial) textCollabStatus.value = 'connected'
+    }
+
+    function applyPendingRemoteTitle() {
+      if (pendingRemoteTitle === null) return
+      applyingRemoteText = true
+      try {
+        newNoteTitle.value = pendingRemoteTitle
+      } finally {
+        applyingRemoteText = false
+      }
+      pendingRemoteTitle = null
+    }
+
+    function onEditorCompositionStart() {
+      compositionActive = true
+    }
+
+    function onEditorCompositionEnd() {
+      compositionActive = false
+      if (pendingRemoteText) {
+        const next = pendingRemoteText
+        pendingRemoteText = null
+        applySharedText(next)
+      }
+    }
+
+    watch(newNoteContent, (value) => {
+      if (applyingRemoteText || !textCollabManager?.isReady) return
+      textCollabManager.applyMarkdown(value)
+    }, { flush: 'sync' })
+
+    watch(newNoteTitle, (value) => {
+      if (applyingRemoteText || !textCollabManager?.isReady) return
+      textCollabManager.applyTitle(value)
+    }, { flush: 'sync' })
+
+    watch(wsRef, (socket) => {
+      if (!textCollabManager) return
+      if (socket) textCollabManager.attach(socket)
+      else textCollabManager.detach()
+    })
+
+    const presenceCount = (noteId) => notePresence.value[noteId]?.count || 0
+    const presenceTitle = (noteId) => {
+      const entry = notePresence.value[noteId]
+      if (!entry?.count) return ''
+      const names = (entry.users || []).map(user => user.displayName || user.username).filter(Boolean)
+      if (entry.count === 1) return `${names[0] || 'Someone'} is viewing this note`
+      if (names.length === 1) return `${names[0]} has ${entry.count} tabs open on this note`
+      return `${names.join(', ')} are viewing this note`
     }
 
     const showRevisionNotice = (message) => {
@@ -2154,6 +2441,9 @@ export default {
         }
         const content = normalizeMarkdown(normalized.markdown)
         newNoteContent.value = content
+        // Suppress the note-revised echo for this Save; the WS event can arrive
+        // before the REST response resolves.
+        recentLocalRevision = { id: editingId.value, at: Date.now() }
         const updated = await api(`/api/notes/${editingId.value}`, {
           method: 'PUT',
           body: JSON.stringify({
@@ -2170,6 +2460,7 @@ export default {
         }
         editingBaseRevisionId.value = updated.headRevisionId || updated.revisionId || null
         editingRevisionNo.value = updated.revisionNo || editingRevisionNo.value
+        textCollabManager?.setBaseRevision(editingBaseRevisionId.value)
         recentLocalRevision = { id: updated.id, at: Date.now() }
         scheduleTagsRefresh()
         showRevisionNotice(
@@ -2299,7 +2590,10 @@ export default {
       if (isModalOpen.value && hasUnsavedChanges() &&
           !window.confirm('Discard unsaved changes and open the graph node?')) return
       graphOpen.value = false
-      if (isModalOpen.value) closeModal(true)
+      if (isModalOpen.value) {
+        discardSharedDraftIfAlone()
+        closeModal(true)
+      }
       nextTick(() => {
         if (note.type === 'canvas') openCanvasNote(note)
         else startEditing(note)
@@ -2333,6 +2627,7 @@ export default {
       }
       if (hasUnsavedChanges() && !window.confirm('Discard unsaved changes and open the linking note?')) return
       backlinksOpen.value = false
+      discardSharedDraftIfAlone()
       closeModal(true)
       nextTick(() => {
         if (note.type === 'canvas') openCanvasNote(note)
@@ -2607,6 +2902,7 @@ export default {
 
     // Canvas note methods
     const openNewCanvas = async () => {
+      teardownTextCollab()
       try {
         const note = await api('/api/notes', {
           method: 'POST',
@@ -2627,6 +2923,7 @@ export default {
     }
 
     const openCanvasNote = (note) => {
+      teardownTextCollab()
       editingCanvasId.value = note.id
       editingCanvasData.value = note.canvasData || null
       editingCanvasTitle.value = note.title || ''
@@ -2825,7 +3122,10 @@ export default {
       if (isModalOpen.value && hasUnsavedChanges()) {
         if (!window.confirm('Discard unsaved changes and open the linked note?')) return
       }
-      if (isModalOpen.value) closeModal(true)
+      if (isModalOpen.value) {
+        discardSharedDraftIfAlone()
+        closeModal(true)
+      }
       nextTick(() => {
         if (note.type === 'canvas') openCanvasNote(note)
         else startEditing(note)
@@ -2899,11 +3199,17 @@ export default {
       copyToClipboard,
       // Notes
       notes,
+      notePresence,
+      presenceCount,
+      presenceTitle,
       newNoteTitle,
       newNoteContent,
       editingId,
       editingBaseRevisionId,
       editingRevisionNo,
+      textCollabReady,
+      textCollabPeers,
+      textCollabStatus,
       revisionNotice,
       dismissRevisionNotice,
       sortedNotes,
@@ -3070,6 +3376,9 @@ export default {
       onEditorFocus,
       onEditorBlur,
       onEditorClick,
+      onEditorCompositionStart,
+      onEditorCompositionEnd,
+      applyPendingRemoteTitle,
       onContentClick,
       renderContent
     }
@@ -4781,6 +5090,48 @@ main {
 .revision-badge-branch {
   background: #fef7e0;
   color: #b06000;
+}
+
+.text-collab-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 0.4rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: #e6f4ea;
+  color: #137333;
+  font-size: 0.7rem;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
+.presence-dot {
+  position: absolute;
+  top: 3.25rem;
+  right: 1rem;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #34a853;
+  border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(52, 168, 83, 0.35);
+  z-index: 3;
+  pointer-events: auto;
+}
+
+.presence-dot::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  border: 1px solid rgba(52, 168, 83, 0.35);
+  animation: presence-pulse 2s ease-out infinite;
+}
+
+@keyframes presence-pulse {
+  0% { transform: scale(0.8); opacity: 0.8; }
+  70% { transform: scale(1.3); opacity: 0; }
+  100% { transform: scale(1.3); opacity: 0; }
 }
 
 .history-btn {
