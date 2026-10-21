@@ -275,10 +275,11 @@ corresponding card while any session has that note open.
   database is opened with `allowExtension: true`; `sqlite-vec` is loaded from
   `node_modules/sqlite-vec-linux-x64/vec0.so`. The image is `node:22-slim`
   because the distributed extension is glibc, not musl/Alpine.
-- Runtime tuning lives in `data/embedding-tuning.json` (`batchSize`,
-  `concurrency`, `maxBatchChars`, `noteConcurrency`), is mtime-checked before each
-  note and on status reads, and applies to the next note without restart. Env vars are only creation
-  fallbacks. Do not assume process env hot reloads.
+- Runtime batch tuning lives in `embedding_settings` (`batch_size`,
+  `concurrency`, `max_batch_chars`, `note_concurrency`). Admin saves update it in
+  SQLite; the next note uses the new batch values without a process restart;
+  `note_concurrency` applies to the next background run. Do not introduce a
+  separate tuning JSON/env layer.
 - Chunking: markdown/canvas text → plain text, paragraph-aware chunks
   (default 1200 chars, 180 overlap). The note title prefixes the embedding input,
   not the stored chunk.
@@ -420,9 +421,10 @@ users (id, username, display_name, password_hash, role, must_change_password,
        created_at, updated_at, last_login_at, disabled_at)
 sessions (sessionId, user_id, hash, expiresAt)
 embedding_settings (id=1, enabled, base_url, api_key_encrypted, model, dimensions,
-                    chunk_size, chunk_overlap, last_tested_at, last_error, updated_at,
-                    rerank_enabled, rerank_base_url, rerank_api_key_encrypted,
-                    rerank_model, rerank_top_n)
+                    chunk_size, chunk_overlap, batch_size, concurrency,
+                    max_batch_chars, note_concurrency, last_tested_at, last_error,
+                    updated_at, rerank_enabled, rerank_base_url,
+                    rerank_api_key_encrypted, rerank_model, rerank_top_n)
 embedding_models (model, variant, table_key, dimensions, base_url, chunk_count, status,
                   last_indexed_at, last_error, created_at, updated_at)
                   -- PRIMARY KEY(model, variant); variant is the dimensions string (e.g. "4096")

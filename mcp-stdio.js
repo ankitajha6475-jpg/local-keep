@@ -28,6 +28,7 @@ import { migration005Embeddings } from './src/server/migrations/005-embeddings.j
 import { migration006OptionalRerank } from './src/server/migrations/006-optional-rerank.js'
 import { migration007LiveTextCollab } from './src/server/migrations/007-live-text-collab.js'
 import { migration008EmbeddingVariants } from './src/server/migrations/008-embedding-variants.js'
+import { migration009EmbeddingTuning } from './src/server/migrations/009-embedding-tuning.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const dataDir = process.env.LOCAL_KEEP_DATA_DIR
@@ -39,7 +40,7 @@ createBaseSchema(db)
 const imageStore = createImageStore({ imagesDir: path.join(dataDir, 'images') })
 runMigrations({
   db,
-  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants],
+  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning],
   backupDir: path.join(dataDir, 'backups'),
   context: { imageStore }
 })

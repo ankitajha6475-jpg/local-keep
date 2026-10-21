@@ -257,7 +257,7 @@ test('resetIndex drops embedding tables and model metadata without touching sett
   }
 })
 
-test('embedding tuning JSON is picked up without restarting the service', async () => {
+test('embedding tuning is stored in SQLite and applies without restart', async () => {
   const ctx = createFreshContext()
   try {
     const service = createEmbeddingService({
@@ -275,18 +275,24 @@ test('embedding tuning JSON is picked up without restarting the service', async 
       noteConcurrency: 1
     })
 
-    const file = `${ctx.dir}/embedding-tuning.json`
-    fs.writeFileSync(file, JSON.stringify({
+    await service.saveConfig({
+      baseUrl: 'https://example.test/v1',
+      apiKey: 'secret-key',
+      model: 'Qwen/Qwen3-Embedding-8B',
+      dimensions: 3,
+      chunkSize: 400,
+      chunkOverlap: 40,
       batchSize: 8,
       concurrency: 1,
       maxBatchChars: 20000,
-      noteConcurrency: 1
-    }))
-    fs.utimesSync(file, new Date(), new Date(Date.now() + 2000))
+      noteConcurrency: 1,
+      enabled: true
+    })
     const updated = service.status().tuning
     assert.equal(updated.batchSize, 8)
     assert.equal(updated.concurrency, 1)
     assert.equal(updated.maxBatchChars, 20000)
+    assert.equal(fs.existsSync(`${ctx.dir}/embedding-tuning.json`), false)
   } finally {
     ctx.cleanup()
   }

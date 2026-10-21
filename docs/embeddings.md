@@ -102,40 +102,27 @@ operation in a future version.
   hash.
 - Indexing is queued per note and processed by a bounded background worker pool.
   Each note's chunks are sent as **array inputs** (`input: ["...", "..."]`) in
-  batches, and batches/notes run in parallel according to
-  `data/embedding-tuning.json`. Head edits, canvas checkpoints, archive/restore,
-  and note creation enqueue the note automatically. Archived/purged notes remove
-  their chunks.
+  batches, and batches/notes run in parallel according to the Advanced
+  indexing values stored in `embedding_settings`. Head edits, canvas checkpoints,
+  archive/restore, and note creation enqueue the note automatically. Archived/
+  purged notes remove their chunks.
 - Qwen3 dimensions: `Qwen/Qwen3-Embedding-8B` defaults to 4096; the API also accepts
   64–4096. Changing dimensions creates a new variant table and requires a re-index.
-- Runtime batch controls live in `data/embedding-tuning.json` (created
-  automatically if missing):
+- Runtime batch controls are stored in SQLite (`embedding_settings`) and are
+  editable under **Semantic search → Advanced indexing**:
 
-```json
-{
-  "batchSize": 64,
-  "concurrency": 2,
-  "maxBatchChars": 80000,
-  "noteConcurrency": 1
-}
-```
-
-  The service checks the file's mtime before each note and applies changes to the
-  **next note without restarting the server**. Invalid JSON is logged and the previous
-  settings remain active.
-
-  - `batchSize` (1–128): inputs per request
+  - `batch_size` (1–128): inputs per request
   - `concurrency` (1–8): parallel requests within a note
-  - `noteConcurrency` (1–8): parallel notes
-  - `maxBatchChars`: character budget per request
+  - `note_concurrency` (1–8): parallel notes
+  - `max_batch_chars`: character budget per request
 
-  Total in-flight requests are roughly `noteConcurrency × concurrency`. Lower
+  Defaults for Qwen3-Embedding-8B are `64 / 2 / 1 / 80000`. Saving the admin
+  form applies new batch/concurrency values to the **next note without restarting**;
+  `note_concurrency` applies to the next background run.
+  There is no separate tuning JSON file or environment layer to manage.
+
+  Total in-flight requests are roughly `note_concurrency × concurrency`. Lower
   them if the provider returns `429`/TPM limits.
-
-  The env vars `LOCAL_KEEP_EMBEDDING_BATCH_SIZE`, `..._MAX_BATCH_CHARS`,
-  `..._CONCURRENCY`, and `..._NOTE_CONCURRENCY` are the fallback initial values
-  used only when the JSON file is created; changing env requires a restart.
-  Prefer the JSON file for live tuning.
 - The SiliconFlow embeddings endpoint accepts an array of strings in one request;
   each item is still subject to the model's per-input token limit (e.g. 512 for
   `BAAI/bge-large-*`, 8192 for `BAAI/bge-m3`). Keep the chunk size within that

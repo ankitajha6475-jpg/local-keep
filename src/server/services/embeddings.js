@@ -1,5 +1,4 @@
 import crypto from 'crypto'
-import fs from 'fs'
 import path from 'path'
 import { getLoadablePath } from 'sqlite-vec'
 import { loadOrCreateSecret } from '../secret.js'
@@ -81,50 +80,11 @@ export function createEmbeddingService({
   clientFactory = createEmbeddingClient,
   rerankClientFactory = createRerankClient,
   fetchImpl,
-  autoIndex = true,
-  embeddingBatchSize = Number(process.env.LOCAL_KEEP_EMBEDDING_BATCH_SIZE || 64),
-  embeddingConcurrency = Number(process.env.LOCAL_KEEP_EMBEDDING_CONCURRENCY || 2),
-  embeddingMaxBatchChars = Number(process.env.LOCAL_KEEP_EMBEDDING_MAX_BATCH_CHARS || 80_000),
-  noteConcurrency = Number(process.env.LOCAL_KEEP_EMBEDDING_NOTE_CONCURRENCY || 1)
+  autoIndex = true
 }) {
   const SECRET = loadOrCreateSecret(path.join(dataDir, 'server_secret'))
   const queue = new Map() // noteId -> force
   const stats = { indexed: 0, failed: 0, lastError: null }
-  const tuningPath = path.join(dataDir, 'embedding-tuning.json')
-  const fallbackTuning = {
-    batchSize: Math.max(1, Math.min(128, Number(embeddingBatchSize) || 64)),
-    concurrency: Math.max(1, Math.min(8, Number(embeddingConcurrency) || 2)),
-    maxBatchChars: Math.max(1_000, Number(embeddingMaxBatchChars) || 80_000),
-    noteConcurrency: Math.max(1, Math.min(8, Number(noteConcurrency) || 1))
-  }
-  let tuning = { ...fallbackTuning }
-  let tuningMtime = 0
-  try {
-    if (!fs.existsSync(tuningPath)) {
-      fs.writeFileSync(tuningPath, `${JSON.stringify(tuning, null, 2)}\n`, { mode: 0o600 })
-    }
-  } catch (error) {
-    console.error('Could not create embedding tuning config:', error.message)
-  }
-
-  function readTuning() {
-    try {
-      const stat = fs.statSync(tuningPath)
-      if (stat.mtimeMs === tuningMtime) return tuning
-      tuningMtime = stat.mtimeMs
-      const parsed = JSON.parse(fs.readFileSync(tuningPath, 'utf8'))
-      tuning = {
-        batchSize: Math.max(1, Math.min(128, Number(parsed.batchSize) || fallbackTuning.batchSize)),
-        concurrency: Math.max(1, Math.min(8, Number(parsed.concurrency) || fallbackTuning.concurrency)),
-        maxBatchChars: Math.max(1_000, Number(parsed.maxBatchChars) || fallbackTuning.maxBatchChars),
-        noteConcurrency: Math.max(1, Math.min(8, Number(parsed.noteConcurrency) || fallbackTuning.noteConcurrency))
-      }
-    } catch (error) {
-      console.error('Could not read embedding tuning config:', error.message)
-    }
-    return tuning
-  }
-  readTuning()
   let vecLoaded = false
   let vecVersion = null
   let vecError = null
@@ -137,6 +97,20 @@ export function createEmbeddingService({
     const row = db.prepare('SELECT * FROM embedding_settings WHERE id = 1').get()
     if (!row) throw new Error('Embedding settings are missing')
     return row
+  }
+
+  function tuningFrom(row = settingsRow()) {
+    const clamp = (value, min, max, fallback) => {
+      const number = Number(value)
+      if (!Number.isFinite(number)) return fallback
+      return Math.max(min, Math.min(max, Math.round(number)))
+    }
+    return {
+      batchSize: clamp(row.batch_size, 1, 128, 64),
+      concurrency: clamp(row.concurrency, 1, 8, 2),
+      maxBatchChars: clamp(row.max_batch_chars, 1_000, 1_000_000, 80_000),
+      noteConcurrency: clamp(row.note_concurrency, 1, 8, 1)
+    }
   }
 
   function modelRow(model, variant) {
@@ -167,6 +141,10 @@ export function createEmbeddingService({
       model: row.model,
       variant: row.dimensions ? variantFor(row.dimensions) : null,
       dimensions: row.dimensions,
+      batchSize: tuningFrom(row).batchSize,
+      concurrency: tuningFrom(row).concurrency,
+      maxBatchChars: tuningFrom(row).maxBatchChars,
+      noteConcurrency: tuningFrom(row).noteConcurrency,
       chunkSize: row.chunk_size,
       chunkOverlap: row.chunk_overlap,
       lastTestedAt: row.last_tested_at,
@@ -260,7 +238,7 @@ export function createEmbeddingService({
 
   function makeClient({ baseUrl, apiKey, model, dimensions }) {
     if (!apiKey) throw fail(400, 'Embedding API key is required', 'missing_api_key')
-    const current = readTuning()
+    const current = tuningFrom()
     return clientFactory({
       baseUrl,
       apiKey,
@@ -324,6 +302,10 @@ export function createEmbeddingService({
     dimensions,
     chunkSize,
     chunkOverlap,
+    batchSize,
+    concurrency,
+    maxBatchChars,
+    noteConcurrency,
     enabled = false,
     forceReindex = false,
     rerankEnabled,
@@ -333,6 +315,19 @@ export function createEmbeddingService({
     rerankModel
   } = {}) {
     const old = settingsRow()
+    const oldTuning = tuningFrom(old)
+    const clampInt = (value, min, max, fallback) => {
+      if (value === undefined || value === null || value === '') return fallback
+      const number = Number(value)
+      if (!Number.isFinite(number)) return fallback
+      return Math.max(min, Math.min(max, Math.round(number)))
+    }
+    const nextTuning = {
+      batchSize: clampInt(batchSize, 1, 128, oldTuning.batchSize),
+      concurrency: clampInt(concurrency, 1, 8, oldTuning.concurrency),
+      maxBatchChars: clampInt(maxBatchChars, 1_000, 1_000_000, oldTuning.maxBatchChars),
+      noteConcurrency: clampInt(noteConcurrency, 1, 8, oldTuning.noteConcurrency)
+    }
     const nextBaseUrl = normalizeBaseUrl(baseUrl || old.base_url)
     const nextModel = String(model !== undefined ? model : (old.model || '')).trim()
     const nextChunkSize = Math.max(200, Math.min(4000, Number(chunkSize) || old.chunk_size || 1200))
@@ -407,7 +402,9 @@ export function createEmbeddingService({
     db.prepare(`
       UPDATE embedding_settings
       SET enabled = ?, base_url = ?, api_key_encrypted = ?, model = ?, dimensions = ?,
-          chunk_size = ?, chunk_overlap = ?, last_tested_at = ?, last_error = NULL, updated_at = ?,
+          chunk_size = ?, chunk_overlap = ?, batch_size = ?, concurrency = ?,
+          max_batch_chars = ?, note_concurrency = ?,
+          last_tested_at = ?, last_error = NULL, updated_at = ?,
           rerank_enabled = ?, rerank_base_url = ?, rerank_api_key_encrypted = ?, rerank_model = ?
       WHERE id = 1
     `).run(
@@ -418,6 +415,10 @@ export function createEmbeddingService({
       nextDimensions || null,
       nextChunkSize,
       nextOverlap,
+      nextTuning.batchSize,
+      nextTuning.concurrency,
+      nextTuning.maxBatchChars,
+      nextTuning.noteConcurrency,
       (probe || rerankProbe) ? now : old.last_tested_at,
       now,
       nextRerankEnabled ? 1 : 0,
@@ -654,7 +655,7 @@ export function createEmbeddingService({
   async function runWorker() {
     if (workerRunning) return
     workerRunning = true
-    const workers = readTuning().noteConcurrency
+    const workers = tuningFrom().noteConcurrency
     try {
       await Promise.all(Array.from({ length: workers }, async () => {
         while (queue.size > 0) {
@@ -897,7 +898,7 @@ export function createEmbeddingService({
     const settings = settingsRow()
     return {
       settings: settingsDto(settings),
-      tuning: readTuning(),
+      tuning: tuningFrom(settings),
       models: listModels(),
       queue: {
         queued: queue.size,

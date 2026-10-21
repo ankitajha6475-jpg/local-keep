@@ -623,6 +623,28 @@
                 <input v-model.number="embeddingForm.chunkOverlap" type="number" min="0" max="1000">
               </label>
             </div>
+            <details class="embedding-advanced">
+              <summary>Advanced indexing</summary>
+              <div class="embedding-grid">
+                <label>
+                  Batch size
+                  <input v-model.number="embeddingForm.batchSize" type="number" min="1" max="128">
+                </label>
+                <label>
+                  Batch concurrency
+                  <input v-model.number="embeddingForm.concurrency" type="number" min="1" max="8">
+                </label>
+                <label>
+                  Note concurrency
+                  <input v-model.number="embeddingForm.noteConcurrency" type="number" min="1" max="8">
+                </label>
+                <label>
+                  Max batch chars
+                  <input v-model.number="embeddingForm.maxBatchChars" type="number" min="1000" max="1000000">
+                </label>
+              </div>
+              <small>Stored in SQLite; changes apply to the next note without restarting.</small>
+            </details>
             <div class="embedding-rerank">
               <div class="embedding-rerank-head">
                 <h3>Rerank <span>optional</span></h3>
@@ -679,6 +701,7 @@
             <span>Status: <strong>{{ embeddingSettings.enabled ? 'enabled' : 'disabled' }}</strong></span>
             <span v-if="embeddingSettings.model">Model: <strong>{{ embeddingSettings.model }}</strong></span>
             <span v-if="embeddingSettings.dimensions">{{ embeddingSettings.dimensions }} dims</span>
+            <span v-if="embeddingSettings.batchSize">Batch {{ embeddingSettings.batchSize }} · {{ embeddingSettings.concurrency }}× / {{ embeddingSettings.noteConcurrency }} notes</span>
             <span v-if="embeddingSettings.rerankEnabled">Rerank: <strong>{{ embeddingSettings.rerankModel }}</strong></span>
             <span v-if="embeddingQueue?.queued">Queue: {{ embeddingQueue.queued }}</span>
             <span v-if="embeddingQueue?.running">Indexing: {{ embeddingQueue.currentNote || '…' }}</span>
@@ -1048,6 +1071,10 @@ export default {
       dimensions: 4096,
       chunkSize: 1200,
       chunkOverlap: 180,
+      batchSize: 64,
+      concurrency: 2,
+      maxBatchChars: 80000,
+      noteConcurrency: 1,
       rerankEnabled: false,
       rerankBaseUrl: '',
       rerankApiKey: '',
@@ -2717,6 +2744,10 @@ export default {
           dimensions: settings.dimensions || 4096,
           chunkSize: settings.chunkSize || 1200,
           chunkOverlap: settings.chunkOverlap ?? 180,
+          batchSize: settings.batchSize || 64,
+          concurrency: settings.concurrency || 2,
+          maxBatchChars: settings.maxBatchChars || 80000,
+          noteConcurrency: settings.noteConcurrency || 1,
           rerankEnabled: !!settings.rerankEnabled,
           rerankBaseUrl: settings.rerankBaseUrl || '',
           rerankApiKey: '',
@@ -2792,6 +2823,10 @@ export default {
             dimensions: embeddingForm.value.dimensions || undefined,
             chunkSize: embeddingForm.value.chunkSize,
             chunkOverlap: embeddingForm.value.chunkOverlap,
+            batchSize: embeddingForm.value.batchSize,
+            concurrency: embeddingForm.value.concurrency,
+            maxBatchChars: embeddingForm.value.maxBatchChars,
+            noteConcurrency: embeddingForm.value.noteConcurrency,
             rerankEnabled: embeddingForm.value.rerankEnabled,
             rerankBaseUrl: embeddingForm.value.rerankBaseUrl || undefined,
             rerankApiKey: embeddingForm.value.rerankApiKey || undefined,
@@ -5930,6 +5965,31 @@ main {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.6rem;
+}
+
+.embedding-advanced {
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  padding: 0.6rem 0.7rem;
+  background: #f8fafc;
+}
+
+.embedding-advanced summary {
+  cursor: pointer;
+  color: #334155;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.embedding-advanced .embedding-grid {
+  margin-top: 0.6rem;
+}
+
+.embedding-advanced small {
+  display: block;
+  margin-top: 0.5rem;
+  color: #94a3b8;
+  font-size: 0.68rem;
 }
 
 .embedding-rerank {
