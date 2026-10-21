@@ -70,6 +70,7 @@ src/
     services/embeddings.js        # admin config, vector tables, background indexer, vector search
     services/tags.js              # tag sync, tree, descendant filter
     services/textCollab.js        # Yjs live text docs, persistence, base revision
+    services/mcpEditing.js        # MCP open-note leases, TTL, incremental edits
     services/links.js             # wiki-link sync/resolve, backlinks, graph
     services/renders.js           # whiteboard page manifests + staleness
     images.js, fts.js, canvas.js, events.js, sessionStore.js
@@ -369,11 +370,28 @@ corresponding card while any session has that note open.
   `write` scope; read-only tokens can only GET/MCP read tools.
 - Tools call the same services as REST/WS; MCP edits create revisions, branch on stale
   bases, emit `note.revised`, and notify open browsers. `docs/mcp.md` is the user guide.
+- `edit_note` has `mode: oneshot|open` for lifecycle and `commit_mode: append|branch|take_head`
+  for stale-base behavior. Do not overload `mode` with both axes.
+- Open mode is a per-client edit lease keyed by `authInfo.clientId` (`mcp:<token-name>`):
+  one note per client, idempotent reopen, TTL (`LOCAL_KEEP_MCP_EDIT_TTL_MS`, default 30m),
+  and `expected_version` checks on incremental edits. Leases are advisory, never a hard
+  lock; use the shared Yjs draft and normal revision branching instead.
+- `mcpEditing` (`src/server/services/mcpEditing.js`) holds the leases and applies edits to
+  `note_text_docs`; open MCP sessions are added to dashboard presence as `MCP (<name>)`.
+- While a note is open, hide `edit_note`/`append_to_note` and register `read_open_note`,
+  `replace_open_note`, `insert_open_note`, `delete_open_note`, `append_open_note`,
+  `set_open_note_title`, `save_open_note`, and `close_open_note`. Rebuild `tools/list`
+  per request; publish `tools_list_changed` through the MCP bus. Stateless legacy clients
+  must re-list; hidden tool calls fail safely.
+- `save_open_note` commits with source `mcp-open`; the bus updates the draft base and
+  broadcasts `text-saved`. `close_open_note` keeps a dirty draft; discard only when the
+  caller is the last editor. Archive/purge/restore/promote close leases.
 - `get_whiteboard` returns ordered image blocks/markdown/URLs; stale renders can ask a
   connected browser via `render-request`. No server-side rendering.
 - Token management: UI 🔌 modal, `/api/mcp/tokens`, `npm run mcp:token`.
 - stdio adapter (`mcp-stdio.js`) opens the DB directly with WAL; HTTP is preferred because
-  stdio writes cannot push WS events to an open browser.
+  stdio writes cannot push WS events to an open browser. stdio supports open leases too,
+  but cannot see browser presence and never discards a dirty shared draft.
 
 ### DB Schema
 
@@ -476,3 +494,6 @@ All notable changes must be recorded in `CHANGELOG.md`. When making changes:
 31. **Live text is draft-only**: `note_text_docs` must never update `notes.content`, `head_revision_id`, tags, or links. Only an explicit Save commits a revision. Do not make live typing bypass optimistic concurrency.
 32. **Text presence and canvas presence share `notePresence`**: add/remove both kinds on join/leave/close so dashboard dots never stick. Only text sessions use `textSessions`; canvas sessions remain in `noteStates`.
 33. **Remote text re-render and caret**: the Visual editor must capture/restore the caret around a remote re-render and defer during IME composition. Without this, two clients typing makes the local caret jump or the editor goes stale.
+34. **MCP edit leases are per token, not per process**: `authInfo.clientId` is the only stable identity in the stateless transport. Use one token per agent. A shared token intentionally shares one open note; do not use a global note lock.
+35. **MCP open tools are state-dependent**: `createMcpServer` rebuilds `tools/list` from `mcpEditing.get(clientKey)` on every request. Never register open tools unconditionally; hidden one-shot tools must fail rather than silently edit another note.
+36. **MCP save source**: `save_open_note` commits with `source: 'mcp-open'` so the draft base moves and browsers get `text-saved`. One-shot MCP edits use `source: 'mcp'` and must not move a live draft base.

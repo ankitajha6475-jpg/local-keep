@@ -7,6 +7,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Persistent MCP edit sessions: `edit_note` `mode: open|oneshot`, per-token one-note leases with TTL, dynamic open/close tool lists, and `tools_list_changed` notifications
+- MCP incremental editing tools: read, exact replace, line insert, delete, append, title, save, and close on the shared Yjs draft
+- `expected_version` conflict detection for MCP edits and `source: mcp-open` revision saves that update the live draft base
+- MCP edit sessions appear in dashboard presence as `MCP (<token name>)`
 - Live text collaboration: Yjs CRDT shared drafts over the existing WebSocket, character-level merge, reconnect recovery, and Visual/Source caret restoration
 - `note_text_docs` table and migration 7 for persisted live text drafts with a base revision
 - Presence tracking for text and whiteboard sessions; dashboard cards show a green dot and tooltip while the note is open elsewhere

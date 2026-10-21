@@ -13,6 +13,7 @@ A Google Keep-like notes app with text notes and Excalidraw whiteboard canvas. V
 - Two editor modes: **Visual** (rendered markdown, images and Mermaid diagrams displayed) and **Source** (raw markdown, images shown as URLs); rich-paste sanitisation and markdown image refs
 - Whiteboard page rendering: ordered page images (left→right, top→bottom) with a Pages drawer
 - Embedded MCP server: search with timestamps, revision threads, links/tags/graph, and whiteboard recall as multiple images
+- Persistent MCP edit sessions: one open note per client, dynamic open/close tools, exact-match incremental edits, and `expected_version` conflict detection
 - MCP token management via the 🔌 header dialog or `npm run mcp:token`
 - Excalidraw whiteboard canvas with stylus/finger touch support
 - Real-time sync across multiple tabs/devices via WebSocket, including character-level live text collaboration on a shared draft
@@ -25,7 +26,7 @@ A Google Keep-like notes app with text notes and Excalidraw whiteboard canvas. V
 - Optional admin-configured rerank (`BAAI/bge-reranker-v2-m3` etc.); vector search works without it
 - Mermaid fenced diagrams rendered lazily in Visual/gallery; Source shows the diagram code
 - Shared live text drafts with explicit Save-to-revision semantics; Yjs CRDT merge and reconnect recovery
-- Presence dots on dashboard cards while a text note or whiteboard is open in another tab/device
+- Presence dots on dashboard cards while a text note, whiteboard, or MCP edit session holds the note open
 - Auto-save with debounced persistence
 - Whiteboard checkpoints (leave/manual/interval) create canvas revisions
 

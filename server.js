@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { WebSocketServer, WebSocket } from 'ws'
 import { createServer } from 'http'
 import multer from 'multer'
-import { createMcpHandler } from '@modelcontextprotocol/server'
+import { createMcpHandler, InMemoryServerEventBus } from '@modelcontextprotocol/server'
 import { toNodeHandler } from '@modelcontextprotocol/node'
 import { createSessionStore } from './src/server/sessionStore.js'
 import { openDatabase, runMigrations } from './src/server/db.js'
@@ -33,6 +33,7 @@ import { validatePassword, temporaryPassword } from './src/server/auth/passwords
 import { createMcpServer } from './src/mcp/createServer.js'
 import { createEventBus, EVENTS } from './src/server/events.js'
 import { createTextCollabService } from './src/server/services/textCollab.js'
+import { createMcpEditingService } from './src/server/services/mcpEditing.js'
 import { bytesToBase64, base64ToBytes } from './src/shared/base64.js'
 import {
   extractCanvasText,
@@ -77,6 +78,8 @@ const clients = new Map()
 const noteStates = new Map()  // noteId -> { elements, files, sessions, pendingPersist, _thumbnail }
 const textSessions = new Map() // noteId -> Set<WebSocket> for live text drafts
 const notePresence = new Map() // noteId -> Map<WebSocket, { user, kinds:Set<'text'|'canvas'> }>
+const mcpPresence = new Map() // noteId -> Map<sessionId, { user, kind:'mcp' }>
+const mcpBus = new InMemoryServerEventBus()
 
 function getOrCreateNoteState(noteId) {
   if (!noteStates.has(noteId)) {
@@ -354,6 +357,41 @@ const revisions = createRevisionService({ db, imageStore, imageRefs, bus, tags, 
 const textCollab = createTextCollabService({ db })
 const notesService = createNoteService({ db, revisions, imageRefs, bus, tags, links, embeddings })
 const renderService = createRenderService({ db, imageRefs, bus })
+const mcpEditing = createMcpEditingService({
+  db,
+  notes: notesService,
+  textCollab,
+  ttlMs: Number(process.env.LOCAL_KEEP_MCP_EDIT_TTL_MS || 30 * 60 * 1000),
+  onOpen(session) {
+    addMcpPresence(session.noteId, session)
+  },
+  onClose(session, { discard }) {
+    removeMcpPresence(session.noteId, session.id)
+    const remaining = notePresenceCount(session.noteId)
+    let discarded = false
+    if (remaining === 0) {
+      if (discard) {
+        textCollab.discard(session.noteId)
+        discarded = true
+      } else {
+        try { textCollab.discardIfClean(session.noteId) } catch (_) { /* best effort */ }
+      }
+    }
+    return { discarded, remaining }
+  },
+  onDraftChange(noteId, update) {
+    if (!update?.length) return
+    broadcastToTextSessions(noteId, {
+      type: 'text-update',
+      noteId,
+      update: bytesToBase64(update)
+    })
+  },
+  onToolsChanged() {
+    mcpBus.publish({ kind: 'tools_list_changed' })
+  }
+})
+
 const searchService = createSearchService({
   db,
   notes: notesService,
@@ -534,21 +572,34 @@ function presenceUser(ws) {
 
 function presencePayload(noteId) {
   const entries = notePresence.get(noteId)
-  if (!entries || entries.size === 0) return { noteId, count: 0, users: [] }
+  const mcpEntries = mcpPresence.get(noteId)
+  const count = (entries?.size || 0) + (mcpEntries?.size || 0)
+  if (count === 0) return { noteId, count: 0, users: [] }
   const users = []
   const seen = new Set()
-  for (const info of entries.values()) {
+  for (const info of entries?.values() || []) {
     const key = info.user.username
     if (seen.has(key)) continue
     seen.add(key)
     users.push({ username: info.user.username, displayName: info.user.displayName })
   }
-  return { noteId, count: entries.size, users }
+  for (const info of mcpEntries?.values() || []) {
+    const key = info.user.username
+    if (seen.has(key)) continue
+    seen.add(key)
+    users.push({ username: info.user.username, displayName: info.user.displayName })
+  }
+  return { noteId, count, users }
+}
+
+function notePresenceCount(noteId) {
+  return (notePresence.get(noteId)?.size || 0) + (mcpPresence.get(noteId)?.size || 0)
 }
 
 function presenceSnapshot() {
   const result = {}
-  for (const noteId of notePresence.keys()) {
+  const noteIds = new Set([...notePresence.keys(), ...mcpPresence.keys()])
+  for (const noteId of noteIds) {
     const payload = presencePayload(noteId)
     if (payload.count > 0) result[noteId] = payload
   }
@@ -584,6 +635,28 @@ function removeNotePresence(noteId, ws, kind = null) {
   else record.kinds.clear()
   if (record.kinds.size === 0) entries.delete(ws)
   if (entries.size === 0) notePresence.delete(noteId)
+  broadcastPresence(noteId)
+}
+
+function addMcpPresence(noteId, session) {
+  let entries = mcpPresence.get(noteId)
+  if (!entries) {
+    entries = new Map()
+    mcpPresence.set(noteId, entries)
+  }
+  const rawName = String(session.actor || 'mcp').replace(/^mcp:/, '') || 'mcp'
+  entries.set(session.id, {
+    kind: 'mcp',
+    user: { username: `mcp:${rawName}`, displayName: `MCP (${rawName})` }
+  })
+  broadcastPresence(noteId)
+}
+
+function removeMcpPresence(noteId, sessionId) {
+  const entries = mcpPresence.get(noteId)
+  if (!entries) return
+  entries.delete(sessionId)
+  if (entries.size === 0) mcpPresence.delete(noteId)
   broadcastPresence(noteId)
 }
 
@@ -1378,11 +1451,13 @@ bus.on(EVENTS.NOTE_CREATED, payload => {
 bus.on(EVENTS.NOTE_REVISED, payload => {
   broadcastToAllClients({ type: 'note-revised', ...payload })
 
-  // A browser Save is the shared draft's commit point. Do not move the draft
-  // base for a branch or for an external/MCP edit: the next Save must still
-  // detect the stale base and preserve history.
-  if (payload.source === 'ui' && !payload.conflict && payload.headRevisionId) {
+  // A browser Save and an open-MCP Save are the shared draft's commit points.
+  // Do not move the draft base for a branch or for a one-shot external/MCP
+  // edit: the next Save must still detect the stale base and preserve history.
+  if ((payload.source === 'ui' || payload.source === 'mcp-open') &&
+      !payload.conflict && payload.headRevisionId) {
     textCollab.setBaseRevision(payload.noteId, payload.headRevisionId)
+    mcpEditing.applySavedHead(payload.noteId, payload.headRevisionId, payload.revisionNo)
     const savedHead = revisions.getHead(payload.noteId)
     broadcastToTextSessions(payload.noteId, {
       type: 'text-saved',
@@ -1394,21 +1469,26 @@ bus.on(EVENTS.NOTE_REVISED, payload => {
     })
   }
 
-  // Restore/promote replace the head by design. Reset any live draft so open
-  // editors do not continue editing a document based on the replaced version.
+  // Restore/promote replace the head by design. Close any live MCP edit
+  // lease and reset the shared draft so open editors do not continue editing
+  // a document based on the replaced version.
   if (payload.source === 'restore' || payload.source === 'promote') {
+    mcpEditing.closeForNote(payload.noteId, { reason: 'head-replaced' })
     broadcastTextReset(payload.noteId)
   }
 })
 bus.on(EVENTS.NOTE_ARCHIVED, payload => {
+  mcpEditing.closeForNote(payload.noteId, { reason: 'archived' })
   textCollab.discard(payload.noteId)
   broadcastToAllClients({ type: 'note-archived', ...payload })
 })
 bus.on(EVENTS.NOTE_RESTORED, payload => {
+  mcpEditing.closeForNote(payload.noteId, { reason: 'restored' })
   textCollab.discard(payload.noteId)
   broadcastToAllClients({ type: 'note-restored', ...payload })
 })
 bus.on(EVENTS.NOTE_PURGED, payload => {
+  mcpEditing.closeForNote(payload.noteId, { reason: 'purged' })
   textCollab.discard(payload.noteId)
   broadcastToAllClients({ type: 'note-purged', ...payload })
 })
@@ -1687,12 +1767,13 @@ const mcpHandler = createMcpHandler(({ authInfo }) => createMcpServer({
     links,
     renders: renderService,
     search: searchService,
-    imageStore
+    imageStore,
+    mcpEditing
   },
   authInfo,
   baseUrl: mcpPublicUrl.replace(/\/$/, ''),
   requestRender: requestWhiteboardRender
-}))
+}), { bus: mcpBus })
 const mcpNodeHandler = toNodeHandler(mcpHandler)
 app.all('/mcp', mcpAuth, (req, res) => mcpNodeHandler(req, res, req.body))
 

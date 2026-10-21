@@ -82,8 +82,8 @@ stdio because it runs as a local process with direct database access.
 | `list_notes` | Same summary shape without a query |
 | `get_note` | Markdown, metadata, optional history/links/backlinks, whiteboard summary |
 | `create_note` | Create revision 1; accepts tags and related note ids |
-| `edit_note` | New revision; `base_revision_id`; modes `append` (default), `branch`, `take_head` |
-| `append_to_note` | Append markdown as a new revision |
+| `edit_note` | `mode: "oneshot"` (default) commits a revision; `mode: "open"` acquires a persistent edit session. `commit_mode` controls stale-base behavior (`append`, `branch`, `take_head`) |
+| `append_to_note` | Append markdown as a new revision; hidden while a note is open |
 | `get_thread` | Revision tree / head-chain markers; `format: "text"` for ASCII |
 | `get_links` / `get_backlinks` | Outgoing/incoming relationships with context |
 | `get_graph` | Relationship graph; neighbourhood via `note_id` + `depth` |
@@ -154,8 +154,86 @@ notice.
 ```
 
 If `base_revision_id` is stale, the default is to keep the edit as a **branch** and leave
-the head unchanged. Use `mode: "take_head"` only when you intentionally want to replace
-the head. The note id never changes.
+the head unchanged. Use `commit_mode: "take_head"` only when you intentionally want to
+replace the head. The note id never changes.
+
+### Persistent edit sessions
+
+`edit_note` has two modes:
+
+```json
+{ "name": "edit_note", "arguments": { "note_id": "...", "mode": "oneshot", "content": "..." } }
+```
+
+- `oneshot` is the default. It commits atomically and releases nothing.
+- `open` acquires a persistent edit lease and returns the shared draft:
+
+```json
+{
+  "name": "edit_note",
+  "arguments": { "note_id": "...", "mode": "open" }
+}
+```
+
+`mode: "open"` does **not** accept `title` or `content`. Open first, then use the
+incremental tools.
+
+Each MCP client (bearer token) may hold **one** note open at a time. Opening the same
+note again is idempotent; opening a different note returns `409 already_open` with the
+currently open note id. Close the current session first.
+
+Open sessions expire after `LOCAL_KEEP_MCP_EDIT_TTL_MS` (default 30 minutes). Every
+open-note call refreshes the lease. The lease is advisory: browsers and other MCP
+clients may edit the same note; use `expected_version` to detect concurrent changes.
+
+The lease is keyed by the MCP token, so use one token per agent. A shared token means a
+shared open note.
+
+#### Incremental tools
+
+Available only while a note is open:
+
+| Tool | What it does |
+|---|---|
+| `read_open_note` | Return current title, content, line count, base revision, and `version` |
+| `replace_open_note` | Replace exact `old_text` with `new_text`; unique match unless `replace_all` |
+| `insert_open_note` | Insert at a 1-based line; `line_count + 1` appends |
+| `delete_open_note` | Delete exact text or an inclusive line range |
+| `append_open_note` | Append markdown |
+| `set_open_note_title` | Change the draft title |
+| `save_open_note` | Commit the draft as a revision; the session stays open |
+| `close_open_note` | Release the lease; `discard: true` only deletes the draft when this is the last editor |
+
+All mutation tools accept `expected_version`. If the shared draft changed since
+`read_open_note`, the tool returns `409 stale_version` with the latest content and
+version. Re-read and retry; the server does not auto-retry.
+
+Edits are applied to the same Yjs `note_text_docs` draft used by the browser, so open
+browsers see MCP edits live. `save_open_note` creates a normal revision with source
+`mcp-open`; a stale base still creates a branch.
+
+`close_open_note` releases the lease but keeps the draft by default. `discard: true`
+removes it only if no browser or other MCP client is still editing.
+
+#### Dynamic tool list
+
+The MCP server is stateless per HTTP request. `tools/list` is rebuilt on every request
+from the token's edit lease:
+
+- no open note: `edit_note`, `append_to_note`, and the usual read/search tools;
+- open note: `edit_note`/`append_to_note` disappear; incremental and close tools appear.
+
+The server publishes `notifications/tools/list_changed` through the MCP event bus and
+returns `tools_changed: true` from open/close calls. Modern clients using
+`subscriptions/listen` receive the notification. Legacy stateless clients should call
+`tools/list` again; if a client calls a hidden tool by name, the request fails rather
+than silently editing the wrong note.
+
+### Presence
+
+An open MCP edit session appears in the browser dashboard presence count, with the user
+label `MCP (<token name>)`. TTL expiry, `close_open_note`, archive, restore, and purge all
+remove it.
 
 ### Whiteboard images
 

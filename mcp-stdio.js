@@ -17,6 +17,8 @@ import { createNoteService } from './src/server/services/notes.js'
 import { createRenderService } from './src/server/services/renders.js'
 import { createSearchService } from './src/server/services/search.js'
 import { createEmbeddingService } from './src/server/services/embeddings.js'
+import { createTextCollabService } from './src/server/services/textCollab.js'
+import { createMcpEditingService } from './src/server/services/mcpEditing.js'
 import { createMcpServer } from './src/mcp/createServer.js'
 import { migration001NoteThreads } from './src/server/migrations/001-note-threads.js'
 import { migration002RelationshipsAndTags } from './src/server/migrations/002-relationships-and-tags.js'
@@ -24,6 +26,7 @@ import { migration003ApiTokens } from './src/server/migrations/003-api-tokens.js
 import { migration004MultiuserAuth } from './src/server/migrations/004-multiuser-auth.js'
 import { migration005Embeddings } from './src/server/migrations/005-embeddings.js'
 import { migration006OptionalRerank } from './src/server/migrations/006-optional-rerank.js'
+import { migration007LiveTextCollab } from './src/server/migrations/007-live-text-collab.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const dataDir = process.env.LOCAL_KEEP_DATA_DIR
@@ -35,7 +38,7 @@ createBaseSchema(db)
 const imageStore = createImageStore({ imagesDir: path.join(dataDir, 'images') })
 runMigrations({
   db,
-  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank],
+  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab],
   backupDir: path.join(dataDir, 'backups'),
   context: { imageStore }
 })
@@ -49,9 +52,26 @@ const revisions = createRevisionService({ db, imageStore, imageRefs, bus, tags, 
 const notes = createNoteService({ db, revisions, imageRefs, bus, tags, links, embeddings })
 const renders = createRenderService({ db, imageRefs, bus })
 const search = createSearchService({ db, notes, revisions, tags, renders, embeddings })
+const textCollab = createTextCollabService({ db })
 embeddings.initialize()
 
-const services = { db, notes, revisions, tags, links, renders, search, embeddings, imageStore }
+const mcpEditing = createMcpEditingService({
+  db,
+  notes,
+  textCollab,
+  onOpen() {},
+  onClose(session, { discard }) {
+    // stdio cannot see browser/HTTP presence, so never erase a dirty shared
+    // draft from this process. Clean drafts can be removed safely.
+    const removed = textCollab.discardIfClean(session.noteId)
+    return { discarded: removed, remaining: null, discard_ignored: !!discard && !removed }
+  },
+  onSaved() {},
+  onDraftChange() {},
+  onToolsChanged() {}
+})
+
+const services = { db, notes, revisions, tags, links, renders, search, embeddings, imageStore, textCollab, mcpEditing }
 const baseUrl = (process.env.LOCAL_KEEP_PUBLIC_URL || 'http://localhost:5173').replace(/\/$/, '')
 
 void serveStdio(() => createMcpServer({

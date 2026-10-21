@@ -114,6 +114,69 @@ export function createTextCollabService({ db, persistDelay = DEFAULT_PERSIST_MS 
     }
   }
 
+  function textChange(oldText, newText) {
+    let start = 0
+    const maxStart = Math.min(oldText.length, newText.length)
+    while (start < maxStart && oldText[start] === newText[start]) start += 1
+    let oldEnd = oldText.length
+    let newEnd = newText.length
+    while (oldEnd > start && newEnd > start && oldText[oldEnd - 1] === newText[newEnd - 1]) {
+      oldEnd -= 1
+      newEnd -= 1
+    }
+    return { index: start, deleteCount: oldEnd - start, insertText: newText.slice(start, newEnd) }
+  }
+
+  /**
+   * Replace the shared draft text from a server-side editor (MCP). The caller
+   * must enforce its own concurrency/expected-version check; this method only
+   * translates the snapshot difference into a Yjs transaction and returns the
+   * exact update for WebSocket broadcast.
+   */
+  function applyTextSnapshot(noteId, nextText) {
+    const entry = load(noteId)
+    if (!entry) return null
+    const currentText = entry.doc.getText('content').toString()
+    const next = String(nextText ?? '')
+    if (next === currentText) {
+      return {
+        update: null,
+        text: currentText,
+        title: entry.doc.getMap('meta').get('title') || ''
+      }
+    }
+    const change = textChange(currentText, next)
+    const stateVector = Y.encodeStateVector(entry.doc)
+    entry.doc.transact(() => {
+      const text = entry.doc.getText('content')
+      if (change.deleteCount > 0) text.delete(change.index, change.deleteCount)
+      if (change.insertText) text.insert(change.index, change.insertText)
+    }, 'mcp')
+    const update = Y.encodeStateAsUpdate(entry.doc, stateVector)
+    entry.dirty = true
+    schedulePersist(noteId)
+    return {
+      update,
+      text: entry.doc.getText('content').toString(),
+      title: entry.doc.getMap('meta').get('title') || ''
+    }
+  }
+
+  function applyTitle(noteId, nextTitle) {
+    const entry = load(noteId)
+    if (!entry) return null
+    const meta = entry.doc.getMap('meta')
+    const current = meta.get('title') || ''
+    const next = String(nextTitle ?? '')
+    if (current === next) return { update: null, text: entry.doc.getText('content').toString(), title: current }
+    const stateVector = Y.encodeStateVector(entry.doc)
+    entry.doc.transact(() => meta.set('title', next), 'mcp')
+    const update = Y.encodeStateAsUpdate(entry.doc, stateVector)
+    entry.dirty = true
+    schedulePersist(noteId)
+    return { update, text: entry.doc.getText('content').toString(), title: next }
+  }
+
   function applyUpdate(noteId, update) {
     const entry = load(noteId)
     if (!entry || !update) return false
@@ -207,6 +270,8 @@ export function createTextCollabService({ db, persistDelay = DEFAULT_PERSIST_MS 
     load,
     snapshot,
     applyUpdate,
+    applyTextSnapshot,
+    applyTitle,
     persistNow,
     schedulePersist,
     setBaseRevision,

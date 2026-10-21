@@ -1261,9 +1261,10 @@ export default {
                 const isOpen = isModalOpen.value && editingId.value === data.noteId
                 const sharedSave = isOpen && textCollabManager &&
                   textCollabNoteId === data.noteId &&
-                  data.source === 'ui' && !data.conflict
+                  (data.source === 'ui' || data.source === 'mcp-open') && !data.conflict
                 if (sharedSave) {
-                  showRevisionNotice(`Another client saved revision ${data.revisionNo}.`)
+                  const who = data.source === 'mcp-open' ? 'The MCP editor' : 'Another client'
+                  showRevisionNotice(`${who} saved revision ${data.revisionNo}.`)
                 } else if (isOpen) {
                   showRevisionNotice(
                     `This note was updated elsewhere (revision ${data.revisionNo}). Your open copy will be kept as a branch if you save.`
