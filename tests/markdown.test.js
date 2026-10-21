@@ -45,6 +45,15 @@ test('renderMarkdown renders common markdown with GFM', () => {
   assert.match(html, /<pre><code/)
 })
 
+test('mermaid fences become a hydratable placeholder', () => {
+  const html = renderMarkdown('```mermaid\ngraph TD\nA-->B\n```')
+  assert.match(html, /class="mermaid-block"/)
+  assert.match(html, /class="mermaid-source"/)
+  assert.match(html, /graph TD/)
+  assert.match(html, /A--&gt;B/)
+  assert.equal(html.includes('<svg'), false)
+})
+
 test('renderMarkdown preserves the width extension and data-md', () => {
   const html = renderMarkdown('![cat](/api/images/abc.png){width=320}')
   assert.match(html, /src="\/api\/images\/abc.png"/)

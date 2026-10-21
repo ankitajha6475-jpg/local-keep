@@ -89,6 +89,17 @@ marked.use({
       // Existing notes may contain literal <type> placeholders. Preserve them
       // as text rather than interpreting/stripping them as raw HTML.
       return escapeHtml(token.text || token.raw || '')
+    },
+    code(token) {
+      const lang = String(token.lang || '').trim().split(/\s+/)[0]
+      if (lang === 'mermaid') {
+        // Keep the source as escaped text inside the block. DOMPurify refuses
+        // attributes containing `-->` (HTML comment end), which is common in
+        // Mermaid syntax, so an attribute is not suitable here.
+        return `<div class="mermaid-block"><pre class="mermaid-source">${escapeHtml(token.text || '')}</pre></div>`
+      }
+      const className = lang ? ` class="language-${escapeAttr(lang)}"` : ''
+      return `<pre><code${className}>${escapeHtml(token.text || '')}</code></pre>`
     }
   }
 })
@@ -96,7 +107,7 @@ marked.use({
 const PURIFY_OPTIONS = {
   FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
   FORBID_ATTR: ['style', 'onerror', 'onload', 'onclick', 'onmouseover'],
-  ADD_ATTR: ['data-md', 'data-width', 'data-note-id', 'data-note-label', 'target', 'rel'],
+  ADD_ATTR: ['data-md', 'data-width', 'data-note-id', 'data-note-label', 'data-mermaid', 'target', 'rel'],
   ADD_DATA_URI_TAGS: ['img'],
   ALLOW_UNKNOWN_PROTOCOLS: false
 }

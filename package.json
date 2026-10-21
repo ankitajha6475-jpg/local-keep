@@ -23,6 +23,7 @@
     "dompurify": "^3.4.17",
     "express": "^4.22.2",
     "marked": "^18.1.1",
+    "mermaid": "^11.15.0",
     "multer": "^2.2.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

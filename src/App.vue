@@ -378,12 +378,12 @@
                   :title="'Filter by #' + tag"
                 >#{{ tag }}</button>
               </div>
-              <div
+              <MarkdownView
                 v-if="note.type !== 'canvas'"
                 class="note-preview"
-                v-html="renderContent(note.content)"
+                :html="renderContent(note.content)"
                 @click="onContentClick($event, note)"
-              ></div>
+              />
               <small class="note-date">{{ formatDate(note.updatedAt) }}</small>
             </div>
           </div>
@@ -942,7 +942,9 @@ import WhiteboardEditor from './components/WhiteboardEditor.vue'
 import TagSidebar from './components/TagSidebar.vue'
 import GraphView from './components/GraphView.vue'
 import BacklinksPanel from './components/BacklinksPanel.vue'
+import MarkdownView from './components/MarkdownView.vue'
 import { getDisplayTitle } from './utils/notes.js'
+import { renderMermaidBlocks } from './utils/mermaid.js'
 import {
   renderMarkdown,
   htmlToMarkdown,
@@ -982,7 +984,7 @@ const modKey = isMac ? 'Cmd' : 'Ctrl'
 
 export default {
   name: 'App',
-  components: { WhiteboardEditor, TagSidebar, GraphView, BacklinksPanel },
+  components: { WhiteboardEditor, TagSidebar, GraphView, BacklinksPanel, MarkdownView },
   setup() {
     // Auth state
     const showSetup = ref(false)
@@ -1751,6 +1753,7 @@ export default {
       if (!el) return
       el.innerHTML = renderMarkdown(newNoteContent.value, { resolveLink: resolveWikiLink })
       attachImageErrorHandlers(el)
+      renderMermaidBlocks(el).catch((error) => console.error('Mermaid render failed:', error))
     }
 
     function setEditorMode(mode) {
@@ -1827,6 +1830,7 @@ export default {
       sel.addRange(range)
       markEditorDirty()
       newNoteContent.value = serializeEditorToMarkdown()
+      renderMermaidBlocks(el).catch((error) => console.error('Mermaid render failed:', error))
     }
 
     const openNewNoteModal = () => {
@@ -4418,6 +4422,47 @@ main {
   margin-bottom: 0.5rem;
   color: #202124;
   flex-shrink: 0;
+}
+
+.mermaid-block {
+  margin: 0.6rem 0;
+  padding: 0.5rem;
+  border: 1px solid #e8eaed;
+  border-radius: 8px;
+  background: #fafafa;
+  overflow-x: auto;
+}
+
+.mermaid-block .mermaid-source {
+  display: none;
+}
+
+.mermaid-block .mermaid-diagram {
+  display: flex;
+  justify-content: center;
+}
+
+.mermaid-block svg {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+.mermaid-block[data-mermaid-rendered="error"] .mermaid-source {
+  display: block;
+  margin: 0.4rem 0 0;
+  padding: 0.45rem;
+  background: #fff;
+  border-radius: 5px;
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+}
+
+.mermaid-error {
+  color: #b91c1c;
+  font-size: 0.75rem;
+  margin-bottom: 0.35rem;
+  white-space: pre-wrap;
 }
 
 .note-preview {

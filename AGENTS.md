@@ -264,6 +264,12 @@ Single user, multiple terminals. Same note, same WS endpoint (`/ws?token=`).
 - Raw HTML in note markdown is escaped, not interpreted. This preserves technical notes
   containing literal `<type>` snippets. The renderer has an optional `resolveLink`
   callback for `[[...]]`; unresolved links get `.note-link--broken`.
+- Fenced ` ```mermaid ` blocks render as SVG in Visual and gallery views. `renderMarkdown`
+  emits a `.mermaid-block` skeleton with a hidden `.mermaid-source`; `src/utils/mermaid.js`
+  lazy-loads Mermaid and hydrates after the HTML is in the DOM. Source mode keeps the
+  fence visible. `serializeEditorToMarkdown` writes the block back to a mermaid fence.
+  Mermaid errors show an inline error and keep the source visible; they must not break
+  the note.
 - Gallery cards and preview share the same renderer; do not reintroduce the old regex
   `renderContent`/`markdownToHTML` helpers.
 
@@ -393,14 +399,14 @@ All notable changes must be recorded in `CHANGELOG.md`. When making changes:
 5. **Excalidraw `registerAction`**: `perform` must return `false` or `{ elements, appState, captureUpdate }`. Invalid return crashes the action system.
 6. **Safari stylus**: No `keydown` for side button, only `keyup` with `keyCode: 0`.
 7. **`_collab_ts`**: Server-assigned timestamps on elements. Must be stripped before comparing/storing (`stripTs()`).
-8. **Syntax limitations**: Avoid unsupported diagram syntax (for example Mermaid block syntax that the renderer rejects). Prefer broadly supported flowchart syntax when editing docs or architecture notes.
+8. **Diagram syntax**: Mermaid fenced blocks are supported in notes; use standard Mermaid v11 syntax. On a parse/render error the block shows an inline error and keeps the source, so switch to Source to fix it.
 9. **Port distinction**: In development, port 5173 is API-only (no frontend). Port 5174 is the Vite dev server. Access app at `:5174`, not `:5173`. Backend serves static files only when `NODE_ENV=production`.
 10. **Stable note identity**: `editingId`/`notes.id` must never become a `revisionId`. Revisions are versions; the document id is permanent. Client saves send `baseRevisionId`; a stale save branches by default and must show the notice.
 11. **Archive vs purge**: `DELETE /api/notes/:id` archives; use `?purge=1` only for permanent deletion. Archived notes are excluded from lists/search but retain revisions and image refs.
 12. **Canvas revision snapshots**: `note_revisions.canvas_data` must be lean (no `dataURL`); the head keeps `dataURL` so Excalidraw renders. Hydrate historical scenes from `data/images` when restoring.
 13. **Migration backup**: never delete `data/backups/pre-migration-*.db` (the first live run used `pre-note-threads-*.db`) until the migrated database has been accepted. Migration runs in one transaction and fails closed.
 14. **Tests use temp data**: `npm test` starts ephemeral servers with `LOCAL_KEEP_DATA_DIR` and `PORT`; never point tests at the real `data/` directory.
-15. **Markdown renderer**: always use `renderMarkdown()` from `src/utils/markdown.js`; never render note HTML directly. Raw HTML is escaped; wiki links use a placeholder replaced after `marked` parsing.
+15. **Markdown renderer**: always use `renderMarkdown()` from `src/utils/markdown.js`; never render note HTML directly. Raw HTML is escaped; wiki links use a placeholder replaced after `marked` parsing. Mermaid placeholders MUST be hydrated with `renderMermaidBlocks()` after insertion (gallery `MarkdownView` does this; the editor calls it after `renderEditorContent`).
 16. **Editor modes**: `newNoteContent` is the single canonical string. Visual is contentEditable; Source is a raw markdown textarea. Serialise before leaving Visual only when dirty; never keep a separate copy per mode. Save normalises/upload `data:image` refs before `POST`/`PUT`.
 17. **Wiki links**: `note:<id>` is the stable form; title links can become ambiguous. Parsing is code-aware; do not regex the raw content without `transformOutsideCode`.
 18. **Tag filtering**: the UI keeps all active+archived notes in memory and filters tags client-side so link resolution stays complete. The server also supports `tag`/`exactTag` for API/MCP; descendants are included by default.

@@ -61,3 +61,11 @@ test('serializes a simple table', () => {
   assert.match(md, /\| --- \| --- \|/)
   assert.match(md, /\| 1 \| 2 \|/)
 })
+
+test('serializes rendered mermaid blocks back to a mermaid fence', () => {
+  const md = serialize('<div class="mermaid-block"><pre class="mermaid-source">graph TD\nA--&gt;B</pre><div class="mermaid-diagram"><svg></svg></div></div>')
+  assert.match(md, /```mermaid/)
+  assert.match(md, /graph TD/)
+  assert.match(md, /A-->B/)
+  assert.equal(md.includes('<svg'), false)
+})

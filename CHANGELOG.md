@@ -7,6 +7,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Mermaid fenced diagrams render lazily in Visual/gallery; Source shows the diagram source and serialization round-trips the fence
 - Image insertion in whiteboard: Excalidraw image tool enabled, paste support, real-time sync via WebSocket
 - Image insertion in text notes: upload button, clipboard paste, markdown image rendering
 - Content-addressed image storage (`data/images/`) with SHA-256 hashed filenames for deduplication

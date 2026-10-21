@@ -25,6 +25,10 @@ export function serializeEditorToMarkdown(root) {
     if (tag === 'BR') return '\n'
     if (tag === 'HR') return '\n---\n'
     if (tag === 'P') return serializeChildren(node) + '\n\n'
+    if (tag === 'DIV' && node.classList && node.classList.contains('mermaid-block')) {
+      const source = node.querySelector('.mermaid-source')?.textContent || ''
+      return `\n\`\`\`mermaid\n${source.replace(/\n$/, '')}\n\`\`\`\n\n`
+    }
     if (tag === 'DIV') return serializeChildren(node) + '\n'
     if (/^H[1-6]$/.test(tag)) {
       const level = Number(tag.slice(1))

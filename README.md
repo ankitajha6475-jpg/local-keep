@@ -10,7 +10,7 @@ A Google Keep-like notes app with text notes and Excalidraw whiteboard canvas. V
 - Revision history drawer with view, restore, and promote; archive by default with restore
 - Wiki-link relationships (`[[Note]]`), backlinks, and an interactive relationship graph
 - Hierarchical tags (`#area/project/topic`) with a tag tree, counts, and filtering
-- Two editor modes: **Visual** (rendered markdown, images displayed) and **Source** (raw markdown, images shown as URLs); rich-paste sanitisation and markdown image refs
+- Two editor modes: **Visual** (rendered markdown, images and Mermaid diagrams displayed) and **Source** (raw markdown, images shown as URLs); rich-paste sanitisation and markdown image refs
 - Whiteboard page rendering: ordered page images (left→right, top→bottom) with a Pages drawer
 - Embedded MCP server: search with timestamps, revision threads, links/tags/graph, and whiteboard recall as multiple images
 - MCP token management via the 🔌 header dialog or `npm run mcp:token`
@@ -23,6 +23,7 @@ A Google Keep-like notes app with text notes and Excalidraw whiteboard canvas. V
 - Optional semantic search with OpenAI-compatible embeddings (SiliconFlow/OpenAI), admin-configured and per-model vector tables via `sqlite-vec`
 - Hybrid keyword + vector search in MCP, REST (`/api/search/semantic`, `/api/search/hybrid`), and the UI search toggle
 - Optional admin-configured rerank (`BAAI/bge-reranker-v2-m3` etc.); vector search works without it
+- Mermaid fenced diagrams rendered lazily in Visual/gallery; Source shows the diagram code
 - Auto-save with debounced persistence
 - Whiteboard checkpoints (leave/manual/interval) create canvas revisions
 
