@@ -12,10 +12,10 @@
 
 ## 3. Manual verification
 
-- [ ] 3.1 Open Create modal — image button is in the toolbar above the body; Save + Cancel are the only buttons in the action row
-- [ ] 3.2 Open Edit modal — same layout
-- [ ] 3.3 Click the toolbar image button — file picker opens
-- [ ] 3.4 Upload an image — progress `⏳` shows, then markdown inserted into body as before
-- [ ] 3.5 While uploading, clicking the button again is disabled
-- [ ] 3.6 Resize to mobile-width — toolbar and action row remain usable
-- [ ] 3.7 Update `CHANGELOG.md` under `[Unreleased]` → `Changed`: "Moved text-note image insertion button out of the Save/Cancel action row into an editor toolbar above the body"
+- [x] 3.1 Open Create modal — image button is in the toolbar above the body; Save + Cancel are the only buttons in the action row
+- [x] 3.2 Open Edit modal — same layout
+- [x] 3.3 Click the toolbar image button — file picker opens
+- [x] 3.4 Upload an image — progress `⏳` shows, then markdown inserted into body as before
+- [x] 3.5 While uploading, clicking the button again is disabled
+- [x] 3.6 Resize to mobile-width — toolbar and action row remain usable
+- [x] 3.7 Update `CHANGELOG.md` under `[Unreleased]` → `Changed`: "Moved text-note image insertion button out of the Save/Cancel action row into an editor toolbar above the body"

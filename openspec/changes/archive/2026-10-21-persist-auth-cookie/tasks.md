@@ -29,9 +29,9 @@
 
 ## 5. Manual verification
 
-- [ ] 5.1 Verify login persists across browser restart (close/reopen browser within 30 days)
-- [ ] 5.2 Verify logout clears the cookie and session (subsequent `GET /api/notes` returns 401)
-- [ ] 5.3 Verify WebSocket still connects with `?token=<sessionId>` after reload
-- [ ] 5.4 Verify tampered cookie (`local_keep_session=garbage.psi`) is rejected with 401
-- [ ] 5.5 Verify container restart keeps sessions usable (re-auth not required)
-- [ ] 5.6 Update `CHANGELOG.md` under `[Unreleased]` → `Changed`: "Login now persists across browser restart via signed cookie (30 days)"
+- [x] 5.1 Verify login persists across browser restart (close/reopen browser within 30 days)
+- [x] 5.2 Verify logout clears the cookie and session (subsequent `GET /api/notes` returns 401)
+- [x] 5.3 Verify WebSocket still connects with `?token=<sessionId>` after reload
+- [x] 5.4 Verify tampered cookie (`local_keep_session=garbage.psi`) is rejected with 401
+- [x] 5.5 Verify container restart keeps sessions usable (re-auth not required)
+- [x] 5.6 Update `CHANGELOG.md` under `[Unreleased]` → `Changed`: "Login now persists across browser restart via signed cookie (30 days)"

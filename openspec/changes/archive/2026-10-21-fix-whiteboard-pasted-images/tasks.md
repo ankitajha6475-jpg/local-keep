@@ -33,11 +33,11 @@
 
 ## 8. Manual verification
 
-- [ ] 8.1 Paste an image in whiteboard — it renders immediately on the originator and stays rendered after ~1s (sender-echo no longer breaks it)
-- [ ] 8.2 With two clients open on the same whiteboard, paste in client A — image renders in client B
-- [ ] 8.3 Reload the page after pasting — image still renders on reload
-- [ ] 8.4 Insert an image via the Excalidraw toolbar — same correct rendering on originator, peer, reload
-- [ ] 8.5 Confirm `data/images/<hash>.<ext>` exists on disk (dedup still works) and `image_refs` is updated
-- [ ] 8.6 For a note saved during the original bug window, opening it reconstitutes and re-persists the dataURL; image renders after one load
-- [ ] 8.7 Thumbnail preview in the gallery now shows the pasted image
-- [ ] 8.8 Update `CHANGELOG.md` under `[Unreleased]` → `Fixed`: "Pasted/inserted whiteboard images now render correctly on all clients and on reload (server no longer strips Excalidraw's required dataURL; sender excluded from its own delta echo)"
+- [x] 8.1 Paste an image in whiteboard — it renders immediately on the originator and stays rendered after ~1s (sender-echo no longer breaks it)
+- [x] 8.2 With two clients open on the same whiteboard, paste in client A — image renders in client B
+- [x] 8.3 Reload the page after pasting — image still renders on reload
+- [x] 8.4 Insert an image via the Excalidraw toolbar — same correct rendering on originator, peer, reload
+- [x] 8.5 Confirm `data/images/<hash>.<ext>` exists on disk (dedup still works) and `image_refs` is updated
+- [x] 8.6 For a note saved during the original bug window, opening it reconstitutes and re-persists the dataURL; image renders after one load
+- [x] 8.7 Thumbnail preview in the gallery now shows the pasted image
+- [x] 8.8 Update `CHANGELOG.md` under `[Unreleased]` → `Fixed`: "Pasted/inserted whiteboard images now render correctly on all clients and on reload (server no longer strips Excalidraw's required dataURL; sender excluded from its own delta echo)"

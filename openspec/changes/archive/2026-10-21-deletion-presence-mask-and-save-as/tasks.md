@@ -41,12 +41,12 @@
 
 ## 8. Manual verification
 
-- [ ] 8.1 Two clients open, both viewing whiteboard X. Delete X from client A → client B's canvas is masked with the Save-as/Discard prompt within ~1s
-- [ ] 8.2 Same for a text note: A edits X, B deletes X → A's modal is masked
-- [ ] 8.3 On client B Save-as → a new note Y is created with B's local edits; the gallery shows Y; the old X is gone
-- [ ] 8.4 On client B Discard → editor closes, no save, gallery reflects X gone
-- [ ] 8.5 Client C browsing the gallery (not editing X) when X is deleted → no mask, no prompt; gallery refreshes (`notes` bulk broadcast)
-- [ ] 8.6 While masked, B sends another delta (e.g., types more) → server replies `note-gone`; B does NOT re-prompt (idempotency)
-- [ ] 8.7 Batch-delete: select and delete 3 notes; any client editing one of them is masked for that note only
-- [ ] 8.8 Verify no `window.alert` / `window.confirm` is invoked anywhere in the deletion flow
-- [ ] 8.9 Update `CHANGELOG.md` under `[Unreleased]` → `Added`: "Real-time cross-client deletion detection: when a note you're editing is deleted elsewhere, your editor is masked and offers Save-as / Discard (no popup)"
+- [x] 8.1 Two clients open, both viewing whiteboard X. Delete X from client A → client B's canvas is masked with the Save-as/Discard prompt within ~1s
+- [x] 8.2 Same for a text note: A edits X, B deletes X → A's modal is masked
+- [x] 8.3 On client B Save-as → a new note Y is created with B's local edits; the gallery shows Y; the old X is gone
+- [x] 8.4 On client B Discard → editor closes, no save, gallery reflects X gone
+- [x] 8.5 Client C browsing the gallery (not editing X) when X is deleted → no mask, no prompt; gallery refreshes (`notes` bulk broadcast)
+- [x] 8.6 While masked, B sends another delta (e.g., types more) → server replies `note-gone`; B does NOT re-prompt (idempotency)
+- [x] 8.7 Batch-delete: select and delete 3 notes; any client editing one of them is masked for that note only
+- [x] 8.8 Verify no `window.alert` / `window.confirm` is invoked anywhere in the deletion flow
+- [x] 8.9 Update `CHANGELOG.md` under `[Unreleased]` → `Added`: "Real-time cross-client deletion detection: when a note you're editing is deleted elsewhere, your editor is masked and offers Save-as / Discard (no popup)"

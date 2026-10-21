@@ -19,9 +19,9 @@
 
 ## 4. Manual verification
 
-- [ ] 4.1 Create a title-only note — it saves and shows the title
-- [ ] 4.2 Create a content-only note — gallery shows first ~50 chars cleaned as the title
-- [ ] 4.3 Create a note with content starting with `![cat](...)` — gallery shows `cat …` style cleaned title
-- [ ] 4.4 Create a note with > 50 chars cleaned content — gallery shows ellipsis; ≤50 chars shows no ellipsis
-- [ ] 4.5 Open a title-less note for editing — title field stays empty (derivation is display-only)
-- [ ] 4.6 Update `CHANGELOG.md` under `[Unreleased]` → `Changed`: "Notes can be saved with title only; display title now derives from content when title is empty"
+- [x] 4.1 Create a title-only note — it saves and shows the title
+- [x] 4.2 Create a content-only note — gallery shows first ~50 chars cleaned as the title
+- [x] 4.3 Create a note with content starting with `![cat](...)` — gallery shows `cat …` style cleaned title
+- [x] 4.4 Create a note with > 50 chars cleaned content — gallery shows ellipsis; ≤50 chars shows no ellipsis
+- [x] 4.5 Open a title-less note for editing — title field stays empty (derivation is display-only)
+- [x] 4.6 Update `CHANGELOG.md` under `[Unreleased]` → `Changed`: "Notes can be saved with title only; display title now derives from content when title is empty"
