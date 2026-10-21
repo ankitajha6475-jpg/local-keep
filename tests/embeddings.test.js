@@ -126,3 +126,44 @@ function serviceSecret(ctx) {
   // Reading it here keeps the encryption assertion independent of the service.
   return fs.readFileSync(`${ctx.dir}/server_secret`, 'utf8').trim()
 }
+
+test('rerank failure falls back to vector order', async () => {
+  const ctx = createFreshContext()
+  try {
+    const service = createEmbeddingService({
+      db: ctx.db,
+      dataDir: ctx.dir,
+      tags: ctx.tags,
+      clientFactory: fakeClientFactory,
+      rerankClientFactory: () => ({
+        async probe() { return { latencyMs: 1, results: 2 } },
+        async rerank() { throw new Error('rerank provider down') }
+      }),
+      autoIndex: false
+    })
+    const note = ctx.notes.createNote({ title: 'Alpha', content: 'alpha fallback note' })
+    const other = ctx.notes.createNote({ title: 'Beta', content: 'beta other note' })
+    await service.saveConfig({
+      baseUrl: 'https://example.test/v1',
+      apiKey: 'secret-key',
+      model: 'fake-rerank-fallback',
+      dimensions: 3,
+      chunkSize: 400,
+      chunkOverlap: 40,
+      enabled: true,
+      rerankEnabled: true,
+      rerankBaseUrl: 'https://example.test/v1',
+      rerankApiKey: 'rerank-key',
+      rerankModel: 'fake-reranker'
+    })
+    await service.indexNoteNow(note.id, { force: true })
+    await service.indexNoteNow(other.id, { force: true })
+    const matches = await service.searchMatches({ query: 'alpha', limit: 5 })
+    assert.equal(matches.rerank.enabled, true)
+    assert.equal(matches.rerank.applied, false)
+    assert.match(matches.rerank.error, /rerank provider down/)
+    assert.equal(matches.results.some(match => match.noteId === note.id), true)
+  } finally {
+    ctx.cleanup()
+  }
+})

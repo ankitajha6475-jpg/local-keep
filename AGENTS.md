@@ -55,6 +55,7 @@ src/
     schema.js                     # Pre-revision base tables + FTS
     auth/passwords.js             # scrypt hashing, legacy upgrade, temp passwords
     embeddings/client.js           # OpenAI-compatible /embeddings client
+    embeddings/rerankClient.js     # optional OpenAI-compatible /rerank client
     embeddings/chunk.js            # paragraph-aware chunker
     embeddings/secrets.js          # AES-GCM API-key encryption
     migrations/001-note-threads.js
@@ -232,6 +233,10 @@ Single user, multiple terminals. Same note, same WS endpoint (`/ws?token=`).
 - Search: `GET /api/search/semantic|hybrid`; MCP `search_notes` with
   `mode: keyword|semantic|hybrid` plus `semantic_search`. Hybrid uses RRF.
   UI ✨ search toggle falls back to keyword with a notice on failure.
+- Optional rerank (`BAAI/bge-reranker-v2-m3` etc.). If unset, semantic search is
+  vector-only. If configured, it reorders the semantic candidate list; failure
+  falls back to vector order with `rerank.error`. It can reuse the embedding
+  base URL/key or use a separate encrypted key. Rerank does not partition tables.
 - Admin UI: avatar → **✨ Semantic search**; APIs under `/api/admin/embeddings`.
   `Rebuild index` force-queues all notes. Old model tables are preserved.
 
@@ -329,7 +334,9 @@ users (id, username, display_name, password_hash, role, must_change_password,
        created_at, updated_at, last_login_at, disabled_at)
 sessions (sessionId, user_id, hash, expiresAt)
 embedding_settings (id=1, enabled, base_url, api_key_encrypted, model, dimensions,
-                    chunk_size, chunk_overlap, last_tested_at, last_error, updated_at)
+                    chunk_size, chunk_overlap, last_tested_at, last_error, updated_at,
+                    rerank_enabled, rerank_base_url, rerank_api_key_encrypted,
+                    rerank_model, rerank_top_n)
 embedding_models (model, table_key, dimensions, base_url, chunk_count, status,
                   last_indexed_at, last_error, created_at, updated_at)
 embedding_index_state (model, note_id, revision_id, content_hash, chunk_count, status, error, updated_at)
@@ -400,3 +407,4 @@ All notable changes must be recorded in `CHANGELOG.md`. When making changes:
 26. **Embedding model partitions**: never store vectors of two models in one table. Use the hashed `emb_<hash>` table key; a changed model name gets a new table, and switching back reuses the old one. Dimensions are fixed per model name.
 27. **Embedding key**: only decrypt in the server; never return `api_key_encrypted` or log the key. The admin API returns `hasApiKey`/mask only.
 28. **Embedding index freshness**: note head edits/checkpoints and archive/restore must enqueue the note. A failed embedding call must not delete the previous vector rows; index atomically after all vectors succeed.
+29. **Rerank is optional**: never make semantic search depend on a reranker. If it is unset or fails, return vector order and expose `rerank.error`; do not fail the request.

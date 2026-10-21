@@ -612,6 +612,43 @@
                 <input v-model.number="embeddingForm.chunkOverlap" type="number" min="0" max="1000">
               </label>
             </div>
+            <div class="embedding-rerank">
+              <div class="embedding-rerank-head">
+                <h3>Rerank <span>optional</span></h3>
+                <label class="embedding-check">
+                  <input v-model="embeddingForm.rerankEnabled" type="checkbox">
+                  Enable rerank
+                </label>
+              </div>
+              <p class="embedding-hint">
+                When off, semantic search uses vector similarity only. When on, the top
+                candidates are reordered by the reranker. If rerank fails, search falls
+                back to vector order.
+              </p>
+              <label>
+                Rerank model
+                <input v-model="embeddingForm.rerankModel" type="text" placeholder="BAAI/bge-reranker-v2-m3">
+              </label>
+              <div class="embedding-grid">
+                <label>
+                  Rerank base URL (optional)
+                  <input v-model="embeddingForm.rerankBaseUrl" type="url" placeholder="Uses embedding base URL">
+                </label>
+                <label>
+                  Rerank API key (optional)
+                  <input
+                    v-model="embeddingForm.rerankApiKey"
+                    type="password"
+                    autocomplete="new-password"
+                    :placeholder="embeddingSettings?.rerankHasApiKey ? 'Saved rerank key — leave blank' : (embeddingSettings?.hasApiKey ? 'Uses embedding key' : 'API key (or use embedding key)')"
+                  >
+                </label>
+              </div>
+              <button type="button" class="rerank-test-btn" :disabled="rerankTesting" @click="testRerankSettings">
+                {{ rerankTesting ? 'Testing rerank…' : 'Test rerank' }}
+              </button>
+            </div>
+
             <p v-if="embeddingError" class="error">{{ embeddingError }}</p>
             <p v-if="embeddingNotice" class="account-success">{{ embeddingNotice }}</p>
             <div class="embedding-actions">
@@ -630,6 +667,7 @@
             <span>Status: <strong>{{ embeddingSettings.enabled ? 'enabled' : 'disabled' }}</strong></span>
             <span v-if="embeddingSettings.model">Model: <strong>{{ embeddingSettings.model }}</strong></span>
             <span v-if="embeddingSettings.dimensions">{{ embeddingSettings.dimensions }} dims</span>
+            <span v-if="embeddingSettings.rerankEnabled">Rerank: <strong>{{ embeddingSettings.rerankModel }}</strong></span>
             <span v-if="embeddingQueue?.queued">Queue: {{ embeddingQueue.queued }}</span>
             <span v-if="embeddingQueue?.running">Indexing: {{ embeddingQueue.currentNote || '…' }}</span>
             <span v-if="embeddingSettings.lastError" class="embedding-error">{{ embeddingSettings.lastError }}</span>
@@ -989,6 +1027,7 @@ export default {
     const embeddingLoading = ref(false)
     const embeddingSaving = ref(false)
     const embeddingTesting = ref(false)
+    const rerankTesting = ref(false)
     const embeddingError = ref('')
     const embeddingNotice = ref('')
     const embeddingForm = ref({
@@ -997,7 +1036,11 @@ export default {
       apiKey: '',
       model: 'BAAI/bge-m3',
       chunkSize: 1200,
-      chunkOverlap: 180
+      chunkOverlap: 180,
+      rerankEnabled: false,
+      rerankBaseUrl: '',
+      rerankApiKey: '',
+      rerankModel: 'BAAI/bge-reranker-v2-m3'
     })
     const semanticSearchEnabled = ref(false)
 
@@ -2372,7 +2415,11 @@ export default {
           apiKey: '',
           model: settings.model || 'BAAI/bge-m3',
           chunkSize: settings.chunkSize || 1200,
-          chunkOverlap: settings.chunkOverlap ?? 180
+          chunkOverlap: settings.chunkOverlap ?? 180,
+          rerankEnabled: !!settings.rerankEnabled,
+          rerankBaseUrl: settings.rerankBaseUrl || '',
+          rerankApiKey: '',
+          rerankModel: settings.rerankModel || 'BAAI/bge-reranker-v2-m3'
         }
       }
     }
@@ -2441,7 +2488,11 @@ export default {
             apiKey: embeddingForm.value.apiKey || undefined,
             model: embeddingForm.value.model,
             chunkSize: embeddingForm.value.chunkSize,
-            chunkOverlap: embeddingForm.value.chunkOverlap
+            chunkOverlap: embeddingForm.value.chunkOverlap,
+            rerankEnabled: embeddingForm.value.rerankEnabled,
+            rerankBaseUrl: embeddingForm.value.rerankBaseUrl || undefined,
+            rerankApiKey: embeddingForm.value.rerankApiKey || undefined,
+            rerankModel: embeddingForm.value.rerankModel || undefined
           })
         })
         applyEmbeddingStatus(data, { updateForm: true })
@@ -2452,6 +2503,27 @@ export default {
         embeddingError.value = e.message
       } finally {
         embeddingSaving.value = false
+      }
+    }
+
+    async function testRerankSettings() {
+      try {
+        rerankTesting.value = true
+        embeddingError.value = ''
+        embeddingNotice.value = ''
+        const data = await api('/api/admin/embeddings/test-rerank', {
+          method: 'POST',
+          body: JSON.stringify({
+            baseUrl: embeddingForm.value.rerankBaseUrl || embeddingForm.value.baseUrl,
+            apiKey: embeddingForm.value.rerankApiKey || undefined,
+            model: embeddingForm.value.rerankModel
+          })
+        })
+        embeddingNotice.value = `Rerank OK · ${data.latencyMs} ms · ${data.results} results`
+      } catch (e) {
+        embeddingError.value = e.message
+      } finally {
+        rerankTesting.value = false
       }
     }
 
@@ -2947,6 +3019,7 @@ export default {
       embeddingLoading,
       embeddingSaving,
       embeddingTesting,
+      rerankTesting,
       embeddingError,
       embeddingNotice,
       embeddingForm,
@@ -2954,6 +3027,7 @@ export default {
       openEmbeddingSettings,
       refreshEmbeddingStatus,
       testEmbeddingSettings,
+      testRerankSettings,
       saveEmbeddingSettings,
       reindexEmbeddings,
       toggleSemanticSearch,
@@ -5443,6 +5517,47 @@ main {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 0.6rem;
+}
+
+.embedding-rerank {
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  padding: 0.65rem;
+  background: #f8fafc;
+}
+
+.embedding-rerank-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.embedding-rerank-head h3 {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #0f172a;
+}
+
+.embedding-rerank-head h3 span {
+  color: #94a3b8;
+  font-weight: 400;
+  font-size: 0.68rem;
+}
+
+.embedding-rerank .embedding-hint {
+  margin: 0.35rem 0 0.55rem;
+}
+
+.rerank-test-btn {
+  margin-top: 0.5rem;
+  border: 1px solid #dbe2ea;
+  background: #fff;
+  color: #475569;
+  border-radius: 6px;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.72rem;
+  cursor: pointer;
 }
 
 .embedding-actions {

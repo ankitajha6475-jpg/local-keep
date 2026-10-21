@@ -34,7 +34,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Hybrid keyword + vector search using reciprocal rank fusion (RRF)
 - ✨ semantic search toggle in the UI search bar with keyword fallback
 - Admin Semantic Search settings dialog: test connection, enable, model/dimensions, chunk settings, status, model list, and rebuild index
+- Optional rerank: separate model, optional base URL/API key (falls back to embedding config), test button, and graceful vector-order fallback on rerank failure
+- `rerank_score` / `rerank` metadata in semantic and hybrid results
 - Migration 5 for `embedding_settings`, `embedding_models`, and `embedding_index_state`
+- Migration 6 for optional rerank settings (`rerank_enabled`, base URL, encrypted key, model)
 - `GET /api/auth/status` and `POST /api/auth/logout` endpoints; `sessions` table for session persistence across server restarts
 - Cross-client deletion detection: targeted `{type:'note-deleted'}` broadcast on note deletion; clients editing/viewing the deleted note get an inline overlay (no alert/confirm) offering Save-as / Discard; server rejects further deltas for deleted notes with `{type:'note-gone'}`
 - Architecture plan for note relationships/tags, immutable revisions/threads, markdown-first editing, whiteboard page rendering, and an embedded MCP server (`docs/plan-docs/2026-10-21-relationships-tags-history-mcp-plan.md`)

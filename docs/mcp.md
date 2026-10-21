@@ -131,9 +131,11 @@ search**). It uses any OpenAI-compatible `/embeddings` API; see
 
 `mode` is `keyword` (default), `semantic`, or `hybrid`. The dedicated
 `semantic_search` tool is equivalent to `mode: "semantic"`. Results include
-`semantic_score` and `chunk_index` when applicable. If embeddings are not
-configured, semantic tools return a clear error; hybrid falls back to keyword
-with a notice.
+`semantic_score` and `chunk_index` when applicable. If an admin enables the optional
+reranker, results also include `rerank_score` and a `rerank` metadata block. Rerank
+failure degrades to vector order instead of failing the search. If embeddings are not
+configured, semantic tools return a clear error; hybrid falls back to keyword with a
+notice.
 
 ### Threads and edit notices
 

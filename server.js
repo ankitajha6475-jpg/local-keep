@@ -42,6 +42,7 @@ import { migration002RelationshipsAndTags } from './src/server/migrations/002-re
 import { migration003ApiTokens } from './src/server/migrations/003-api-tokens.js'
 import { migration004MultiuserAuth } from './src/server/migrations/004-multiuser-auth.js'
 import { migration005Embeddings } from './src/server/migrations/005-embeddings.js'
+import { migration006OptionalRerank } from './src/server/migrations/006-optional-rerank.js'
 
 import debugLib from 'debug'
 const log = debugLib('local-keep:server')
@@ -315,7 +316,7 @@ try {
 try {
   const migration = runMigrations({
     db,
-    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings],
+    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank],
     backupDir: BACKUPS_DIR,
     context: { imageStore }
   })
@@ -731,6 +732,14 @@ app.put('/api/admin/embeddings', checkAuth, requireAdmin, async (req, res) => {
 app.post('/api/admin/embeddings/test', checkAuth, requireAdmin, async (req, res) => {
   try {
     res.json(await embeddings.testConfig(req.body || {}))
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message, code: error.code })
+  }
+})
+
+app.post('/api/admin/embeddings/test-rerank', checkAuth, requireAdmin, async (req, res) => {
+  try {
+    res.json(await embeddings.testRerankConfig(req.body || {}))
   } catch (error) {
     res.status(error.status || 500).json({ error: error.message, code: error.code })
   }

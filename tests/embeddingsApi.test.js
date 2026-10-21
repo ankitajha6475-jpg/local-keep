@@ -10,6 +10,16 @@ function startMockEmbeddingServer() {
     req.on('end', () => {
       try {
         const payload = JSON.parse(body)
+        res.setHeader('Content-Type', 'application/json')
+        if (req.url.endsWith('/rerank')) {
+          const documents = Array.isArray(payload.documents) ? payload.documents : []
+          const results = documents.map((document, index) => ({
+            index,
+            relevance_score: String(document).toLowerCase().includes('beta') ? 0.99 : 0.1
+          })).sort((a, b) => b.relevance_score - a.relevance_score)
+          res.end(JSON.stringify({ id: 'mock-rerank', results }))
+          return
+        }
         const inputs = Array.isArray(payload.input) ? payload.input : [payload.input]
         const data = inputs.map((input, index) => {
           const text = String(input).toLowerCase()
@@ -20,7 +30,6 @@ function startMockEmbeddingServer() {
               : [0, 0, 1]
           return { object: 'embedding', index, embedding }
         })
-        res.setHeader('Content-Type', 'application/json')
         res.end(JSON.stringify({ object: 'list', model: payload.model, data }))
       } catch (error) {
         res.statusCode = 400
@@ -81,6 +90,24 @@ test('admin embedding config drives semantic search and model-partitioned tables
     assert.equal(semantic.mode, 'semantic')
     assert.equal(semantic.results[0].note_id, alpha.id)
     assert.equal(semantic.results[0].semantic_score > 0.9, true)
+
+    // Optional rerank: the mock prefers beta, so the rerank score reorders it.
+    await request('PUT', '/api/admin/embeddings', {
+      enabled: true,
+      baseUrl: mock.baseUrl,
+      apiKey: '',
+      model: 'mock-embed-v1',
+      chunkSize: 400,
+      chunkOverlap: 40,
+      rerankEnabled: true,
+      rerankBaseUrl: mock.baseUrl,
+      rerankApiKey: 'mock-rerank-key',
+      rerankModel: 'mock-rerank'
+    })
+    const reranked = await request('GET', '/api/search/semantic?q=alpha&limit=5')
+    assert.equal(reranked.rerank.applied, true)
+    assert.equal(reranked.results[0].note_id, beta.id)
+    assert.equal(typeof reranked.results[0].rerank_score, 'number')
 
     // A new model name creates a second, independent table.
     await request('PUT', '/api/admin/embeddings', {

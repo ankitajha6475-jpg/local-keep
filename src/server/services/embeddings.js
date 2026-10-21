@@ -4,6 +4,7 @@ import { getLoadablePath } from 'sqlite-vec'
 import { loadOrCreateSecret } from '../secret.js'
 import { encryptSecret, decryptSecret } from '../embeddings/secrets.js'
 import { createEmbeddingClient } from '../embeddings/client.js'
+import { createRerankClient } from '../embeddings/rerankClient.js'
 import { chunkText } from '../embeddings/chunk.js'
 import { extractCanvasText } from '../fts.js'
 import { markdownToText } from '../../shared/notesText.js'
@@ -60,6 +61,7 @@ export function createEmbeddingService({
   dataDir,
   tags,
   clientFactory = createEmbeddingClient,
+  rerankClientFactory = createRerankClient,
   fetchImpl,
   autoIndex = true
 }) {
@@ -108,7 +110,12 @@ export function createEmbeddingService({
       chunkOverlap: row.chunk_overlap,
       lastTestedAt: row.last_tested_at,
       lastError: row.last_error,
-      updatedAt: row.updated_at
+      updatedAt: row.updated_at,
+      rerankEnabled: !!row.rerank_enabled,
+      rerankBaseUrl: row.rerank_base_url || '',
+      rerankHasApiKey: !!row.rerank_api_key_encrypted,
+      rerankUsesEmbeddingKey: !row.rerank_api_key_encrypted && !!row.api_key_encrypted,
+      rerankModel: row.rerank_model || ''
     }
   }
 
@@ -203,6 +210,29 @@ export function createEmbeddingService({
     })
   }
 
+  function rerankApiKeyFromRow(row) {
+    return decryptSecret(SECRET, row.rerank_api_key_encrypted) || apiKeyFromRow(row)
+  }
+
+  function makeRerankClient({ baseUrl, apiKey, model }) {
+    if (!apiKey) throw fail(400, 'Rerank API key is required', 'missing_rerank_key')
+    if (!model) throw fail(400, 'Rerank model is required', 'missing_rerank_model')
+    return rerankClientFactory({ baseUrl, apiKey, model, fetchImpl })
+  }
+
+  async function testRerankConfig({ baseUrl, apiKey, model } = {}) {
+    const row = settingsRow()
+    const resolved = {
+      baseUrl: normalizeBaseUrl(baseUrl || row.rerank_base_url || row.base_url),
+      apiKey: apiKey || rerankApiKeyFromRow(row),
+      model: String(model || row.rerank_model || '').trim()
+    }
+    if (!resolved.model) throw fail(400, 'Rerank model is required', 'missing_rerank_model')
+    const client = makeRerankClient(resolved)
+    const probe = await client.probe()
+    return { ok: true, ...probe, model: resolved.model, baseUrl: resolved.baseUrl }
+  }
+
   async function testConfig({ baseUrl, apiKey, model, dimensions } = {}) {
     const row = settingsRow()
     const resolved = {
@@ -226,7 +256,12 @@ export function createEmbeddingService({
     chunkSize,
     chunkOverlap,
     enabled = false,
-    forceReindex = false
+    forceReindex = false,
+    rerankEnabled,
+    rerankBaseUrl,
+    rerankApiKey,
+    clearRerankApiKey = false,
+    rerankModel
   } = {}) {
     const old = settingsRow()
     const nextBaseUrl = normalizeBaseUrl(baseUrl || old.base_url)
@@ -244,11 +279,24 @@ export function createEmbeddingService({
     else if (apiKey) encrypted = encryptSecret(SECRET, String(apiKey))
     const rawKey = clearApiKey ? null : (apiKey || apiKeyFromRow(old))
 
+    const nextRerankEnabled = rerankEnabled !== undefined ? !!rerankEnabled : !!old.rerank_enabled
+    const nextRerankBaseUrl = rerankBaseUrl !== undefined
+      ? (String(rerankBaseUrl || '').trim() ? normalizeBaseUrl(rerankBaseUrl) : null)
+      : old.rerank_base_url
+    const nextRerankModel = rerankModel !== undefined
+      ? String(rerankModel || '').trim()
+      : (old.rerank_model || '')
+    let rerankEncrypted = old.rerank_api_key_encrypted
+    if (clearRerankApiKey) rerankEncrypted = null
+    else if (rerankApiKey) rerankEncrypted = encryptSecret(SECRET, String(rerankApiKey))
+    const rerankRawKey = rerankApiKey || decryptSecret(SECRET, rerankEncrypted) || rawKey
+
     let nextDimensions = dimensions != null && dimensions !== ''
       ? Number(dimensions)
       : old.model === nextModel ? old.dimensions : null
 
     let probe = null
+    let rerankProbe = null
     let modelChanged = old.model !== nextModel
     if (enabled) {
       if (!rawKey) throw fail(400, 'Embedding API key is required to enable semantic search', 'missing_api_key')
@@ -266,6 +314,16 @@ export function createEmbeddingService({
       ensureModel({ model: nextModel, dimensions: nextDimensions, baseUrl: nextBaseUrl })
     }
 
+    if (nextRerankEnabled) {
+      if (!nextRerankModel) throw fail(400, 'Rerank model is required when rerank is enabled', 'missing_rerank_model')
+      if (!rerankRawKey) throw fail(400, 'Rerank API key is required when rerank is enabled', 'missing_rerank_key')
+      rerankProbe = await testRerankConfig({
+        baseUrl: nextRerankBaseUrl || nextBaseUrl,
+        apiKey: rerankRawKey,
+        model: nextRerankModel
+      })
+    }
+
     const now = new Date().toISOString()
     const reindex = enabled && (
       forceReindex || modelChanged || !old.enabled ||
@@ -274,7 +332,8 @@ export function createEmbeddingService({
     db.prepare(`
       UPDATE embedding_settings
       SET enabled = ?, base_url = ?, api_key_encrypted = ?, model = ?, dimensions = ?,
-          chunk_size = ?, chunk_overlap = ?, last_tested_at = ?, last_error = NULL, updated_at = ?
+          chunk_size = ?, chunk_overlap = ?, last_tested_at = ?, last_error = NULL, updated_at = ?,
+          rerank_enabled = ?, rerank_base_url = ?, rerank_api_key_encrypted = ?, rerank_model = ?
       WHERE id = 1
     `).run(
       enabled ? 1 : 0,
@@ -284,8 +343,12 @@ export function createEmbeddingService({
       nextDimensions || null,
       nextChunkSize,
       nextOverlap,
-      probe ? now : old.last_tested_at,
-      now
+      (probe || rerankProbe) ? now : old.last_tested_at,
+      now,
+      nextRerankEnabled ? 1 : 0,
+      nextRerankBaseUrl || null,
+      rerankEncrypted,
+      nextRerankModel || null
     )
 
     if (!enabled) {
@@ -293,7 +356,7 @@ export function createEmbeddingService({
     } else {
       enqueueAll({ force: reindex })
     }
-    return { settings: settingsDto(), probe }
+    return { settings: settingsDto(), probe, rerankProbe }
   }
 
   function upsertState(model, noteId, patch) {
@@ -626,7 +689,7 @@ export function createEmbeddingService({
       }
     }
 
-    const grouped = new Map()
+    const candidates = []
     for (const row of vectorRows) {
       const chunk = chunkMap.get(row.chunk_id)
       if (!chunk) continue
@@ -635,22 +698,79 @@ export function createEmbeddingService({
       if (!includeArchived && note.archived_at) continue
       if (type && note.type !== type) continue
       if (tagIds && !tagIds.has(note.id)) continue
-      const existing = grouped.get(note.id)
-      if (!existing || row.distance < existing.distance) {
-        grouped.set(note.id, {
-          noteId: note.id,
-          distance: row.distance,
-          similarity: Math.max(0, 1 - row.distance),
-          chunkIndex: chunk.chunk_index,
-          snippet: chunk.content.slice(0, 400)
-        })
+      candidates.push({
+        noteId: note.id,
+        title: note.title || note.display_title || '',
+        distance: row.distance,
+        similarity: Math.max(0, 1 - row.distance),
+        chunkIndex: chunk.chunk_index,
+        snippet: chunk.content.slice(0, 400),
+        document: chunk.content
+      })
+    }
+
+    let rerankInfo = { enabled: false, applied: false, error: null, model: null }
+    if (settings.rerank_enabled && settings.rerank_model && candidates.length > 1) {
+      const rerankKey = rerankApiKeyFromRow(settings)
+      if (!rerankKey) {
+        rerankInfo = {
+          enabled: true,
+          applied: false,
+          error: 'Rerank API key is missing',
+          model: settings.rerank_model
+        }
+      } else {
+        try {
+          const rerankClient = makeRerankClient({
+            baseUrl: settings.rerank_base_url || settings.base_url,
+            apiKey: rerankKey,
+            model: settings.rerank_model
+          })
+          const scores = await rerankClient.rerank(
+            text,
+            candidates.map(candidate => `${candidate.title}\n\n${candidate.document}`),
+            { topN: candidates.length }
+          )
+          const scoreMap = new Map(scores.map(item => [item.index, item.score]))
+          for (let i = 0; i < candidates.length; i++) {
+            candidates[i].rerankScore = scoreMap.has(i) ? scoreMap.get(i) : null
+          }
+          rerankInfo = { enabled: true, applied: true, error: null, model: settings.rerank_model }
+        } catch (error) {
+          rerankInfo = {
+            enabled: true,
+            applied: false,
+            error: error.message,
+            model: settings.rerank_model
+          }
+        }
       }
     }
 
-    const results = [...grouped.values()]
-      .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, Math.max(1, Math.min(100, Number(limit) || 20)))
-    return { model: settings.model, results }
+    const grouped = new Map()
+    for (const candidate of candidates) {
+      const existing = grouped.get(candidate.noteId)
+      if (!existing) {
+        grouped.set(candidate.noteId, candidate)
+        continue
+      }
+      const candidateRerank = candidate.rerankScore
+      const existingRerank = existing.rerankScore
+      if (candidateRerank != null && (existingRerank == null || candidateRerank > existingRerank)) {
+        grouped.set(candidate.noteId, candidate)
+      } else if (candidateRerank == null && existingRerank == null && candidate.distance < existing.distance) {
+        grouped.set(candidate.noteId, candidate)
+      }
+    }
+
+    const ordered = [...grouped.values()].sort((a, b) => {
+      if (a.rerankScore != null && b.rerankScore != null) return b.rerankScore - a.rerankScore
+      if (a.rerankScore != null) return -1
+      if (b.rerankScore != null) return 1
+      return b.similarity - a.similarity
+    })
+    const results = ordered.slice(0, Math.max(1, Math.min(100, Number(limit) || 20)))
+    return { model: settings.model, rerank: rerankInfo, results }
   }
 
   function status() {

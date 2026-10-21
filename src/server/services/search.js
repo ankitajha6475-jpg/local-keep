@@ -14,7 +14,7 @@ function normalizeTagList(tags) {
 }
 
 export function createSearchService({ db, notes, revisions, tags, renders, embeddings }) {
-  function enrich(noteId, { snippet = '', score = 0, semanticScore = null, chunkIndex = null } = {}) {
+  function enrich(noteId, { snippet = '', score = 0, semanticScore = null, rerankScore = null, chunkIndex = null } = {}) {
     try {
       const note = notes.getNote(noteId)
       const headRevision = revisions.getRevision(note.revisionId)
@@ -33,6 +33,7 @@ export function createSearchService({ db, notes, revisions, tags, renders, embed
         revision_no: note.revisionNo || 1,
         score,
         ...(semanticScore != null ? { semantic_score: semanticScore } : {}),
+        ...(rerankScore != null ? { rerank_score: rerankScore, score: rerankScore } : {}),
         ...(chunkIndex != null ? { chunk_index: chunkIndex } : {}),
         link_count: note.linkCount || 0,
         backlink_count: note.backlinkCount || 0,
@@ -155,14 +156,16 @@ export function createSearchService({ db, notes, revisions, tags, renders, embed
     const page = data.results.slice(start, start + Math.max(1, Math.min(100, Number(limit) || 20)))
     const results = page.map(match => enrich(match.noteId, {
       snippet: match.snippet,
-      score: match.similarity,
+      score: match.rerankScore ?? match.similarity,
       semanticScore: match.similarity,
+      rerankScore: match.rerankScore,
       chunkIndex: match.chunkIndex
     })).filter(Boolean)
     return {
       query: String(query || '').trim(),
       mode: 'semantic',
       model: data.model,
+      rerank: data.rerank || null,
       results,
       total: data.results.length,
       limit,
@@ -196,8 +199,9 @@ export function createSearchService({ db, notes, revisions, tags, renders, embed
       byId.set(result.note_id, {
         ...(existing || result),
         semantic_score: result.semantic_score,
+        ...(result.rerank_score != null ? { rerank_score: result.rerank_score } : {}),
         snippet: result.snippet || existing?.snippet || '',
-        score: existing?.score ?? result.score
+        score: result.rerank_score ?? existing?.score ?? result.score
       })
       scores.set(result.note_id, (scores.get(result.note_id) || 0) + 1 / (60 + index + 1))
     })
@@ -210,6 +214,7 @@ export function createSearchService({ db, notes, revisions, tags, renders, embed
       query: String(args.query || '').trim(),
       mode: 'hybrid',
       model: semantic.model,
+      rerank: semantic.rerank || null,
       results: page,
       total: merged.length,
       limit,

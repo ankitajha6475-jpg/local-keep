@@ -23,6 +23,7 @@ import { migration002RelationshipsAndTags } from './src/server/migrations/002-re
 import { migration003ApiTokens } from './src/server/migrations/003-api-tokens.js'
 import { migration004MultiuserAuth } from './src/server/migrations/004-multiuser-auth.js'
 import { migration005Embeddings } from './src/server/migrations/005-embeddings.js'
+import { migration006OptionalRerank } from './src/server/migrations/006-optional-rerank.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const dataDir = process.env.LOCAL_KEEP_DATA_DIR
@@ -34,7 +35,7 @@ createBaseSchema(db)
 const imageStore = createImageStore({ imagesDir: path.join(dataDir, 'images') })
 runMigrations({
   db,
-  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings],
+  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank],
   backupDir: path.join(dataDir, 'backups'),
   context: { imageStore }
 })

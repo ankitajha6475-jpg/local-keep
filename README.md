@@ -22,6 +22,7 @@ A Google Keep-like notes app with text notes and Excalidraw whiteboard canvas. V
 - HTTPS using the shared local mkcert certificate
 - Optional semantic search with OpenAI-compatible embeddings (SiliconFlow/OpenAI), admin-configured and per-model vector tables via `sqlite-vec`
 - Hybrid keyword + vector search in MCP, REST (`/api/search/semantic`, `/api/search/hybrid`), and the UI search toggle
+- Optional admin-configured rerank (`BAAI/bge-reranker-v2-m3` etc.); vector search works without it
 - Auto-save with debounced persistence
 - Whiteboard checkpoints (leave/manual/interval) create canvas revisions
 

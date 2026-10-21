@@ -39,6 +39,33 @@ Example configuration:
 - `Rebuild index` re-queues every note with `force`.
 - Changing the chunk size/overlap forces a re-index.
 
+## Rerank (optional)
+
+Rerank is configured in the same admin dialog. It is **optional**:
+
+- If disabled (default), semantic search uses vector similarity only.
+- If enabled, the vector candidates are reordered by a `/rerank` call before the
+  results are returned.
+- If the reranker fails, search gracefully falls back to vector order and includes
+  a `rerank.error` in the response; it does not fail the search.
+
+Typical values:
+
+```json
+{
+  "rerankEnabled": true,
+  "rerankBaseUrl": "",
+  "rerankApiKey": "",
+  "rerankModel": "BAAI/bge-reranker-v2-m3"
+}
+```
+
+- Empty rerank base URL/key means “use the embedding base URL/key”.
+- A separate rerank key is encrypted at rest the same way as the embedding key.
+- `Test rerank` verifies the endpoint without saving.
+- Hybrid search keeps the RRF combination; rerank improves the semantic half.
+- The rerank model does not partition vector tables; only the embedding model does.
+
 ## Model-name partitioning
 
 The model name is the partition key:
@@ -112,7 +139,8 @@ lists; it is usually the best default for mixed exact terms and concepts.
 
 ## Limits / future work
 
-- No reranker yet (SiliconFlow also exposes rerank).
+- Rerank is optional and currently applies to the semantic candidate list; it does
+  not replace the keyword index or RRF.
 - No per-note permissions; semantic results respect the current head/archived/tag
   filters.
 - Model tables are preserved indefinitely; explicit model deletion/pruning is a

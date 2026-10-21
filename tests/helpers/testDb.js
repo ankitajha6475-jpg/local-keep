@@ -16,6 +16,7 @@ import { migration002RelationshipsAndTags } from '../../src/server/migrations/00
 import { migration003ApiTokens } from '../../src/server/migrations/003-api-tokens.js'
 import { migration004MultiuserAuth } from '../../src/server/migrations/004-multiuser-auth.js'
 import { migration005Embeddings } from '../../src/server/migrations/005-embeddings.js'
+import { migration006OptionalRerank } from '../../src/server/migrations/006-optional-rerank.js'
 
 function makeDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'local-keep-test-'))
@@ -72,7 +73,7 @@ export function createFreshContext() {
   const ctx = openContext()
   const result = runMigrations({
     db: ctx.db,
-    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings],
+    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank],
     backupDir: ctx.backupDir,
     context: { imageStore: ctx.imageStore }
   })
@@ -89,7 +90,7 @@ export function createLegacyContext() {
   const migrate = () => {
     const result = runMigrations({
       db: ctx.db,
-      migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings],
+      migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank],
       backupDir: ctx.backupDir,
       context: { imageStore: ctx.imageStore }
     })
