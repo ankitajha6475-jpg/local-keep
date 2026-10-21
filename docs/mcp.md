@@ -9,7 +9,8 @@ the existing WebSocket events.
 
 ## Endpoint
 
-- Streamable HTTP: `http://localhost:5173/mcp` (also proxied at `http://localhost:5174/mcp`)
+- Streamable HTTP: `http://localhost:5173/mcp` (direct backend)
+- Browser MCP hosts can use the HTTPS Vite origin: `https://192.168.3.222:5174/mcp`
 - Transport: MCP SDK v2, Streamable HTTP (`POST`, `Accept: application/json, text/event-stream`)
 - Auth: `Authorization: Bearer lk_mcp_...` or a valid browser session cookie
 - No anonymous access
@@ -47,7 +48,9 @@ HTTP (recommended):
 }
 ```
 
-If the app is served through Vite, `http://localhost:5174/mcp` also works.
+If the app is served through Vite, `https://192.168.3.222:5174/mcp` also works (same
+certificate as the UI; see `docs/https.md`). Direct `http://localhost:5173/mcp` stays
+HTTP for local MCP clients such as OpenCode.
 
 stdio-only hosts:
 

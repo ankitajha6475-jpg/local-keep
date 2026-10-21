@@ -11,7 +11,7 @@ function fail(message) {
 
 function actorFor(authInfo) {
   const id = authInfo?.clientId || ''
-  if (id.startsWith('mcp:')) return id
+  if (id.startsWith('mcp:') || id.startsWith('user:')) return id
   return id === 'ui' ? 'ui' : 'mcp:anonymous'
 }
 

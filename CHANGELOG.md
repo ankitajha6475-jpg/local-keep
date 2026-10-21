@@ -19,6 +19,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - Startup migration to populate `image_refs` for existing notes
 - Broken image handling: non-existent images hidden in gallery, converted to markdown text in editor
 - Persistent signed-cookie login (~30 days): sessions stored server-side and validated via cookie for REST and via session token for WebSocket
+- Multiuser human accounts with `admin`/`member` roles, display names, and shared-workspace notes
+- scrypt password hashing with one-time upgrade of the legacy single-password hash on first login
+- Admin People UI: add accounts, change roles, disable/enable, and reset passwords with one-time temporary passwords
+- `npm run auth:reset -- <username>` CLI recovery path; resets revoke live sessions immediately
+- Session cookies are now bound to users; the database is authoritative for validation/revocation
+- HTTPS Vite dev server using the shared mkcert certificate (`https://192.168.3.222:5174`), with REST/WS/MCP proxied same-origin
+- Polished setup/login screens, account menu, account settings, forced password change, and user-management dialogs
 - `GET /api/auth/status` and `POST /api/auth/logout` endpoints; `sessions` table for session persistence across server restarts
 - Cross-client deletion detection: targeted `{type:'note-deleted'}` broadcast on note deletion; clients editing/viewing the deleted note get an inline overlay (no alert/confirm) offering Save-as / Discard; server rejects further deltas for deleted notes with `{type:'note-gone'}`
 - Architecture plan for note relationships/tags, immutable revisions/threads, markdown-first editing, whiteboard page rendering, and an embedded MCP server (`docs/plan-docs/2026-10-21-relationships-tags-history-mcp-plan.md`)
@@ -63,6 +70,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - MCP end-to-end/token tests (`@modelcontextprotocol/client`) and `docs/mcp.md`
 
 ### Changed
+- Existing single-password installs migrate to `admin` / `Administrator` using the old password; the hash is upgraded on first login
+- Human revision actors are now `user:<username>` instead of the generic `ui`
+- Vite serves HTTPS; direct `:5173` remains an internal HTTP API for MCP/stdio clients
+- Login uses username + password; sessions remain valid for 30 days
 - Whiteboard delta sync now includes `files` alongside `elements` for image synchronization
 - `canvasData` stores file hash references instead of inline base64 after persist
 - `DELETE /api/notes/:id` now archives instead of hard-deleting; use `?purge=1` for permanent deletion

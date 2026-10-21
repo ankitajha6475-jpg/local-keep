@@ -8,10 +8,15 @@ services:
     environment:
       - DEBUG=local-keep:*
       - NODE_ENV=development
+      - VITE_HTTPS_CERT=/app/certs/server.pem
+      - VITE_HTTPS_KEY=/app/certs/server-key.pem
+      - COOKIE_SECURE=1
+      - LOCAL_KEEP_PUBLIC_URL=${LOCAL_KEEP_PUBLIC_URL:-https://192.168.3.222:5174}
     ports:
       - "5173:5173"
       - "5174:5174"
     volumes:
       - .:/app
       - /app/node_modules
+      - ${LOCAL_KEEP_CERTS_DIR:-/home/tom/projects/certs}:/app/certs:ro
     restart: unless-stopped

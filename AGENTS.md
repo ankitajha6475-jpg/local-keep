@@ -9,12 +9,12 @@ Google Keep-like notes app with text notes and Excalidraw whiteboard canvas. Vue
 ```
 Docker "local-keep" (node:22-alpine)
 ├── node --watch server.js    → Express + WS on :5173 (API only in dev)
-└── npx vite --host 0.0.0.0   → Vite dev server on :5174 (frontend)
+└── npx vite --host 0.0.0.0   → HTTPS Vite dev server on :5174 (frontend)
 ```
 
 - Host files live-mounted (`.:/app`), `node_modules` is a named volume
-- Vite proxies `/api/*` → `:5173` and `/ws` → `ws://:5173`
-- Browser connects to **:5174** (Vite), which proxies to backend
+- Vite serves HTTPS (shared mkcert cert) and proxies `/api/*`, `/mcp`, and `/ws` → `:5173`
+- Browser connects to **https://192.168.3.222:5174** (cert SAN is the LAN IP, not localhost)
 - Port 5173 serves only API/WebSocket in development (`NODE_ENV !== 'production'`)
 - Port 5173 serves static frontend only in production mode (`NODE_ENV=production`)
 - `node --watch` auto-restarts on `server.js` changes (no manual restart needed)
@@ -29,6 +29,7 @@ docker logs -f local-keep         # watch server logs
 npm run build                     # build frontend (run inside container or on host)
 npm test                          # node:test suite (server, migration, API, WS, MCP)
 npm run mcp:token -- create "Claude Desktop"  # manage MCP tokens
+npm run auth:reset -- <username>  # reset a human password (prints temp password)
 npm run mcp                       # optional stdio MCP adapter
 ```
 
@@ -38,6 +39,7 @@ npm run mcp                       # optional stdio MCP adapter
 server.js                         # Composition root: Express routes, WS, image routes, /mcp
 mcp-stdio.js                      # Optional stdio MCP adapter (direct DB)
 scripts/mcp-token.js              # MCP token CLI
+scripts/auth-reset.js             # human password reset CLI
 src/
   main.js                         # Vue app entry
   App.vue                         # Main app: note list/editor, history, archived view, WS
@@ -51,10 +53,15 @@ src/
   server/
     db.js                         # openDatabase, migrations runner, backup
     schema.js                     # Pre-revision base tables + FTS
+    auth/passwords.js             # scrypt hashing, legacy upgrade, temp passwords
     migrations/001-note-threads.js
+    migrations/002-relationships-and-tags.js
+    migrations/003-api-tokens.js
+    migrations/004-multiuser-auth.js
     services/notes.js             # head CRUD, archive/restore/purge, history facade
     services/revisions.js         # immutable revisions, branch, restore/promote, checkpoints
     services/imageRefs.js         # head/revision/tile image refs + cleanup
+    services/users.js             # accounts, roles, password reset, last-admin guard
     services/tags.js              # tag sync, tree, descendant filter
     services/links.js             # wiki-link sync/resolve, backlinks, graph
     services/renders.js           # whiteboard page manifests + staleness
@@ -165,6 +172,35 @@ Single user, multiple terminals. Same note, same WS endpoint (`/ws?token=`).
   `VACUUM INTO` backup under `data/backups/`. Existing notes become revision 1 with
   unchanged ids/content.
 
+### Authentication and Users
+
+- Human accounts are shared-workspace users with roles `admin`/`member`.
+  `users.password_hash` uses scrypt (N=16384); the legacy 32-bit hash is accepted
+  once for migration and upgraded on first login.
+- First run creates the first admin. Existing single-password installs get
+  `admin` / `Administrator` with the old password in migration 4.
+- Sessions are opaque IDs stored in `sessions` (user_id, hash, expiresAt)
+  and signed into the `local_keep_session` cookie. The DB is authoritative for
+  validation/revocation, so CLI resets invalidate live sessions immediately.
+- `checkAuth`/`mcpAuth` share `authenticate()`: bearer MCP token → `mcp:<name>`,
+  session → `user:<username>`. Admin routes use `requireAdmin`.
+- Admin UI: add person, role changes, disable/enable, reset password (returns
+  a one-time temporary password). CLI: `npm run auth:reset -- <username>`.
+- Last active admin cannot be demoted or disabled. Password reset sets
+  `must_change_password=1`; the UI forces a new password after login.
+- The workspace is shared; there is no per-note ACL in this version.
+
+### HTTPS
+
+- Vite uses `/app/certs/server.pem` + `server-key.pem` (mounted from
+  `${LOCAL_KEEP_CERTS_DIR:-/home/tom/projects/certs}`). The mkcert SAN is
+  `192.168.3.222`; use `https://192.168.3.222:5174`, not localhost.
+- Express remains HTTP on 5173 inside the container; Vite proxies REST/WS/MCP.
+  `COOKIE_SECURE=1` is set because the browser origin is HTTPS.
+- If cert files are absent, Vite falls back to HTTP. Restart after rotating certs.
+- Direct MCP clients can keep using `http://localhost:5173/mcp`; browser MCP
+  clients can use `https://192.168.3.222:5174/mcp`.
+
 ### Markdown Editor and Rendering
 
 - Canonical text content is markdown. The client renderer lives in
@@ -255,6 +291,9 @@ note_tags (note_id, tag, source, created_at)              -- head-level tag path
 note_links (id, source_note_id, source_revision_id, target_note_id, target_label,
             label, target_kind, raw, status, source, created_at)
 notes_fts (note_id, title, content, canvas_text)          -- FTS5; content is plain text
+users (id, username, display_name, password_hash, role, must_change_password,
+       created_at, updated_at, last_login_at, disabled_at)
+sessions (sessionId, user_id, hash, expiresAt)
 image_refs (image_hash, note_id)                          -- head/tile refs
 revision_image_refs (image_hash, revision_id)             -- protects old-version images
 whiteboard_renders (id, note_id, revision_id, scene_hash, ...)
@@ -315,3 +354,5 @@ All notable changes must be recorded in `CHANGELOG.md`. When making changes:
 20. **Page planner order**: never replace the band/x ordering with a simple sort by y; that breaks left-to-right reading within a row. Keep bound arrows/text/frames in one unit.
 21. **MCP auth**: `/mcp` must never be anonymous. Tokens are hashed; token names are actors `mcp:<name>`. Do not log raw tokens. Token-management routes are browser-session only.
 22. **MCP whiteboard recall**: render pages in the browser; if no browser is connected, return the stale manifest with a notice. Do not add headless Chromium to the server for this.
+23. **HTTPS cert SAN**: the shared mkcert cert is for `192.168.3.222`, not `localhost`; use the IP or issue a cert for your hostname. `COOKIE_SECURE=1` means login cookies only work over HTTPS.
+24. **Multiuser migration**: existing installs become `admin` / `Administrator` with the old password. Do not delete `users`/`sessions`; use `npm run auth:reset -- <username>` for recovery and keep at least one active admin.

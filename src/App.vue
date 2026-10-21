@@ -2,45 +2,117 @@
   <div id="app">
     <!-- Setup / Onboarding Screen -->
     <div v-if="showSetup" class="auth-screen">
-      <div class="auth-box">
-        <h1>📝 Local Keep</h1>
-        <p class="subtitle">Set a password to protect your notes</p>
-        <form @submit.prevent="setupPassword">
-          <input
-            v-model="setupForm.password"
-            type="password"
-            placeholder="Enter password"
-            required
-            autofocus
-          >
-          <input
-            v-model="setupForm.confirm"
-            type="password"
-            placeholder="Confirm password"
-            required
-          >
+      <div class="auth-card">
+        <div class="auth-brand"><span class="auth-logo">📝</span> Local Keep</div>
+        <h1>Create your workspace</h1>
+        <p class="subtitle">Set up the first admin account. You can add more people later.</p>
+        <form class="auth-form" @submit.prevent="setupPassword">
+          <label>
+            Username
+            <input
+              v-model="setupForm.username"
+              type="text"
+              placeholder="admin"
+              autocomplete="username"
+              required
+              autofocus
+            >
+          </label>
+          <label>
+            Display name
+            <input
+              v-model="setupForm.displayName"
+              type="text"
+              placeholder="Your name"
+              autocomplete="name"
+            >
+          </label>
+          <label>
+            Password
+            <span class="password-field">
+              <input
+                v-model="setupForm.password"
+                :type="showSetupPassword ? 'text' : 'password'"
+                placeholder="At least 8 characters"
+                autocomplete="new-password"
+                required
+              >
+              <button type="button" class="password-toggle" @click="showSetupPassword = !showSetupPassword">
+                {{ showSetupPassword ? 'Hide' : 'Show' }}
+              </button>
+            </span>
+          </label>
+          <label>
+            Confirm password
+            <input
+              v-model="setupForm.confirm"
+              :type="showSetupPassword ? 'text' : 'password'"
+              placeholder="Repeat password"
+              autocomplete="new-password"
+              required
+            >
+          </label>
           <p v-if="setupError" class="error">{{ setupError }}</p>
-          <button type="submit">Get Started</button>
+          <button type="submit" class="auth-primary">Create workspace</button>
         </form>
+        <p class="auth-footnote">Local-first notes · your data stays on this machine</p>
       </div>
     </div>
 
     <!-- Login Screen -->
     <div v-else-if="!isAuthenticated" class="auth-screen">
-      <div class="auth-box">
-        <h1>📝 Local Keep</h1>
-        <p class="subtitle">Enter your password to continue</p>
-        <form @submit.prevent="login">
-          <input
-            v-model="loginForm.password"
-            type="password"
-            placeholder="Password"
-            required
-            autofocus
-          >
+      <div class="auth-card">
+        <div class="auth-brand"><span class="auth-logo">📝</span> Local Keep</div>
+        <h1>Welcome back</h1>
+        <p class="subtitle">Sign in to your private workspace.</p>
+        <form class="auth-form" @submit.prevent="login">
+          <label>
+            Username
+            <input
+              v-model="loginForm.username"
+              type="text"
+              placeholder="Username"
+              autocomplete="username"
+              required
+              autofocus
+            >
+          </label>
+          <label>
+            Password
+            <span class="password-field">
+              <input
+                v-model="loginForm.password"
+                :type="showLoginPassword ? 'text' : 'password'"
+                placeholder="Password"
+                autocomplete="current-password"
+                required
+              >
+              <button type="button" class="password-toggle" @click="showLoginPassword = !showLoginPassword">
+                {{ showLoginPassword ? 'Hide' : 'Show' }}
+              </button>
+            </span>
+          </label>
+          <div class="auth-row">
+            <span class="auth-hint">Signed in for 30 days</span>
+            <button type="button" class="link-btn" @click="showForgot = !showForgot">
+              Forgot password?
+            </button>
+          </div>
           <p v-if="loginError" class="error">{{ loginError }}</p>
-          <button type="submit">Unlock</button>
+          <button type="submit" class="auth-primary">Sign in</button>
         </form>
+
+        <div v-if="showForgot" class="forgot-panel">
+          <strong>Password reset</strong>
+          <p>
+            This is a self-hosted workspace without email delivery. Ask an admin to reset
+            your password, or run this on the server:
+          </p>
+          <code>npm run auth:reset -- &lt;username&gt;</code>
+          <p class="auth-hint">The command prints a temporary password once.</p>
+        </div>
+
+        <p class="auth-footnote">Accounts are managed by a workspace admin.</p>
       </div>
     </div>
 
@@ -87,7 +159,22 @@
             <button @click="openMcpSettings" class="search-toggle-btn" title="MCP access tokens">🔌</button>
             <button @click="openSearch" class="search-toggle-btn" title="Search (Ctrl+I)">🔍</button>
             <button @click="cleanupImages" class="cleanup-btn" :disabled="cleanupRunning" title="Clean unused images">🧹</button>
-            <button @click="logout" class="logout-btn">Lock</button>
+            <div class="account-menu-wrap" @click.stop>
+              <button type="button" class="account-btn" @click="accountMenuOpen = !accountMenuOpen">
+                <span class="account-avatar">{{ userInitials }}</span>
+                <span class="account-name">{{ currentUser?.displayName || currentUser?.username }}</span>
+                <span class="account-chevron">▾</span>
+              </button>
+              <div v-if="accountMenuOpen" class="account-menu">
+                <div class="account-menu-head">
+                  <strong>{{ currentUser?.displayName || currentUser?.username }}</strong>
+                  <small>@{{ currentUser?.username }} · {{ currentUser?.role }}</small>
+                </div>
+                <button type="button" @click="openAccountSettings()">⚙️ Account settings</button>
+                <button v-if="isAdmin" type="button" @click="openUsers">👥 Manage users</button>
+                <button type="button" class="account-menu-danger" @click="logout">🔒 Lock workspace</button>
+              </div>
+            </div>
           </div>
         </template>
         <template v-else>
@@ -363,6 +450,112 @@
   }
 }</pre>
           </details>
+        </div>
+      </div>
+
+      <!-- Account settings -->
+      <div v-if="accountSettingsOpen" class="modal-overlay" @mousedown.self="closeAccountSettings">
+        <div class="modal-content account-modal">
+          <div class="modal-header">
+            <h2>{{ accountSettingsForced ? 'Set a new password' : 'Account settings' }}</h2>
+            <button v-if="!accountSettingsForced" type="button" class="close-modal-btn" @click="closeAccountSettings">×</button>
+          </div>
+          <div class="account-summary">
+            <span class="account-avatar large">{{ userInitials }}</span>
+            <div>
+              <strong>{{ currentUser?.displayName || currentUser?.username }}</strong>
+              <small>@{{ currentUser?.username }} · {{ currentUser?.role }}</small>
+            </div>
+          </div>
+          <p v-if="accountSettingsForced" class="account-notice">
+            Your password was reset by an admin. Choose a new password to continue.
+          </p>
+          <form class="account-form" @submit.prevent="changePassword">
+            <label>
+              Current password
+              <input v-model="changePasswordForm.currentPassword" type="password" autocomplete="current-password" required>
+            </label>
+            <label>
+              New password
+              <input v-model="changePasswordForm.newPassword" type="password" autocomplete="new-password" required>
+            </label>
+            <label>
+              Confirm new password
+              <input v-model="changePasswordForm.confirm" type="password" autocomplete="new-password" required>
+            </label>
+            <p v-if="changePasswordError" class="error">{{ changePasswordError }}</p>
+            <p v-if="changePasswordNotice" class="account-success">{{ changePasswordNotice }}</p>
+            <div class="account-actions">
+              <button type="submit" class="save-btn">Update password</button>
+              <button v-if="!accountSettingsForced" type="button" class="cancel-btn" @click="closeAccountSettings">Cancel</button>
+            </div>
+          </form>
+          <div class="account-danger">
+            <div>
+              <strong>Sign out everywhere</strong>
+              <small>Revoke all browser sessions for this account.</small>
+            </div>
+            <button type="button" class="cancel-btn" @click="logoutAll">Sign out all</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- User administration -->
+      <div v-if="usersOpen" class="modal-overlay" @mousedown.self="usersOpen = false">
+        <div class="modal-content users-modal">
+          <div class="modal-header">
+            <h2>👥 People</h2>
+            <button type="button" class="close-modal-btn" @click="usersOpen = false">×</button>
+          </div>
+          <p class="users-hint">Everyone shares this workspace. Admins can add people, reset passwords, and disable accounts.</p>
+
+          <form class="new-user-form" @submit.prevent="createUser">
+            <input v-model="newUserForm.username" type="text" placeholder="Username" required>
+            <input v-model="newUserForm.displayName" type="text" placeholder="Display name">
+            <input v-model="newUserForm.password" type="password" placeholder="Temporary password" autocomplete="new-password" required>
+            <select v-model="newUserForm.role">
+              <option value="member">Member</option>
+              <option value="admin">Admin</option>
+            </select>
+            <button type="submit" class="save-btn">Add person</button>
+          </form>
+          <p v-if="usersError" class="error">{{ usersError }}</p>
+          <div v-if="resetPasswordResult" class="temp-password">
+            <div>
+              <strong>Temporary password</strong>
+              <code>{{ resetPasswordResult }}</code>
+              <small>Share it once; the user must change it after signing in.</small>
+            </div>
+            <button type="button" @click="copyToClipboard(resetPasswordResult)">Copy</button>
+          </div>
+
+          <p v-if="usersLoading" class="users-hint">Loading…</p>
+          <div v-else class="users-list">
+            <div v-for="user in usersList" :key="user.id" class="user-row" :class="{ disabled: user.disabledAt }">
+              <div class="user-identity">
+                <strong>{{ user.displayName || user.username }}</strong>
+                <small>@{{ user.username }}<template v-if="user.lastLoginAt"> · last seen {{ formatDate(user.lastLoginAt) }}</template></small>
+              </div>
+              <select
+                :value="user.role"
+                :disabled="user.id === currentUser?.id"
+                @change="updateUser(user, { role: $event.target.value })"
+              >
+                <option value="member">Member</option>
+                <option value="admin">Admin</option>
+              </select>
+              <span v-if="user.disabledAt" class="user-badge">Disabled</span>
+              <span v-else-if="user.id === currentUser?.id" class="user-badge">You</span>
+              <button v-if="user.id !== currentUser?.id" type="button" class="small-btn" @click="resetUserPassword(user)">Reset password</button>
+              <button
+                v-if="user.id !== currentUser?.id"
+                type="button"
+                class="small-btn"
+                :class="{ danger: !user.disabledAt }"
+                @click="updateUser(user, { disabled: !user.disabledAt })"
+              >{{ user.disabledAt ? 'Enable' : 'Disable' }}</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -681,10 +874,37 @@ export default {
     // Auth state
     const showSetup = ref(false)
     const isAuthenticated = ref(false)
-    const setupForm = ref({ password: '', confirm: '' })
-    const loginForm = ref({ password: '' })
+    const currentUser = ref(null)
+    const setupForm = ref({ username: 'admin', displayName: '', password: '', confirm: '' })
+    const loginForm = ref({ username: '', password: '' })
     const setupError = ref('')
     const loginError = ref('')
+    const showSetupPassword = ref(false)
+    const showLoginPassword = ref(false)
+    const showForgot = ref(false)
+    const accountMenuOpen = ref(false)
+    const accountSettingsOpen = ref(false)
+    const accountSettingsForced = ref(false)
+    const changePasswordForm = ref({ currentPassword: '', newPassword: '', confirm: '' })
+    const changePasswordError = ref('')
+    const changePasswordNotice = ref('')
+    const usersOpen = ref(false)
+    const usersList = ref([])
+    const usersLoading = ref(false)
+    const usersError = ref('')
+    const newUserForm = ref({ username: '', displayName: '', password: '', role: 'member' })
+    const resetPasswordResult = ref('')
+
+    const isAdmin = computed(() => currentUser.value?.role === 'admin')
+    const userInitials = computed(() => {
+      const name = currentUser.value?.displayName || currentUser.value?.username || '?'
+      return name
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map(part => part[0]?.toUpperCase())
+        .join('')
+    })
 
     // Notes state
     const notes = ref([])
@@ -738,7 +958,7 @@ export default {
     const mcpNewToken = ref('')
     const mcpTokenError = ref('')
     const mcpTokenLoading = ref(false)
-    const mcpEndpoint = computed(() => `${window.location.origin.replace(':5174', ':5173')}/mcp`)
+    const mcpEndpoint = computed(() => `${window.location.origin}/mcp`)
 
     // Search state
     const searchOpen = ref(false)
@@ -790,13 +1010,16 @@ export default {
 
     // Create WebSocket connection
     const connectWebSocket = () => {
-      if (!runtimeToken || wsConnecting.value) return
+      if (wsConnecting.value) return
 
       wsConnecting.value = true
 
-      // Build WebSocket URL - use ws:// or wss:// based on current protocol
+      // Use the in-memory token right after login; after a reload only the
+      // HttpOnly cookie exists, and the server accepts it during the WS
+      // handshake.
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const wsUrl = `${wsProtocol}//${window.location.host}/ws?token=${runtimeToken}`
+      const tokenQuery = runtimeToken ? `?token=${encodeURIComponent(runtimeToken)}` : ''
+      const wsUrl = `${wsProtocol}//${window.location.host}/ws${tokenQuery}`
 
       try {
         ws = new WebSocket(wsUrl)
@@ -867,12 +1090,25 @@ export default {
           }
         }
 
-        ws.onclose = () => {
+        ws.onclose = (event) => {
           console.log('❌ WebSocket disconnected')
           wsRef.value = null
           ws = null
           wsConnecting.value = false
           wsConnected.value = false
+
+          // 1008 = auth/session revoked or account disabled. Do not loop.
+          if (event?.code === 1008) {
+            runtimeToken = null
+            isAuthenticated.value = false
+            currentUser.value = null
+            loginError.value = 'Your session ended. Please sign in again.'
+            accountMenuOpen.value = false
+            accountSettingsOpen.value = false
+            usersOpen.value = false
+            closeModal(true)
+            return
+          }
 
           // Attempt to reconnect with exponential backoff if still authenticated
           if (isAuthenticated.value) {
@@ -1070,26 +1306,31 @@ export default {
       }
     }
 
-    // Check if setup is needed on mount
+    // Bootstrap auth: first-run setup, persisted cookie, or the login screen.
     onMounted(async () => {
       window.addEventListener('keydown', handleKeyDown)
       window.addEventListener('paste', handleWindowPaste)
       try {
-        const data = await api('/api/password')
-        if (!data.hasPassword) {
+        const bootstrap = await api('/api/auth/bootstrap')
+        if (bootstrap.needsSetup) {
           showSetup.value = true
-        } else {
-          // Cookie is sent automatically; check auth status to skip the
-          // password screen if a valid session cookie is present.
-          const status = await api('/api/auth/status')
-          if (status.authenticated) {
-            isAuthenticated.value = true
+          return
+        }
+        const status = await api('/api/auth/status')
+        if (status.authenticated) {
+          currentUser.value = status.user
+          isAuthenticated.value = true
+          if (status.user?.mustChangePassword) {
+            openAccountSettings(true)
+          } else {
             await loadNotes()
             connectWebSocket()
           }
+        } else {
+          loginForm.value.username = localStorage.getItem('local-keep-last-username') || 'admin'
         }
       } catch (e) {
-        console.error('Failed to check password status', e)
+        console.error('Failed to check auth status', e)
       }
     })
 
@@ -1102,29 +1343,51 @@ export default {
     })
 
     // Auth methods
+    async function finishLogin(data) {
+      runtimeToken = data.token || null
+      currentUser.value = data.user || null
+      isAuthenticated.value = true
+      showSetup.value = false
+      showForgot.value = false
+      loginError.value = ''
+      setupError.value = ''
+      accountMenuOpen.value = false
+      if (currentUser.value?.username) {
+        localStorage.setItem('local-keep-last-username', currentUser.value.username)
+      }
+      if (currentUser.value?.mustChangePassword) {
+        openAccountSettings(true)
+        return
+      }
+      await loadNotes()
+      connectWebSocket()
+    }
+
     const setupPassword = async () => {
       try {
-        if (setupForm.value.password.length < 4) {
-          setupError.value = 'Password must be at least 4 characters'
+        setupError.value = ''
+        const username = setupForm.value.username.trim()
+        if (!/^[a-zA-Z0-9_.-]{3,32}$/.test(username)) {
+          setupError.value = 'Username must be 3–32 characters using letters, numbers, dot, dash, or underscore'
+          return
+        }
+        if (setupForm.value.password.length < 8) {
+          setupError.value = 'Password must be at least 8 characters'
           return
         }
         if (setupForm.value.password !== setupForm.value.confirm) {
           setupError.value = 'Passwords do not match'
           return
         }
-
-        // Setup issues a session cookie + session token directly
-        const data = await api('/api/password/setup', {
+        const data = await api('/api/auth/setup', {
           method: 'POST',
-          body: JSON.stringify({ password: setupForm.value.password })
+          body: JSON.stringify({
+            username,
+            displayName: setupForm.value.displayName.trim(),
+            password: setupForm.value.password
+          })
         })
-
-        runtimeToken = data.token || null
-        isAuthenticated.value = true
-        showSetup.value = false
-        setupError.value = ''
-        await loadNotes()
-        connectWebSocket()
+        await finishLogin(data)
       } catch (e) {
         setupError.value = e.message
       }
@@ -1132,34 +1395,186 @@ export default {
 
     const login = async () => {
       try {
-        const data = await api('/api/password/verify', {
-          method: 'POST',
-          body: JSON.stringify({ password: loginForm.value.password })
-        })
-
-        runtimeToken = data.token || null
-        isAuthenticated.value = true
         loginError.value = ''
-        await loadNotes()
-        connectWebSocket()
+        const data = await api('/api/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({
+            username: loginForm.value.username.trim(),
+            password: loginForm.value.password
+          })
+        })
+        loginForm.value.password = ''
+        await finishLogin(data)
       } catch (e) {
         loginError.value = e.message
       }
     }
 
     const logout = async () => {
-      // Revoke the session server-side (also clears the cookie)
       try {
         await api('/api/auth/logout', { method: 'POST' })
       } catch (e) {
         console.error('Logout failed', e)
       }
       runtimeToken = null
+      currentUser.value = null
       isAuthenticated.value = false
       loginForm.value.password = ''
       loginError.value = ''
+      accountMenuOpen.value = false
+      accountSettingsOpen.value = false
+      usersOpen.value = false
       disconnectWebSocket()
       closeModal(true)
+    }
+
+    function openAccountSettings(forced = false) {
+      accountMenuOpen.value = false
+      accountSettingsForced.value = forced || !!currentUser.value?.mustChangePassword
+      accountSettingsOpen.value = true
+      changePasswordForm.value = { currentPassword: '', newPassword: '', confirm: '' }
+      changePasswordError.value = ''
+      changePasswordNotice.value = ''
+    }
+
+    function closeAccountSettings() {
+      if (accountSettingsForced.value) return
+      accountSettingsOpen.value = false
+    }
+
+    async function changePassword() {
+      try {
+        changePasswordError.value = ''
+        changePasswordNotice.value = ''
+        if (changePasswordForm.value.newPassword.length < 8) {
+          changePasswordError.value = 'New password must be at least 8 characters'
+          return
+        }
+        if (changePasswordForm.value.newPassword !== changePasswordForm.value.confirm) {
+          changePasswordError.value = 'New passwords do not match'
+          return
+        }
+        const data = await api('/api/auth/change-password', {
+          method: 'POST',
+          body: JSON.stringify({
+            currentPassword: changePasswordForm.value.currentPassword,
+            newPassword: changePasswordForm.value.newPassword
+          })
+        })
+        const wasForced = accountSettingsForced.value
+        currentUser.value = data.user
+        accountSettingsForced.value = false
+        changePasswordForm.value = { currentPassword: '', newPassword: '', confirm: '' }
+        changePasswordNotice.value = 'Password updated. Other sessions were signed out.'
+        if (wasForced) {
+          await loadNotes()
+          connectWebSocket()
+        }
+      } catch (e) {
+        changePasswordError.value = e.message
+      }
+    }
+
+    async function logoutAll() {
+      if (!window.confirm('Sign out of all browser sessions for this account?')) return
+      try {
+        await api('/api/auth/logout-all', { method: 'POST' })
+      } catch (e) {
+        console.error('Sign out all failed', e)
+      }
+      runtimeToken = null
+      currentUser.value = null
+      isAuthenticated.value = false
+      accountSettingsOpen.value = false
+      accountMenuOpen.value = false
+      loginForm.value.password = ''
+      disconnectWebSocket()
+      closeModal(true)
+    }
+
+    async function loadUsers() {
+      usersLoading.value = true
+      usersError.value = ''
+      try {
+        const data = await api('/api/users')
+        usersList.value = data.users || []
+      } catch (e) {
+        usersError.value = e.message
+      } finally {
+        usersLoading.value = false
+      }
+    }
+
+    async function openUsers() {
+      accountMenuOpen.value = false
+      if (!isAdmin.value) return
+      usersOpen.value = true
+      resetPasswordResult.value = ''
+      newUserForm.value = { username: '', displayName: '', password: '', role: 'member' }
+      await loadUsers()
+    }
+
+    async function createUser() {
+      try {
+        usersError.value = ''
+        await api('/api/users', {
+          method: 'POST',
+          body: JSON.stringify({
+            username: newUserForm.value.username.trim(),
+            displayName: newUserForm.value.displayName.trim(),
+            password: newUserForm.value.password,
+            role: newUserForm.value.role,
+            mustChangePassword: true
+          })
+        })
+        newUserForm.value = { username: '', displayName: '', password: '', role: 'member' }
+        await loadUsers()
+      } catch (e) {
+        usersError.value = e.message
+      }
+    }
+
+    async function updateUser(user, patch) {
+      try {
+        usersError.value = ''
+        const data = await api(`/api/users/${user.id}`, {
+          method: 'PATCH',
+          body: JSON.stringify(patch)
+        })
+        if (user.id === currentUser.value?.id) currentUser.value = data.user
+        await loadUsers()
+      } catch (e) {
+        usersError.value = e.message
+        await loadUsers()
+      }
+    }
+
+    async function resetUserPassword(user) {
+      if (!window.confirm(`Reset the password for @${user.username}?`)) return
+      try {
+        usersError.value = ''
+        const data = await api(`/api/users/${user.id}/reset-password`, {
+          method: 'POST',
+          body: JSON.stringify({})
+        })
+        resetPasswordResult.value = data.temporaryPassword || ''
+        await loadUsers()
+      } catch (e) {
+        usersError.value = e.message
+      }
+    }
+
+    async function copyToClipboard(text) {
+      try {
+        await navigator.clipboard.writeText(text)
+      } catch (_) {
+        const textarea = document.createElement('textarea')
+        textarea.value = text
+        document.body.appendChild(textarea)
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      }
     }
 
     // Modal creation/editing triggers
@@ -2156,13 +2571,43 @@ export default {
       // Auth
       showSetup,
       isAuthenticated,
+      currentUser,
       setupForm,
       loginForm,
       setupError,
       loginError,
+      showSetupPassword,
+      showLoginPassword,
+      showForgot,
       setupPassword,
       login,
       logout,
+      isAdmin,
+      userInitials,
+      // Account
+      accountMenuOpen,
+      accountSettingsOpen,
+      accountSettingsForced,
+      changePasswordForm,
+      changePasswordError,
+      changePasswordNotice,
+      openAccountSettings,
+      closeAccountSettings,
+      changePassword,
+      logoutAll,
+      // User administration
+      usersOpen,
+      usersList,
+      usersLoading,
+      usersError,
+      newUserForm,
+      resetPasswordResult,
+      openUsers,
+      loadUsers,
+      createUser,
+      updateUser,
+      resetUserPassword,
+      copyToClipboard,
       // Notes
       notes,
       newNoteTitle,
@@ -2797,63 +3242,197 @@ export default {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  padding: 1.5rem;
+  background:
+    radial-gradient(circle at 15% 15%, rgba(129, 140, 248, 0.35), transparent 32rem),
+    radial-gradient(circle at 85% 80%, rgba(56, 189, 248, 0.25), transparent 30rem),
+    linear-gradient(135deg, #0f172a 0%, #1e293b 55%, #111827 100%);
 }
 
-.auth-box {
-  background: white;
-  padding: 2.5rem;
-  border-radius: 12px;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+.auth-card {
   width: 100%;
-  max-width: 400px;
+  max-width: 430px;
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 18px;
+  padding: 2.25rem;
+  box-shadow: 0 30px 80px rgba(2, 6, 23, 0.45);
 }
 
-.auth-box h1 {
-  font-size: 2rem;
-  margin-bottom: 0.5rem;
-  text-align: center;
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #4f46e5;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  margin-bottom: 1.4rem;
+}
+
+.auth-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: #eef2ff;
+  font-size: 1.1rem;
+}
+
+.auth-card h1 {
+  font-size: 1.65rem;
+  line-height: 1.2;
+  margin: 0 0 0.45rem;
+  color: #0f172a;
 }
 
 .subtitle {
-  text-align: center;
-  color: #5f6368;
-  margin-bottom: 1.5rem;
+  color: #64748b;
+  margin: 0 0 1.4rem;
+  line-height: 1.5;
+  font-size: 0.92rem;
 }
 
-.auth-box form {
+.auth-form {
   display: flex;
   flex-direction: column;
-  gap: 1rem;
+  gap: 0.9rem;
 }
 
-.auth-box input {
-  padding: 0.875rem 1rem;
-  border: 1px solid #dadce0;
-  border-radius: 8px;
-  font-size: 1rem;
-  transition: border-color 0.2s;
-}
-
-.auth-box input:focus {
-  outline: none;
-  border-color: #667eea;
-}
-
-.auth-box button {
-  padding: 0.875rem;
-  background: #667eea;
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-size: 1rem;
+.auth-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  color: #334155;
+  font-size: 0.8rem;
   font-weight: 600;
-  cursor: pointer;
-  transition: background 0.2s;
 }
 
+.auth-form input,
+.account-form input,
+.new-user-form input,
+.new-user-form select {
+  width: 100%;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid #dbe2ea;
+  border-radius: 9px;
+  font-size: 0.92rem;
+  background: #fff;
+  color: #0f172a;
+  transition: border-color 0.15s, box-shadow 0.15s;
+  box-sizing: border-box;
+}
+
+.auth-form input:focus,
+.account-form input:focus,
+.new-user-form input:focus,
+.new-user-form select:focus {
+  outline: none;
+  border-color: #6366f1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.14);
+}
+
+.password-field {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.password-field input {
+  flex: 1;
+}
+
+.password-toggle {
+  border: 1px solid #dbe2ea;
+  background: #f8fafc;
+  color: #475569;
+  border-radius: 7px;
+  padding: 0.55rem 0.6rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.auth-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.auth-hint {
+  color: #94a3b8;
+  font-size: 0.74rem;
+}
+
+.link-btn {
+  border: none;
+  background: transparent;
+  color: #4f46e5;
+  font-size: 0.78rem;
+  cursor: pointer;
+  padding: 0;
+}
+
+.auth-primary,
+.auth-box button {
+  padding: 0.8rem 1rem;
+  background: linear-gradient(135deg, #4f46e5, #6366f1);
+  color: #fff;
+  border: none;
+  border-radius: 9px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 0.15s, transform 0.15s;
+}
+
+.auth-primary:hover,
 .auth-box button:hover {
-  background: #5568d3;
+  filter: brightness(1.06);
+}
+
+.auth-primary:active {
+  transform: translateY(1px);
+}
+
+.auth-footnote {
+  margin: 1.2rem 0 0;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 0.72rem;
+}
+
+.forgot-panel {
+  margin-top: 1.1rem;
+  padding: 0.85rem;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  border-radius: 9px;
+  color: #475569;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.forgot-panel strong {
+  color: #0f172a;
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.forgot-panel p {
+  margin: 0 0 0.45rem;
+}
+
+.forgot-panel code {
+  display: block;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 6px;
+  padding: 0.45rem 0.55rem;
+  font-size: 0.75rem;
+  overflow-x: auto;
 }
 
 .error {
@@ -3037,19 +3616,111 @@ header h1 {
   background: #fef7e0;
 }
 
-.logout-btn {
-  padding: 0.5rem 1rem;
-  background: #f1f3f4;
-  color: #5f6368;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.875rem;
-  transition: background 0.2s;
+.account-menu-wrap {
+  position: relative;
 }
 
-.logout-btn:hover {
-  background: #e8eaed;
+.account-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.3rem 0.55rem 0.3rem 0.3rem;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  border-radius: 999px;
+  cursor: pointer;
+  color: #334155;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.account-btn:hover {
+  background: #f8fafc;
+}
+
+.account-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #6366f1, #38bdf8);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.account-avatar.large {
+  width: 42px;
+  height: 42px;
+  font-size: 0.9rem;
+}
+
+.account-name {
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-chevron {
+  color: #94a3b8;
+  font-size: 0.65rem;
+}
+
+.account-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.45rem);
+  width: 230px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
+  padding: 0.4rem;
+  z-index: 140;
+}
+
+.account-menu-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.5rem 0.55rem 0.6rem;
+  border-bottom: 1px solid #f1f5f9;
+  margin-bottom: 0.3rem;
+}
+
+.account-menu-head strong {
+  color: #0f172a;
+  font-size: 0.84rem;
+}
+
+.account-menu-head small {
+  color: #94a3b8;
+  font-size: 0.7rem;
+}
+
+.account-menu button {
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 0.5rem 0.55rem;
+  border-radius: 6px;
+  color: #334155;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.account-menu button:hover {
+  background: #f1f5f9;
+}
+
+.account-menu .account-menu-danger {
+  color: #b91c1c;
 }
 
 .refresh-btn {
@@ -4440,6 +5111,239 @@ main {
   height: 1px;
   opacity: 0;
   pointer-events: none;
+}
+
+.account-modal,
+.users-modal {
+  background: #fff;
+  border-radius: 14px;
+  padding: 1.25rem;
+  width: min(560px, 92vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  box-shadow: 0 24px 64px rgba(15, 23, 42, 0.28);
+}
+
+.users-modal {
+  width: min(820px, 94vw);
+}
+
+.account-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem;
+  border-radius: 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  margin-bottom: 0.9rem;
+}
+
+.account-summary strong {
+  display: block;
+  color: #0f172a;
+  font-size: 0.9rem;
+}
+
+.account-summary small {
+  color: #94a3b8;
+  font-size: 0.72rem;
+}
+
+.account-notice {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  font-size: 0.78rem;
+}
+
+.account-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.account-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  color: #334155;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.account-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.account-success {
+  color: #15803d;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 7px;
+  padding: 0.5rem 0.6rem;
+  font-size: 0.78rem;
+}
+
+.account-danger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-top: 1px solid #f1f5f9;
+  margin-top: 1.1rem;
+  padding-top: 0.9rem;
+}
+
+.account-danger strong {
+  display: block;
+  color: #0f172a;
+  font-size: 0.82rem;
+}
+
+.account-danger small {
+  color: #94a3b8;
+  font-size: 0.7rem;
+}
+
+.users-hint {
+  color: #64748b;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.new-user-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto auto;
+  gap: 0.4rem;
+  margin: 0.65rem 0;
+}
+
+.new-user-form .save-btn {
+  white-space: nowrap;
+}
+
+.users-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.6rem;
+}
+
+.user-row {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.user-row.disabled {
+  opacity: 0.62;
+  background: #f8fafc;
+}
+
+.user-identity {
+  flex: 1;
+  min-width: 0;
+}
+
+.user-identity strong {
+  display: block;
+  color: #0f172a;
+  font-size: 0.82rem;
+}
+
+.user-identity small {
+  color: #94a3b8;
+  font-size: 0.68rem;
+}
+
+.user-row select {
+  border: 1px solid #dbe2ea;
+  border-radius: 6px;
+  padding: 0.3rem 0.4rem;
+  font-size: 0.72rem;
+  background: #fff;
+}
+
+.user-badge {
+  font-size: 0.65rem;
+  color: #4f46e5;
+  background: #eef2ff;
+  border-radius: 999px;
+  padding: 0.1rem 0.4rem;
+  white-space: nowrap;
+}
+
+.small-btn {
+  border: 1px solid #dbe2ea;
+  background: #fff;
+  color: #475569;
+  border-radius: 5px;
+  padding: 0.25rem 0.4rem;
+  font-size: 0.68rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.small-btn:hover {
+  background: #f8fafc;
+}
+
+.small-btn.danger {
+  color: #b91c1c;
+  border-color: #fecaca;
+}
+
+.temp-password {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 8px;
+  padding: 0.6rem;
+  margin: 0.6rem 0;
+}
+
+.temp-password code {
+  display: block;
+  background: #0f172a;
+  color: #e2e8f0;
+  border-radius: 5px;
+  padding: 0.35rem 0.45rem;
+  margin: 0.25rem 0;
+  font-size: 0.75rem;
+}
+
+.temp-password small {
+  color: #92400e;
+  font-size: 0.68rem;
+}
+
+.temp-password button {
+  border: 1px solid #dbe2ea;
+  background: #fff;
+  border-radius: 6px;
+  padding: 0.3rem 0.55rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+@media (max-width: 760px) {
+  .new-user-form {
+    grid-template-columns: 1fr;
+  }
+
+  .user-row {
+    flex-wrap: wrap;
+  }
 }
 
 .mcp-settings-modal {

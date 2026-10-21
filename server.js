@@ -27,6 +27,8 @@ import { createTagService } from './src/server/services/tags.js'
 import { createLinkService } from './src/server/services/links.js'
 import { createSearchService } from './src/server/services/search.js'
 import { createTokenService } from './src/server/services/tokens.js'
+import { createUserService } from './src/server/services/users.js'
+import { validatePassword, temporaryPassword } from './src/server/auth/passwords.js'
 import { createMcpServer } from './src/mcp/createServer.js'
 import { createEventBus, EVENTS } from './src/server/events.js'
 import {
@@ -37,6 +39,7 @@ import {
 import { migration001NoteThreads } from './src/server/migrations/001-note-threads.js'
 import { migration002RelationshipsAndTags } from './src/server/migrations/002-relationships-and-tags.js'
 import { migration003ApiTokens } from './src/server/migrations/003-api-tokens.js'
+import { migration004MultiuserAuth } from './src/server/migrations/004-multiuser-auth.js'
 
 import debugLib from 'debug'
 const log = debugLib('local-keep:server')
@@ -215,7 +218,7 @@ function persistNoteState(noteId) {
         noteId,
         canvasData: data,
         thumbnail,
-        actor: 'ui',
+        actor: state.lastActor || 'ui',
         force: state.forceCheckpoint
       })
       // Throttle further attempts even when the scene is unchanged.
@@ -264,7 +267,6 @@ createBaseSchema(db)
 // persistent auth (cookie) and validated for both REST (cookie/X-Auth-Token)
 // and WebSocket (?token=) flows.
 const sessions = createSessionStore({ db, dataDir: DATA_DIR })
-sessions.hydrate()
 
 // Compatibility wrapper for the whiteboard persist path; the canonical
 // implementation lives in the image-ref service.
@@ -311,7 +313,7 @@ try {
 try {
   const migration = runMigrations({
     db,
-    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens],
+    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth],
     backupDir: BACKUPS_DIR,
     context: { imageStore }
   })
@@ -322,12 +324,16 @@ try {
     console.log(`✓ Schema migrated to version ${migration.target}`)
   }
 } catch (error) {
-  console.error('💥 Fatal: note-thread migration failed:', error.message)
+  console.error('💥 Fatal: schema migration failed:', error.message)
   if (error.migrationBackupPath) {
     console.error(`   Backup kept at: ${error.migrationBackupPath}`)
   }
   process.exit(1)
 }
+
+// Hydrate sessions after migration 4 has ensured sessions.user_id exists.
+sessions.hydrate()
+const users = createUserService({ db })
 
 // Shared services. Route/WS handlers below are thin adapters over these.
 const bus = createEventBus()
@@ -399,12 +405,6 @@ try {
   console.error('⚠️ image_refs migration error:', e.message)
 }
 
-// Helper functions for database operations
-function getPasswordHash() {
-  const row = db.prepare('SELECT hash FROM password WHERE id = 1').get()
-  return row ? row.hash : null
-}
-
 function getAllNotes() {
   return notesService.listNotes()
 }
@@ -470,17 +470,6 @@ app.post('/api/images/cleanup', checkAuth, (req, res) => {
   }
 })
 
-// Simple hash function (same as client-side)
-function simpleHash(str) {
-  let hash = 0
-  for (let i = 0; i < str.length; i++) {
-    const char = str.charCodeAt(i)
-    hash = ((hash << 5) - hash) + char
-    hash = hash & hash
-  }
-  return hash.toString(36)
-}
-
 // Broadcast notes to all authenticated clients
 function broadcastNotes(excludeWs = null) {
   const notes = getAllNotes()
@@ -519,6 +508,25 @@ function broadcastToAllClients(message) {
   return sent
 }
 
+// Close live WebSocket connections for a user when their sessions are revoked
+// (password reset/change, disable, sign out all). `exceptToken` keeps the
+// caller's current session connected after a self-service password change.
+function closeSocketsForUser(userId, exceptToken = null) {
+  let closed = 0
+  for (const [token, wsSet] of clients.entries()) {
+    if (token === exceptToken) continue
+    const entry = sessions.validate(token)
+    if (entry?.userId === userId) {
+      for (const ws of wsSet) {
+        try { ws.close(1008, 'Session revoked') } catch (_) { /* noop */ }
+      }
+      clients.delete(token)
+      closed += wsSet.size
+    }
+  }
+  return closed
+}
+
 // Purge in-memory collab state for a deleted note so further deltas to it are
 // rejected (the delta handler replies with `note-gone`).
 function clearNoteState(noteId) {
@@ -535,63 +543,209 @@ function broadcastNoteDeleted(noteId) {
   broadcastToAllClients({ type: 'note-deleted', noteId, deletedAt: Date.now() })
 }
 
-// Password routes
-app.get('/api/password', (req, res) => {
-  const hash = getPasswordHash()
-  res.json({ hasPassword: hash !== null })
-})
+// ── Human authentication ────────────────────────────────────────────────
+// Accounts are shared-workspace users. Admins manage accounts; members use
+// the same notes. Password hashes are scrypt; the legacy single-password hash
+// is upgraded on the first successful login.
 
-app.post('/api/password/setup', (req, res) => {
-  const { password } = req.body
-  if (!password || password.length < 4) {
-    return res.status(400).json({ error: 'Password must be at least 4 characters' })
-  }
+function authError(res, status, message, code = 'auth_error') {
+  return res.status(status).json({ error: message, code })
+}
 
-  const hash = simpleHash(password)
-  db.prepare('INSERT OR REPLACE INTO password (id, hash) VALUES (1, ?)').run(hash)
-  const { sessionId, expiresAt } = sessions.issue(hash)
+function issueSession(res, user) {
+  const { sessionId, expiresAt } = sessions.issue({ userId: user.id, hash: '' })
   res.setHeader('Set-Cookie', sessions.cookieHeader(sessionId))
-  res.json({ success: true, token: sessionId, expiresAt })
+  return { token: sessionId, expiresAt, user }
+}
+
+function requireAdmin(req, res, next) {
+  if (req.user?.role !== 'admin') {
+    return authError(res, 403, 'Admin access required', 'forbidden')
+  }
+  next()
+}
+
+app.get('/api/auth/bootstrap', (req, res) => {
+  const userCount = users.count()
+  res.json({
+    needsSetup: userCount === 0,
+    userCount,
+    sessionMaxAge: sessions.SESSION_MAX_AGE_SECONDS
+  })
 })
 
-app.post('/api/password/verify', (req, res) => {
-  const { password } = req.body
-  const currentHash = getPasswordHash()
-
-  if (!currentHash) {
-    return res.status(400).json({ error: 'Password not set up' })
-  }
-
-  const hash = simpleHash(password)
-  if (hash === currentHash) {
-    const { sessionId, expiresAt } = sessions.issue(hash)
-    res.setHeader('Set-Cookie', sessions.cookieHeader(sessionId))
-    res.json({ success: true, token: sessionId, expiresAt })
-  } else {
-    res.status(401).json({ error: 'Incorrect password' })
+app.post('/api/auth/setup', async (req, res) => {
+  try {
+    if (users.count() > 0) {
+      return authError(res, 409, 'This workspace is already set up', 'already_setup')
+    }
+    const username = String(req.body?.username || 'admin').trim()
+    const displayName = String(req.body?.displayName || 'Administrator').trim()
+    const password = req.body?.password
+    const passwordError = validatePassword(password, { username })
+    if (passwordError) return authError(res, 400, passwordError, 'invalid_password')
+    const user = await users.create({ username, displayName, password, role: 'admin' })
+    res.json({ success: true, ...issueSession(res, user) })
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message })
   }
 })
 
-// Returns whether the caller is currently authenticated via cookie or header.
-// Does NOT require auth; used by the client to skip the password screen on reload.
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const username = String(req.body?.username || '').trim()
+    const password = req.body?.password
+    if (!username || !password) return authError(res, 400, 'Username and password are required', 'invalid_credentials')
+    const user = await users.verifyCredentials(username, password)
+    if (!user) return authError(res, 401, 'Invalid username or password', 'invalid_credentials')
+    users.touchLogin(user.id)
+    res.json({ success: true, ...issueSession(res, user), mustChangePassword: user.mustChangePassword })
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message })
+  }
+})
+
+app.get('/api/auth/me', checkAuth, (req, res) => {
+  res.json({ user: req.user, expiresAt: req.session?.expiresAt || null })
+})
+
 app.get('/api/auth/status', (req, res) => {
-  const sessionId = sessions.sessionIdFromRequest(req) || req.headers['x-auth-token']
-  const entry = sessions.validate(sessionId)
-  if (entry) {
-    res.json({ authenticated: true, expiresAt: entry.expiresAt })
-  } else {
-    res.json({ authenticated: false, expiresAt: null })
+  const auth = authenticate(req)
+  if (!auth) {
+    return res.json({
+      authenticated: false,
+      user: null,
+      expiresAt: null,
+      needsSetup: users.count() === 0
+    })
+  }
+  res.json({
+    authenticated: true,
+    user: auth.user || null,
+    expiresAt: auth.session?.expiresAt || null,
+    needsSetup: false
+  })
+})
+
+app.post('/api/auth/change-password', checkAuth, async (req, res) => {
+  try {
+    const currentPassword = req.body?.currentPassword
+    const newPassword = req.body?.newPassword
+    if (!currentPassword || !newPassword) {
+      return authError(res, 400, 'Current and new passwords are required', 'invalid_password')
+    }
+    const verified = await users.verifyCredentials(req.user.username, currentPassword)
+    if (!verified) return authError(res, 401, 'Current password is incorrect', 'invalid_password')
+    const user = await users.changePassword(req.user.id, newPassword)
+    closeSocketsForUser(req.user.id, req.sessionId)
+    sessions.revokeUser(req.user.id, { exceptSessionId: req.sessionId })
+    res.json({ success: true, user })
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message })
   }
 })
 
-// Logout: revoke the caller's session and clear the cookie.
 app.post('/api/auth/logout', (req, res) => {
   const sessionId = sessions.sessionIdFromRequest(req) || req.headers['x-auth-token']
-  if (sessionId) {
-    sessions.revoke(sessionId)
-  }
+  if (sessionId) sessions.revoke(sessionId)
   res.setHeader('Set-Cookie', sessions.cookieHeader('', { clear: true }))
   res.json({ success: true })
+})
+
+app.post('/api/auth/logout-all', checkAuth, (req, res) => {
+  closeSocketsForUser(req.user.id)
+  const count = sessions.revokeUser(req.user.id)
+  res.setHeader('Set-Cookie', sessions.cookieHeader('', { clear: true }))
+  res.json({ success: true, revokedSessions: count })
+})
+
+// ── User administration ────────────────────────────────────────────────
+app.get('/api/users', checkAuth, requireAdmin, (req, res) => {
+  res.json({ users: users.list() })
+})
+
+app.post('/api/users', checkAuth, requireAdmin, async (req, res) => {
+  try {
+    const user = await users.create({
+      username: req.body?.username,
+      displayName: req.body?.displayName,
+      password: req.body?.password,
+      role: req.body?.role === 'admin' ? 'admin' : 'member',
+      mustChangePassword: req.body?.mustChangePassword !== false
+    })
+    res.json({ user })
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message })
+  }
+})
+
+app.patch('/api/users/:id', checkAuth, requireAdmin, (req, res) => {
+  try {
+    const user = users.update(req.params.id, {
+      displayName: req.body?.displayName,
+      role: req.body?.role,
+      disabled: req.body?.disabled
+    })
+    if (user.disabledAt) {
+      closeSocketsForUser(user.id)
+      sessions.revokeUser(user.id)
+    }
+    res.json({ user })
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message })
+  }
+})
+
+app.post('/api/users/:id/reset-password', checkAuth, requireAdmin, async (req, res) => {
+  try {
+    const generated = req.body?.password ? null : temporaryPassword()
+    const password = req.body?.password || generated
+    const user = await users.resetPassword(req.params.id, password)
+    closeSocketsForUser(req.params.id)
+    sessions.revokeUser(req.params.id)
+    res.json({ success: true, user, temporaryPassword: generated })
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message })
+  }
+})
+
+// Legacy single-password aliases. They create/login the `admin` account so
+// older clients and scripts keep working during the transition.
+app.get('/api/password', (req, res) => {
+  res.json({ hasPassword: users.count() > 0 })
+})
+
+app.post('/api/password/setup', async (req, res) => {
+  try {
+    if (users.count() > 0) {
+      return authError(res, 409, 'This workspace is already set up', 'already_setup')
+    }
+    const password = req.body?.password
+    const username = String(req.body?.username || 'admin').trim()
+    const passwordError = validatePassword(password, { username })
+    if (passwordError) return authError(res, 400, passwordError, 'invalid_password')
+    const user = await users.create({
+      username,
+      displayName: String(req.body?.displayName || 'Administrator').trim(),
+      password,
+      role: 'admin'
+    })
+    res.json({ success: true, ...issueSession(res, user) })
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message })
+  }
+})
+
+app.post('/api/password/verify', async (req, res) => {
+  try {
+    const username = String(req.body?.username || 'admin').trim()
+    const user = await users.verifyCredentials(username, req.body?.password)
+    if (!user) return authError(res, 401, 'Invalid username or password', 'invalid_credentials')
+    users.touchLogin(user.id)
+    res.json({ success: true, ...issueSession(res, user), mustChangePassword: user.mustChangePassword })
+  } catch (error) {
+    res.status(error.status || 500).json({ error: error.message })
+  }
 })
 
 // Resolve a request identity from a bearer token, session cookie, or legacy
@@ -613,21 +767,25 @@ function authenticate(req) {
   const sessionId = sessions.sessionIdFromRequest(req) || req.headers['x-auth-token']
   const entry = sessions.validate(sessionId)
   if (entry) {
+    let user = entry.userId ? users.getById(entry.userId) : null
+    // Compatibility for sessions issued before migration 4.
+    if (!user) user = users.getByUsername('admin')
+    if (!user || user.disabledAt) {
+      sessions.revoke(sessionId)
+      return null
+    }
     return {
-      actor: 'ui',
+      actor: `user:${user.username}`,
       session: entry,
-      authInfo: { clientId: 'ui', scopes: ['read', 'write'] }
+      sessionId,
+      user,
+      authInfo: { clientId: `user:${user.username}`, scopes: ['read', 'write'] }
     }
   }
   return null
 }
 
 function checkAuth(req, res, next) {
-  const currentHash = getPasswordHash()
-  if (!currentHash) {
-    return res.status(400).json({ error: 'Password not set up' })
-  }
-
   const auth = authenticate(req)
   if (!auth) return res.status(401).json({ error: 'Unauthorized' })
   if (auth.token && req.method !== 'GET' && !auth.token.scopes.includes('write')) {
@@ -636,7 +794,23 @@ function checkAuth(req, res, next) {
   req.actor = auth.actor
   req.auth = auth.authInfo
   req.mcpToken = auth.token || null
-  if (auth.session) req.passwordHash = auth.session.hash
+  req.user = auth.user || null
+  req.session = auth.session || null
+  req.sessionId = auth.sessionId || null
+  if (req.user?.mustChangePassword) {
+    const allowed = new Set([
+      '/api/auth/change-password',
+      '/api/auth/logout',
+      '/api/auth/logout-all',
+      '/api/auth/me'
+    ])
+    if (!allowed.has(req.path)) {
+      return res.status(403).json({
+        error: 'You must change your password before continuing',
+        code: 'password_change_required'
+      })
+    }
+  }
   next()
 }
 
@@ -646,6 +820,12 @@ function mcpAuth(req, res, next) {
   req.actor = auth.actor
   req.auth = auth.authInfo
   req.mcpToken = auth.token || null
+  req.user = auth.user || null
+  req.session = auth.session || null
+  req.sessionId = auth.sessionId || null
+  if (req.user?.mustChangePassword) {
+    return res.status(403).json({ error: 'Password change required', code: 'password_change_required' })
+  }
   next()
 }
 
@@ -994,7 +1174,10 @@ const wss = new WebSocketServer({ server, path: '/ws' })
 wss.on('connection', (ws, req) => {
   // Extract token from URL query params: ws://host/ws?token=<sessionId>
   const url = new URL(req.url, `http://${req.headers.host}`)
-  const token = url.searchParams.get('token')
+  // Prefer the explicit token (used immediately after login), but fall back to
+  // the HttpOnly session cookie so a page reload can reconnect without ever
+  // exposing the session ID to JavaScript.
+  const token = url.searchParams.get('token') || sessions.sessionIdFromRequest(req)
 
   if (!token) {
     ws.close(1008, 'No token provided')
@@ -1007,6 +1190,15 @@ wss.on('connection', (ws, req) => {
     ws.close(1008, 'Invalid token')
     return
   }
+  let user = entry.userId ? users.getById(entry.userId) : users.getByUsername('admin')
+  if (!user || user.disabledAt) {
+    sessions.revoke(token)
+    ws.close(1008, 'Account disabled')
+    return
+  }
+  ws._user = user
+  ws._actor = `user:${user.username}`
+  ws._lastAuthCheck = Date.now()
 
   // Add client to the set for this token
   if (!clients.has(token)) {
@@ -1050,6 +1242,19 @@ wss.on('connection', (ws, req) => {
 
   ws.on('message', (data) => {
     try {
+      if (!ws._lastAuthCheck || Date.now() - ws._lastAuthCheck > 5000) {
+        ws._lastAuthCheck = Date.now()
+        const current = sessions.validate(token)
+        if (!current) {
+          ws.close(1008, 'Session revoked')
+          return
+        }
+        const currentUser = current.userId ? users.getById(current.userId) : null
+        if (!currentUser || currentUser.disabledAt) {
+          ws.close(1008, 'Account disabled')
+          return
+        }
+      }
       const msg = JSON.parse(data.toString())
       switch (msg.type) {
         case 'join': {
@@ -1060,6 +1265,7 @@ wss.on('connection', (ws, req) => {
           }
           const state = loadNoteState(msg.noteId)
           state.sessions.add(ws)
+          state.lastActor = ws._actor || 'ui'
           ws._collabNoteId = msg.noteId
           const elements = [...state.elements.values()]
           ws.send(JSON.stringify({
@@ -1089,6 +1295,7 @@ wss.on('connection', (ws, req) => {
           if (!msg.noteId) break
           const state = noteStates.get(msg.noteId)
           if (state) {
+            state.lastActor = ws._actor || state.lastActor || 'ui'
             state.forceCheckpoint = true
             clearTimeout(state.pendingPersist)
             persistNoteState(msg.noteId)
@@ -1104,6 +1311,7 @@ wss.on('connection', (ws, req) => {
             ws.send(JSON.stringify({ type: 'note-gone', noteId: msg.noteId }))
             break
           }
+          state.lastActor = ws._actor || state.lastActor || 'ui'
           const serverTs = Date.now()
           // Merge any incoming files (extract base64 to disk)
           if (msg.files) mergeFiles(state, msg.files)
@@ -1186,6 +1394,9 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`\n📝 Local Keep server running at:`)
   console.log(`   → http://localhost:${PORT}`)
   console.log(`   → http://0.0.0.0:${PORT}`)
+  if (process.env.LOCAL_KEEP_PUBLIC_URL) {
+    console.log(`   → UI: ${process.env.LOCAL_KEEP_PUBLIC_URL}`)
+  }
   console.log(`\n💾 Data stored in: ${DATA_DIR}`)
   console.log(`🔄 Real-time sync enabled via WebSocket\n`)
 })

@@ -50,11 +50,11 @@ export function createSessionStore({ db, dataDir }) {
     return sessionId
   }
 
-  function persistRow(sessionId, hash, expiresAt) {
+  function persistRow(sessionId, userId, hash, expiresAt) {
     try {
       db.prepare(`
-        INSERT OR REPLACE INTO sessions (sessionId, hash, expiresAt) VALUES (?, ?, ?)
-      `).run(sessionId, hash, expiresAt)
+        INSERT OR REPLACE INTO sessions (sessionId, user_id, hash, expiresAt) VALUES (?, ?, ?, ?)
+      `).run(sessionId, userId || null, hash || '', expiresAt)
     } catch (_) { /* best-effort */ }
   }
 
@@ -66,10 +66,14 @@ export function createSessionStore({ db, dataDir }) {
   function hydrate() {
     try {
       const now = Date.now()
-      const rows = db.prepare('SELECT sessionId, hash, expiresAt FROM sessions').all()
+      const rows = db.prepare('SELECT sessionId, user_id, hash, expiresAt FROM sessions').all()
       for (const row of rows) {
         if (row.expiresAt > now) {
-          sessions.set(row.sessionId, { hash: row.hash, expiresAt: row.expiresAt })
+          sessions.set(row.sessionId, {
+            userId: row.user_id || null,
+            hash: row.hash,
+            expiresAt: row.expiresAt
+          })
         } else {
           deleteRow(row.sessionId)
         }
@@ -77,23 +81,46 @@ export function createSessionStore({ db, dataDir }) {
     } catch (_) { /* schema not yet created? safe to ignore */ }
   }
 
-  function issue(hash) {
+  function issue(input = {}) {
+    const options = typeof input === 'string' ? { hash: input } : input
     const sessionId = crypto.randomBytes(24).toString('hex')
     const expiresAt = Date.now() + SESSION_MAX_AGE_SECONDS * 1000
-    sessions.set(sessionId, { hash, expiresAt })
-    persistRow(sessionId, hash, expiresAt)
+    const entry = {
+      userId: options.userId || null,
+      hash: options.hash || '',
+      expiresAt
+    }
+    sessions.set(sessionId, entry)
+    persistRow(sessionId, entry.userId, entry.hash, expiresAt)
     return { sessionId, expiresAt }
   }
 
   function validate(sessionId) {
     if (!sessionId) return null
-    const entry = sessions.get(sessionId)
-    if (!entry) return null
-    if (entry.expiresAt <= Date.now()) {
+    // The DB is authoritative so revocation from another process (CLI reset,
+    // stdio adapter, second server) is effective immediately. The Map is a
+    // read cache.
+    let row = null
+    try {
+      row = db.prepare(
+        'SELECT user_id, hash, expiresAt FROM sessions WHERE sessionId = ?'
+      ).get(sessionId)
+    } catch (_) { /* schema not ready */ }
+    if (!row) {
+      sessions.delete(sessionId)
+      return null
+    }
+    if (row.expiresAt <= Date.now()) {
       sessions.delete(sessionId)
       deleteRow(sessionId)
       return null
     }
+    const entry = {
+      userId: row.user_id || null,
+      hash: row.hash,
+      expiresAt: row.expiresAt
+    }
+    sessions.set(sessionId, entry)
     return entry
   }
 
@@ -104,9 +131,31 @@ export function createSessionStore({ db, dataDir }) {
     return had
   }
 
+  function revokeUser(userId, { exceptSessionId = null } = {}) {
+    if (!userId) return 0
+    let count = 0
+    for (const [sessionId, entry] of sessions.entries()) {
+      if (entry.userId === userId && sessionId !== exceptSessionId) {
+        sessions.delete(sessionId)
+        deleteRow(sessionId)
+        count += 1
+      }
+    }
+    // Also remove rows issued by another process that are not in this Map.
+    try {
+      const info = db.prepare(
+        'DELETE FROM sessions WHERE user_id = ? AND sessionId != ?'
+      ).run(userId, exceptSessionId || '')
+      count = Math.max(count, info.changes || 0)
+    } catch (_) { /* best effort */ }
+    return count
+  }
+
   function cookieHeader(sessionId, { clear = false } = {}) {
     const flags = ['Path=/', 'HttpOnly', 'SameSite=Strict']
-    if (process.env.NODE_ENV === 'production') flags.push('Secure')
+    if (process.env.NODE_ENV === 'production' || process.env.COOKIE_SECURE === '1') {
+      flags.push('Secure')
+    }
     if (clear) {
       flags.push('Max-Age=0')
       return `${COOKIE_NAME}=; ${flags.join('; ')}`
@@ -140,6 +189,7 @@ export function createSessionStore({ db, dataDir }) {
     issue,
     validate,
     revoke,
+    revokeUser,
     signCookie,
     parseCookie,
     cookieHeader,
