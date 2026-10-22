@@ -1,6 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { parseTags, normalizeTag, tagAncestors, tagMatchesPrefix } from '../src/shared/tags.js'
+import {
+  parseTags,
+  normalizeTag,
+  tagAncestors,
+  tagMatchesPrefix,
+  isValidTag,
+  addTagsToContent,
+  removeTagsFromContent
+} from '../src/shared/tags.js'
 import { parseWikiLinks, normalizeLinkTitle } from '../src/shared/links.js'
 
 test('parseTags extracts hierarchical tags and ignores code/colours', () => {
@@ -23,6 +31,31 @@ test('tag normalisation and hierarchy helpers', () => {
   assert.equal(tagMatchesPrefix('project/local-keep', 'project'), true)
   assert.equal(tagMatchesPrefix('project/local-keep', 'project', { exact: true }), false)
   assert.equal(tagMatchesPrefix('project/local/design', 'project/local'), true)
+})
+
+test('tag editing helpers add and remove tags without touching code', () => {
+  assert.equal(isValidTag('#Project/Local'), true)
+  assert.equal(isValidTag('#e2ece4'), false)
+  assert.equal(isValidTag(''), false)
+
+  const added = addTagsToContent('Body\n\n```\n#code\n```', ['#Project/Local', 'project/local', 'bad tag'])
+  assert.equal(added.added.length, 1)
+  assert.equal(added.added[0], 'project/local')
+  assert.deepEqual(parseTags(added.content), ['project/local'])
+  assert.match(added.content, /```\n#code\n```/)
+  assert.match(added.content, /#project\/local$/)
+
+  const unchanged = addTagsToContent(added.content, ['project/local'])
+  assert.deepEqual(unchanged.added, [])
+  assert.equal(unchanged.content, added.content)
+
+  const removed = removeTagsFromContent('See #project/local and #project/local/design.\n\n```\n#project/local\n```', ['project/local'])
+  assert.deepEqual(removed.removed, ['project/local'])
+  assert.equal(removed.content, 'See and #project/local/design.\n\n```\n#project/local\n```')
+
+  const leadingFence = addTagsToContent('```\n#code\nunclosed', ['tag'])
+  assert.deepEqual(parseTags(leadingFence.content), ['tag'])
+  assert.match(leadingFence.content, /^#tag\n\n```/)
 })
 
 test('parseWikiLinks handles labels, explicit ids, and code', () => {

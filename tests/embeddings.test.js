@@ -114,6 +114,52 @@ test('embedding config is encrypted and model names reuse their own tables', asy
   }
 })
 
+test('Qwen3 query embeddings include the retrieval instruction', async () => {
+  const ctx = createFreshContext()
+  try {
+    const calls = []
+    const service = createEmbeddingService({
+      db: ctx.db,
+      dataDir: ctx.dir,
+      tags: ctx.tags,
+      clientFactory: () => ({
+        async probe() { return { dimensions: 3, latencyMs: 1 } },
+        async embed(texts) {
+          calls.push(...texts)
+          return texts.map(text => /alpha/i.test(text) ? [1, 0, 0] : [0, 0, 1])
+        }
+      }),
+      autoIndex: false
+    })
+    assert.equal(service.loadVec(), true)
+    const note = ctx.notes.createNote({ title: 'Alpha', content: 'alpha project notes' })
+
+    await service.saveConfig({
+      baseUrl: 'https://example.test/v1',
+      apiKey: 'secret-key',
+      model: 'Qwen/Qwen3-Embedding-8B',
+      dimensions: 3,
+      chunkSize: 400,
+      chunkOverlap: 40,
+      enabled: true
+    })
+
+    calls.length = 0
+    await service.indexNoteNow(note.id, { force: true })
+    assert.equal(calls.some(text => text.startsWith('Instruct:')), false)
+
+    calls.length = 0
+    const matches = await service.searchMatches({ query: 'alpha', limit: 5 })
+    assert.equal(matches.results[0]?.noteId, note.id)
+    const queryInput = calls.find(text => text.startsWith('Instruct:'))
+    assert.ok(queryInput)
+    assert.match(queryInput, /Given a web search query, retrieve relevant passages/)
+    assert.match(queryInput, /Query: alpha$/)
+  } finally {
+    ctx.cleanup()
+  }
+})
+
 test('embedding secrets round-trip and reject tampering', () => {
   const encrypted = encryptSecret('server-secret', 'api-key-value')
   assert.notEqual(encrypted, 'api-key-value')

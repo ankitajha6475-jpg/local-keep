@@ -3,7 +3,7 @@
     <div class="backlinks-panel">
       <div class="backlinks-header">
         <h3>🔗 Backlinks</h3>
-        <button type="button" class="backlinks-close" @click="$emit('close')">×</button>
+        <button type="button" class="backlinks-close" data-shortcut="Esc" @click="$emit('close')">×</button>
       </div>
       <p v-if="loading" class="backlinks-empty">Loading…</p>
       <p v-else-if="error" class="error">{{ error }}</p>

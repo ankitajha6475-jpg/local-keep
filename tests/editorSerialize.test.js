@@ -47,12 +47,14 @@ test('serializes blockquotes and code', () => {
 test('serializes images with width and wiki links', () => {
   const md = serialize([
     '<p><img src="/api/images/a.png" alt="cat" data-md="![cat](/api/images/a.png){width=320}" data-width="320"></p>',
-    '<p><a class="note-link" data-note-id="n1" data-note-label="Other" href="#">Other</a></p>',
-    '<p><span class="note-link note-link--broken" data-note-label="Missing">Missing</span></p>'
+    '<p><a class="note-link" data-note-id="n1" data-note-target="Other" data-note-label="Other" href="#">Other</a></p>',
+    '<p><span class="note-link note-link--broken" data-note-target="Missing" data-note-label="Missing">Missing</span></p>',
+    '<p><span class="note-link note-link--broken" data-note-target="Missing note" data-note-label="alias">alias</span></p>'
   ].join(''))
   assert.match(md, /!\[cat\]\(\/api\/images\/a.png\)\{width=320\}/)
   assert.match(md, /\[\[note:n1\|Other\]\]/)
   assert.match(md, /\[\[Missing\]\]/)
+  assert.match(md, /\[\[Missing note\|alias\]\]/)
 })
 
 test('serializes a simple table', () => {

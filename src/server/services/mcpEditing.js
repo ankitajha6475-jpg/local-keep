@@ -191,7 +191,9 @@ export function createMcpEditingService({
       session_id: session.id,
       mode: session.mode,
       discarded: !!closeResult.discarded,
-      draft_kept: !closeResult.discarded,
+      draft_kept: typeof closeResult.draftKept === 'boolean'
+        ? closeResult.draftKept
+        : !closeResult.discarded,
       remaining_editors: closeResult.remaining ?? null
     }
   }
@@ -296,8 +298,17 @@ export function createMcpEditingService({
       throw fail(400, 'mode must be read or write', 'invalid_mode')
     }
     const head = selectHead.get(noteId)
-    if (!head || head.archived_at) {
+    if (!head) {
       throw fail(404, 'Note not found', 'note_not_found', null, 'Choose an active text note from list_notes/search_notes.')
+    }
+    if (head.archived_at) {
+      throw fail(
+        409,
+        'The note is archived',
+        'note_archived',
+        { note_id: noteId, archived_at: head.archived_at },
+        'Restore the note with restore_note, then open a read or write session.'
+      )
     }
     if (head.type !== 'text') {
       throw fail(400, 'Persistent MCP sessions are only available for text notes', 'unsupported_note_type', null, 'Open a text note instead of a whiteboard.')

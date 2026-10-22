@@ -4,6 +4,34 @@ import * as Y from 'yjs'
 import { createFreshContext } from './helpers/testDb.js'
 import { createTextCollabService } from '../src/server/services/textCollab.js'
 
+test('draft listing returns uncommitted shared drafts and omits clean ones', () => {
+  const ctx = createFreshContext()
+  try {
+    const note = ctx.notes.createNote({ title: 'Live', content: 'hello' })
+    const service = createTextCollabService({ db: ctx.db, persistDelay: 10 })
+
+    assert.deepEqual(service.listDrafts(), [])
+
+    service.snapshot(note.id)
+    service.applyTextSnapshot(note.id, 'draft body')
+    service.applyTitle(note.id, 'Draft title')
+    service.persistNow(note.id)
+
+    const drafts = service.listDrafts()
+    assert.equal(drafts.length, 1)
+    assert.equal(drafts[0].noteId, note.id)
+    assert.equal(drafts[0].title, 'Draft title')
+    assert.equal(drafts[0].headTitle, 'Live')
+    assert.equal(drafts[0].content, 'draft body')
+    assert.equal(drafts[0].baseRevisionId, note.revisionId)
+
+    service.resetToHead(note.id)
+    assert.deepEqual(service.listDrafts(), [])
+  } finally {
+    ctx.cleanup()
+  }
+})
+
 test('live text docs initialize from the head and merge concurrent Yjs edits', () => {
   const ctx = createFreshContext()
   try {

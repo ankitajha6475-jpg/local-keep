@@ -17,6 +17,7 @@ const {
   normalizeMarkdown,
   transformOutsideCode
 } = await import('../src/utils/markdown.js')
+const { serializeEditorToMarkdown } = await import('../src/utils/editorSerialize.js')
 
 test('renderMarkdown renders common markdown with GFM', () => {
   const html = renderMarkdown([
@@ -43,6 +44,33 @@ test('renderMarkdown renders common markdown with GFM', () => {
   assert.match(html, /<ul>/)
   assert.match(html, /<table>/)
   assert.match(html, /<pre><code/)
+})
+
+test('single tildes in paths stay literal while double tildes strike through', () => {
+  const html = renderMarkdown([
+    '"~/.claude/settings.json": false,',
+    '"~/.github/hooks": true,',
+    '',
+    '~~done~~',
+    '',
+    '~not struck~'
+  ].join('\n'))
+
+  assert.equal(html.includes('<del>/.claude'), false)
+  assert.match(html, /~\/\.claude\/settings\.json/)
+  assert.match(html, /<del>done<\/del>/)
+  assert.equal(html.includes('<del>not struck</del>'), false)
+  assert.match(html, /~not struck~/)
+})
+
+test('rendering and serialising a path with tildes does not create strikethrough', () => {
+  const content = '"~/.claude/settings.json": false,\n"~/.github/hooks": true'
+  const root = document.createElement('div')
+  root.innerHTML = renderMarkdown(content)
+  const serialized = serializeEditorToMarkdown(root)
+  assert.equal(serialized.includes('~~'), false)
+  assert.match(serialized, /~\/\.claude\/settings\.json/)
+  assert.match(serialized, /~\/\.github\/hooks/)
 })
 
 test('mermaid fences become a hydratable placeholder', () => {
@@ -89,6 +117,31 @@ test('wiki links use the resolver and stay literal in code', () => {
   assert.match(html, /note-link--broken/)
   assert.match(html, /<code>\[\[Other\]\]<\/code>/)
   assert.match(html, /<pre><code>\[\[Other\]\]/)
+})
+
+test('htmlToMarkdown handles common rich structures and normalises spans', () => {
+  const markdown = htmlToMarkdown([
+    '<h2>Title</h2>',
+    '<p>Hello <s>gone</s> <span style="font-weight:700">bold style</span> <span style="font-style:italic">italic style</span></p>',
+    '<table><tr><td>A</td><td>1</td></tr><tr><td>B</td><td>2</td></tr></table>',
+    '<table><tr><th colspan="2">Header</th></tr><tr><td>A</td><td>B</td></tr></table>',
+    '<pre>line 1\n  indented</pre>',
+    '<ul><li><input type="checkbox" checked> Done</li></ul>',
+    '<b style="font-weight:normal"><p>Docs normal wrapper</p></b>',
+    '<img src="/a.png" alt="A" style="width: 320px">'
+  ].join(''))
+
+  assert.match(markdown, /^## Title/m)
+  assert.match(markdown, /~~gone~~/)
+  assert.match(markdown, /\*\*bold style\*\*/)
+  assert.match(markdown, /\*italic style\*/)
+  assert.match(markdown, /\| A \| 1 \|/)
+  assert.match(markdown, /\| Header \|  \|/)
+  assert.match(markdown, /```\nline 1\n  indented\n```/)
+  assert.match(markdown, /- \[x\] Done/)
+  assert.match(markdown, /Docs normal wrapper/)
+  assert.equal(markdown.includes('**\n\nDocs'), false)
+  assert.match(markdown, /!\[A\]\(\/a\.png\)\{width=320\}/)
 })
 
 test('htmlToMarkdown strips rich context and keeps semantics', () => {

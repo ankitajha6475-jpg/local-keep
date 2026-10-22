@@ -22,6 +22,8 @@ import { migration008EmbeddingVariants } from '../../src/server/migrations/008-e
 import { migration009EmbeddingTuning } from '../../src/server/migrations/009-embedding-tuning.js'
 import { migration010TokenAdmin } from '../../src/server/migrations/010-token-admin.js'
 import { migration011McpSessionLimits } from '../../src/server/migrations/011-mcp-session-limits.js'
+import { migration012AppSettings } from '../../src/server/migrations/012-app-settings.js'
+import { migration013NoteColor } from '../../src/server/migrations/013-note-color.js'
 
 function makeDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'local-keep-test-'))
@@ -78,7 +80,7 @@ export function createFreshContext() {
   const ctx = openContext()
   const result = runMigrations({
     db: ctx.db,
-    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits],
+    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits, migration012AppSettings, migration013NoteColor],
     backupDir: ctx.backupDir,
     context: { imageStore: ctx.imageStore }
   })
@@ -95,7 +97,7 @@ export function createLegacyContext() {
   const migrate = () => {
     const result = runMigrations({
       db: ctx.db,
-      migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits],
+      migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits, migration012AppSettings, migration013NoteColor],
       backupDir: ctx.backupDir,
       context: { imageStore: ctx.imageStore }
     })

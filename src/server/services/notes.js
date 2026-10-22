@@ -1,4 +1,5 @@
 import { getDisplayTitle } from '../../shared/notesText.js'
+import { normalizeNoteColor } from '../../shared/noteColors.js'
 import { removeNoteFromIndex } from '../fts.js'
 import { EVENTS } from '../events.js'
 
@@ -90,6 +91,99 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     }))
   }
 
+  /**
+   * Lightweight dashboard index. It deliberately excludes `content` and
+   * `canvasData`: the dashboard uses it for ordering, filters, counts, links,
+   * and selection, then hydrates card bodies in bounded windows.
+   */
+  function listNoteIndex({ includeArchived = true } = {}) {
+    const where = includeArchived ? '' : ' WHERE archived_at IS NULL'
+    const rows = db.prepare(`
+      SELECT id, title, display_title, type, head_revision_id, revision_no,
+             archived_at, createdAt, updatedAt, color,
+             substr(content, 1, 400) AS content_preview
+      FROM notes${where}
+      ORDER BY updatedAt DESC
+    `).all()
+
+    // Keep SQL variable counts bounded for very large libraries.
+    const ids = rows.map(row => row.id)
+    const tagMap = new Map()
+    const counts = new Map()
+    for (let index = 0; index < ids.length; index += 500) {
+      const chunk = ids.slice(index, index + 500)
+      for (const [id, value] of tags?.tagsByNote(chunk) || []) tagMap.set(id, value)
+      for (const [id, value] of links?.countsByNote(chunk) || []) counts.set(id, value)
+    }
+    return rows.map(row => ({
+      id: row.id,
+      title: row.title || '',
+      displayTitle: row.display_title || getDisplayTitle({
+        title: row.title,
+        content: row.content_preview
+      }),
+      type: row.type,
+      revisionId: row.head_revision_id || null,
+      revisionNo: row.revision_no || 1,
+      archivedAt: row.archived_at || null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      color: row.color || null,
+      tags: tagMap.get(row.id) || [],
+      linkCount: counts.get(row.id)?.links || 0,
+      backlinkCount: counts.get(row.id)?.backlinks || 0
+    }))
+  }
+
+  /**
+   * Batched card details for the virtualized dashboard. Returns rows in the
+   * requested order, omits canvas scene data, and is capped by the caller.
+   */
+  function listNoteCardsByIds(ids = []) {
+    const unique = [...new Set((Array.isArray(ids) ? ids : []).map(String).filter(Boolean))]
+    if (unique.length === 0) return []
+    const placeholders = unique.map(() => '?').join(',')
+    const rows = db.prepare(`
+      SELECT id, title, substr(content, 1, 12000) AS content,
+             length(content) AS content_length, display_title, type, thumbnail,
+             createdAt, updatedAt, head_revision_id, revision_no, archived_at,
+             color, last_checkpoint_at
+      FROM notes
+      WHERE id IN (${placeholders})
+    `).all(...unique)
+    const byId = new Map(rows.map(row => [row.id, row]))
+    const ordered = unique.map(id => byId.get(id)).filter(Boolean)
+
+    const orderedIds = ordered.map(row => row.id)
+    const tagMap = tags?.tagsByNote(orderedIds) || new Map()
+    const counts = links?.countsByNote(orderedIds) || new Map()
+    return ordered.map(row => {
+      const note = toDto(row, {
+        tags: tagMap.get(row.id) || [],
+        linkCount: counts.get(row.id)?.links || 0,
+        backlinkCount: counts.get(row.id)?.backlinks || 0
+      })
+      note.contentTruncated = Number(row.content_length || 0) > String(row.content || '').length
+      return note
+    })
+  }
+
+  function listArchivedNotes() {
+    return db.prepare(`
+      SELECT id, title, display_title, revision_no, archived_at, updatedAt
+      FROM notes
+      WHERE archived_at IS NOT NULL
+      ORDER BY archived_at ASC, updatedAt DESC
+    `).all().map(row => ({
+      id: row.id,
+      title: row.title || '',
+      displayTitle: row.display_title || row.title || 'Untitled',
+      revisionNo: row.revision_no || 1,
+      archivedAt: row.archived_at,
+      updatedAt: row.updatedAt
+    }))
+  }
+
   function getNote(id) {
     const row = db.prepare('SELECT * FROM notes WHERE id = ?').get(id)
     if (!row) throw fail(404, 'Note not found', 'note_not_found')
@@ -175,6 +269,18 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
       unchanged: !!result.unchanged,
       notice: result.notice
     }
+  }
+
+  function setNoteColor(id, color) {
+    const row = db.prepare('SELECT * FROM notes WHERE id = ?').get(id)
+    if (!row) throw fail(404, 'Note not found', 'note_not_found')
+    const normalized = normalizeNoteColor(color)
+    if (normalized === undefined) {
+      throw fail(400, 'Unknown note color', 'invalid_note_color')
+    }
+    // Color is presentation metadata: do not bump updatedAt or create a revision.
+    db.prepare('UPDATE notes SET color = ? WHERE id = ?').run(normalized, id)
+    return getNote(id)
   }
 
   function archiveNote(id, actor = 'ui', source = 'ui') {
@@ -285,9 +391,13 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
 
   return {
     listNotes,
+    listNoteIndex,
+    listNoteCardsByIds,
+    listArchivedNotes,
     getNote,
     createNote,
     updateNote,
+    setNoteColor,
     archiveNote,
     archiveNotes,
     restoreNote,

@@ -1,5 +1,5 @@
 <template>
-  <div id="app">
+  <div id="app" :style="uiStyleVars">
     <!-- Setup / Onboarding Screen -->
     <div v-if="showSetup" class="auth-screen">
       <div class="auth-card">
@@ -144,68 +144,172 @@
     </div>
 
     <!-- Main App -->
-    <div v-else-if="isAuthenticated" class="main-app">
-      <header @click="fabMenuOpen = false">
-        <template v-if="!searchOpen">
-          <h1>📝 Local Keep</h1>
-          <div class="header-right">
-            <span class="sync-status" :class="{ connected: wsConnected, connecting: wsConnecting }">
-              {{ wsConnected ? '● Synced' : wsConnecting ? '○ Connecting...' : '○ Offline' }}
-            </span>
-            <button v-if="!wsConnected && !wsConnecting" @click="manualReconnect" class="reconnect-btn" title="Reconnect now">🔌 Connect</button>
-            <button @click="loadNotes" class="refresh-btn" title="Refresh notes">↻</button>
-            <button @click="tagSidebarOpen = !tagSidebarOpen" class="search-toggle-btn" :class="{ active: tagSidebarOpen }" title="Toggle tags">🏷</button>
-            <button @click="openGraph()" class="search-toggle-btn" title="Relationship graph">🕸</button>
-            <button @click="openSearch" class="search-toggle-btn" title="Search (Ctrl+I)">🔍</button>
-            <button @click="cleanupImages" class="cleanup-btn" :disabled="cleanupRunning" title="Clean unused images">🧹</button>
-            <div class="account-menu-wrap" @click.stop>
-              <button type="button" class="account-btn" @click="accountMenuOpen = !accountMenuOpen">
-                <span class="account-avatar">{{ userInitials }}</span>
-                <span class="account-name">{{ currentUser?.displayName || currentUser?.username }}</span>
-                <span class="account-chevron">▾</span>
+    <div v-else-if="isAuthenticated" class="main-app" :class="{ 'shortcuts-visible': shortcutsVisible }">
+      <header ref="appHeader" @click="fabMenuOpen = false">
+        <div class="header-inner" :class="{ 'shortcuts-visible': shortcutsVisible }">
+          <template v-if="!searchOpen">
+            <div class="brand">
+              <span class="brand-mark" aria-hidden="true">
+                <AppIcon name="note" :size="20" :stroke-width="2" />
+              </span>
+              <h1>Local Keep</h1>
+            </div>
+            <div class="header-right">
+              <span class="sync-status" :class="{ connected: wsConnected, connecting: wsConnecting }" title="Live connection status">
+                <span class="sync-dot" aria-hidden="true"></span>
+                <span class="sync-label">{{ wsConnected ? 'Synced' : wsConnecting ? 'Connecting…' : 'Offline' }}</span>
+              </span>
+              <button
+                v-if="!wsConnected && !wsConnecting"
+                @click="manualReconnect"
+                class="reconnect-btn"
+                :data-shortcut="shortcut('reconnect')"
+                aria-label="Reconnect now"
+              >
+                <AppIcon name="zap" :size="15" />
+                <span>Connect</span>
               </button>
-              <div v-if="accountMenuOpen" class="account-menu">
-                <div class="account-menu-head">
-                  <strong>{{ currentUser?.displayName || currentUser?.username }}</strong>
-                  <small>@{{ currentUser?.username }} · {{ currentUser?.role }}</small>
+              <button
+                @click="loadNotes"
+                class="icon-btn"
+                data-label="Refresh notes"
+                :data-shortcut="shortcut('refresh')"
+                aria-label="Refresh notes"
+              >
+                <AppIcon name="refresh" />
+              </button>
+              <button
+                @click="tagSidebarOpen = !tagSidebarOpen"
+                class="icon-btn"
+                :class="{ active: tagSidebarOpen }"
+                data-label="Toggle tags"
+                :data-shortcut="shortcut('toggleTags')"
+                aria-label="Toggle tags"
+              >
+                <AppIcon name="tag" />
+              </button>
+              <button
+                @click="openGraph()"
+                class="icon-btn"
+                data-label="Relationship graph"
+                :data-shortcut="shortcut('graph')"
+                aria-label="Relationship graph"
+              >
+                <AppIcon name="graph" />
+              </button>
+              <button
+                @click="openSearch"
+                class="icon-btn"
+                data-label="Search"
+                :data-shortcut="shortcut('search')"
+                :aria-label="`Search (${shortcut('search')})`"
+              >
+                <AppIcon name="search" />
+              </button>
+              <button
+                @click="cleanupImages"
+                class="icon-btn"
+                :disabled="cleanupRunning"
+                data-label="Clean unused images"
+                :data-shortcut="shortcut('cleanImages')"
+                aria-label="Clean unused images"
+              >
+                <AppIcon name="sparkles" />
+              </button>
+              <div class="account-menu-wrap" @click.stop>
+                <button
+                  type="button"
+                  class="account-btn"
+                  :aria-expanded="accountMenuOpen"
+                  aria-haspopup="menu"
+                  :data-shortcut="shortcut('accountMenu')"
+                  @click="accountMenuOpen = !accountMenuOpen"
+                >
+                  <span class="account-avatar">{{ userInitials }}</span>
+                  <span class="account-name">{{ currentUser?.displayName || currentUser?.username }}</span>
+                  <span class="account-chevron"><AppIcon name="chevron-down" :size="14" /></span>
+                </button>
+                <div v-if="accountMenuOpen" class="account-menu" role="menu">
+                  <div class="account-menu-head">
+                    <strong>{{ currentUser?.displayName || currentUser?.username }}</strong>
+                    <small>@{{ currentUser?.username }} · {{ currentUser?.role }}</small>
+                  </div>
+                  <button type="button" role="menuitem" :data-shortcut="shortcut('accountSettings')" @click="openAccountSettings()">
+                    <AppIcon name="settings" :size="16" /> Account settings
+                  </button>
+                  <button v-if="isAdmin" type="button" role="menuitem" :data-shortcut="shortcut('manageUsers')" @click="openUsers">
+                    <AppIcon name="users" :size="16" /> Manage users
+                  </button>
+                  <button v-if="isAdmin" type="button" role="menuitem" :data-shortcut="shortcut('interfaceSettings')" @click="openUiSettings">
+                    <AppIcon name="sliders" :size="16" /> Interface
+                  </button>
+                  <button v-if="isAdmin" type="button" role="menuitem" :data-shortcut="shortcut('mcpSettings')" @click="openMcpSettings">
+                    <AppIcon name="plug" :size="16" /> MCP access
+                  </button>
+                  <button v-if="isAdmin" type="button" role="menuitem" :data-shortcut="shortcut('hybridSettings')" @click="openEmbeddingSettings">
+                    <AppIcon name="sparkles" :size="16" /> Hybrid search
+                  </button>
+                  <button type="button" role="menuitem" class="account-menu-danger" :data-shortcut="shortcut('logout')" @click="logout">
+                    <AppIcon name="lock" :size="16" /> Lock workspace
+                  </button>
                 </div>
-                <button type="button" @click="openAccountSettings()">⚙️ Account settings</button>
-                <button v-if="isAdmin" type="button" @click="openUsers">👥 Manage users</button>
-                <button v-if="isAdmin" type="button" @click="openMcpSettings">🔌 MCP access</button>
-                <button v-if="isAdmin" type="button" @click="openEmbeddingSettings">✨ Semantic search</button>
-                <button type="button" class="account-menu-danger" @click="logout">🔒 Lock workspace</button>
               </div>
             </div>
-          </div>
-        </template>
-        <template v-else>
-          <div class="header-search-field">
-            <span class="search-icon">🔍</span>
-            <input
-              ref="searchInput"
-              v-model="searchQuery"
-              type="text"
-              :placeholder="semanticSearchEnabled ? 'Semantic search...' : 'Search notes...'"
-              class="search-input"
-              @input="onSearchInput"
-            >
-            <button
-              type="button"
-              class="search-semantic-btn"
-              :class="{ active: semanticSearchEnabled }"
-              @click="toggleSemanticSearch"
-              :title="semanticSearchEnabled ? 'Semantic search on' : 'Semantic search off'"
-            >✨</button>
-            <button v-if="searchQuery" @click="clearSearch" class="search-clear-btn" title="Clear search">×</button>
-            <button @click="closeSearch" class="search-close-btn" title="Close search (Esc)">✕</button>
-          </div>
-        </template>
+          </template>
+          <template v-else>
+            <div class="header-search-field">
+              <span class="search-icon" aria-hidden="true"><AppIcon name="search" :size="18" /></span>
+              <input
+                ref="searchInput"
+                v-model="searchQuery"
+                type="text"
+                :placeholder="semanticSearchEnabled ? 'Hybrid search…' : 'Search notes…'"
+                class="search-input"
+                @input="onSearchInput"
+              >
+              <button
+                type="button"
+                class="icon-btn icon-btn--sm search-semantic-btn"
+                :class="{ active: semanticSearchEnabled }"
+                :disabled="!semanticSearchAvailable"
+                :title="semanticSearchAvailable
+                  ? (semanticSearchEnabled ? 'Turn hybrid search off' : 'Turn hybrid search on')
+                  : 'Enable an embedding model to use hybrid search'"
+                data-label="Hybrid search"
+                :data-shortcut="shortcut('hybridToggle')"
+                :aria-label="semanticSearchEnabled ? 'Turn hybrid search off' : 'Turn hybrid search on'"
+                @click="toggleSemanticSearch"
+              >
+                <AppIcon name="sparkles" :size="16" />
+              </button>
+              <button
+                v-if="searchQuery"
+                @click="clearSearch"
+                class="icon-btn icon-btn--sm search-clear-btn"
+                data-label="Clear search"
+                :data-shortcut="shortcut('clearSearch')"
+                aria-label="Clear search"
+              >
+                <AppIcon name="broom" :size="16" />
+              </button>
+              <button
+                @click="closeSearch"
+                class="icon-btn icon-btn--sm search-close-btn"
+                data-label="Close search"
+                :data-shortcut="shortcut('closeSearch')"
+                :aria-label="`Close search (${shortcut('closeSearch')})`"
+              >
+                <AppIcon name="x" :size="16" />
+              </button>
+            </div>
+          </template>
+        </div>
       </header>
 
       <!-- Revision / conflict notice -->
       <div v-if="revisionNotice" class="revision-toast" role="status">
         <span>{{ revisionNotice }}</span>
-        <button type="button" @click="dismissRevisionNotice" title="Dismiss">×</button>
+        <button type="button" :data-shortcut="shortcut('dismissNotice')" @click="dismissRevisionNotice" title="Dismiss">×</button>
       </div>
 
       <main @click="fabMenuOpen = false">
@@ -215,6 +319,7 @@
             :tree="tagsTree"
             :active-tag="activeTag"
             :untagged-only="untaggedOnly"
+            :mod-key="modKey"
             @select="selectTag"
             @close="tagSidebarOpen = false"
           />
@@ -225,9 +330,18 @@
             <span class="selection-count">{{ selectedNoteIds.size }} selected</span>
           </div>
           <div class="selection-actions">
-            <button @click="selectAll" class="btn-select-all">Select All</button>
-            <button @click="deselectAll" class="btn-deselect-all">Deselect All</button>
-            <button @click="triggerDeleteConfirm(null)" class="btn-delete-selected" title="Delete selected notes">
+            <button @click="selectAll" class="btn-select-all" :data-shortcut="shortcut('selectAll')">Select All</button>
+            <button @click="deselectAll" class="btn-deselect-all" :data-shortcut="shortcut('deselectAll')">Deselect All</button>
+            <button
+              @click="openSelectionLinks"
+              class="btn-selection-links"
+              :disabled="selectionLinksLoading"
+              :data-shortcut="shortcut('selectionLinks')"
+              title="List what these notes link to and what links to them"
+            >
+              🔗 Links
+            </button>
+            <button @click="triggerDeleteConfirm(null)" class="btn-delete-selected" :data-shortcut="shortcut('deleteSelected')" title="Delete selected notes">
               🗑️ Delete
             </button>
           </div>
@@ -236,163 +350,147 @@
         <!-- Sort / Control Bar -->
         <div v-else class="control-bar">
           <div class="control-left">
-            <span class="notes-count" v-if="!searchQuery">{{ sortedNotes.length }} notes</span>
-            <span class="notes-count" v-else-if="searchLoading">Searching...</span>
-            <span class="notes-count" v-else>{{ sortedNotes.length }} results</span>
+            <div class="dashboard-tabs" role="tablist" aria-label="Note views">
+              <button
+                type="button"
+                role="tab"
+                class="dashboard-tab"
+                :class="{ active: dashboardTab === 'notes' }"
+                :aria-selected="dashboardTab === 'notes'"
+                :data-shortcut="shortcut('tabNotes')"
+                @click="setDashboardTab('notes')"
+              >
+                Notes <span class="tab-count">{{ notesTabCount }}</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                class="dashboard-tab"
+                :class="{ active: dashboardTab === 'archived' }"
+                :aria-selected="dashboardTab === 'archived'"
+                :data-shortcut="shortcut('tabArchived')"
+                @click="setDashboardTab('archived')"
+              >
+                Archived <span class="tab-count">{{ archivedTabCount }}</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                class="dashboard-tab"
+                :class="{ active: dashboardTab === 'drafts' }"
+                :aria-selected="dashboardTab === 'drafts'"
+                :data-shortcut="shortcut('tabDrafts')"
+                @click="setDashboardTab('drafts')"
+              >
+                Drafts <span class="tab-count">{{ drafts.length }}</span>
+              </button>
+            </div>
+            <span class="notes-count">{{ visibleCountText }}</span>
             <span v-if="activeTag" class="tag-filter-chip">
               #{{ activeTag }}
-              <button type="button" @click="clearTag" title="Clear tag filter">×</button>
+              <button type="button" :data-shortcut="shortcut('clearTagFilter')" @click="clearTag" title="Clear tag filter">×</button>
             </span>
             <span v-else-if="untaggedOnly" class="tag-filter-chip">
               Untagged
-              <button type="button" @click="clearTag" title="Clear tag filter">×</button>
+              <button type="button" :data-shortcut="shortcut('clearTagFilter')" @click="clearTag" title="Clear tag filter">×</button>
             </span>
           </div>
           <div class="control-right">
             <button
-              @click="toggleShowArchived"
-              class="archived-toggle-btn"
-              :class="{ active: showArchived }"
-              :title="showArchived ? 'Hide archived notes' : 'Show archived notes'"
-            >{{ showArchived ? '📥 Hide archived' : '📥 Archived' }}</button>
+              v-if="dashboardTab === 'drafts'"
+              @click="loadDrafts"
+              class="drafts-refresh-btn"
+              :disabled="draftsLoading"
+              :data-shortcut="shortcut('refreshDrafts')"
+              title="Refresh drafts"
+              aria-label="Refresh drafts"
+            >
+              <AppIcon name="refresh" :size="15" />
+            </button>
             <span class="sort-label">Sort by:</span>
             <select v-model="sortBy" class="sort-select">
+              <option v-if="searchQuery.trim()" value="relevance">Relevance</option>
               <option value="updatedAt">Last Modified</option>
               <option value="createdAt">Date Created</option>
               <option value="title">Title</option>
             </select>
-            <button @click="sortOrder = sortOrder === 'asc' ? 'desc' : 'asc'" class="sort-dir-btn" :title="sortOrder === 'asc' ? 'Sort Ascending' : 'Sort Descending'">
+            <button
+              @click="sortOrder = sortOrder === 'asc' ? 'desc' : 'asc'"
+              class="sort-dir-btn"
+              :disabled="sortBy === 'relevance'"
+              :data-shortcut="shortcut('sortDirection')"
+              :title="sortBy === 'relevance' ? 'Search relevance order' : (sortOrder === 'asc' ? 'Sort Ascending' : 'Sort Descending')"
+            >
               {{ sortOrder === 'asc' ? '↑' : '↓' }}
             </button>
           </div>
         </div>
 
-        <div class="notes-grid" :class="{ 'notes-grid-selection-active': selectedNoteIds.size > 0 }">
-          <!-- Always Show Shortcuts Tip Card First -->
-          <div class="note-card shortcut-tips-card">
-            <div class="note-content">
-              <h3>💡 Quick Shortcuts</h3>
-              <div class="shortcut-tips-content">
-                <div class="shortcut-row">
-              <span class="shortcut-keys"><kbd>{{ modKey }}</kbd> + <kbd>Enter</kbd></span>
-                <span class="shortcut-desc">Create note (closed)</span>
-              </div>
-              <div class="shortcut-row">
-                <span class="shortcut-keys"><kbd>{{ modKey }}</kbd> + <kbd>Enter</kbd></span>
-                <span class="shortcut-desc">Save note (editing)</span>
-              </div>
-              <div class="shortcut-row">
-                <span class="shortcut-keys"><kbd>{{ modKey }}</kbd> + <kbd>V</kbd></span>
-                  <span class="shortcut-desc">Paste clipboard note</span>
-                </div>
-                <div class="shortcut-row">
-                  <span class="shortcut-keys"><kbd>Esc</kbd></span>
-                  <span class="shortcut-desc">Cancel edit / delete</span>
-                </div>
-                <div class="shortcut-row">
-                  <span class="shortcut-keys"><kbd>{{ modKey }}</kbd> + <kbd>I</kbd></span>
-                  <span class="shortcut-desc">Open search</span>
-                </div>
-                <div class="shortcut-row">
-                  <span class="shortcut-keys"><kbd>{{ modKey }}</kbd> + <kbd>Shift</kbd> + <kbd>M</kbd></span>
-                  <span class="shortcut-desc">Cycle Visual / Source</span>
-                </div>
-              </div>
-            </div>
+        <div
+          ref="notesGridRef"
+          class="notes-grid notes-grid-virtual"
+          :class="{ 'notes-grid-selection-active': selectedNoteIds.size > 0 }"
+        >
+          <div v-if="notesLoading && dashboardNotes.length === 0" class="notes-empty">
+            <p>Loading notes…</p>
           </div>
-
-          <!-- Real Note Cards -->
-          <div 
-            v-for="note in sortedNotes" 
-            :key="note.id" 
-            class="note-card" 
-            :class="{ 
-              editing: note.id === editingId,
-              selected: selectedNoteIds.has(note.id),
-              'canvas-note': note.type === 'canvas',
-              archived: !!note.archivedAt
-            }"
-            @click="handleCardClick(note)"
+          <div v-else-if="notesError && dashboardNotes.length === 0" class="notes-empty">
+            <p class="error">{{ notesError }}</p>
+            <button type="button" class="image-btn" :data-shortcut="shortcut('retryNotes')" @click="loadNotes">Retry</button>
+          </div>
+          <div v-else-if="dashboardNotes.length === 0" class="notes-empty">
+            <template v-if="dashboardTab === 'drafts'">
+              <p v-if="draftsLoading">Loading drafts…</p>
+              <p v-else-if="draftsError" class="error">{{ draftsError }}</p>
+              <p v-else>No drafts yet. Use <strong>Draft</strong> in the editor to keep changes without committing a revision.</p>
+            </template>
+            <p v-else-if="dashboardTab === 'archived'">No archived notes.</p>
+          </div>
+          <RecycleScroller
+            v-else
+            ref="notesScrollerRef"
+            page-mode
+            class="notes-virtual-scroller"
+            :items="virtualNoteRows"
+            :item-size="noteRowHeight"
+            :buffer="noteRenderBuffer"
+            :emit-update="true"
+            key-field="id"
+            @update="onVirtualUpdate"
           >
-            <!-- Toolbar row: checkbox + copy + delete -->
-            <div class="card-toolbar">
-              <div class="card-checkbox-container" @click.stop>
-                <input 
-                  type="checkbox" 
-                  :checked="selectedNoteIds.has(note.id)" 
-                  @change="toggleSelect(note.id)"
-                  class="card-checkbox"
-                >
-              </div>
-              <div class="toolbar-spacer"></div>
-              <!-- Copy button (text notes only) -->
-              <button
-                v-if="note.type !== 'canvas' && !note.archivedAt"
-                @click.stop="copyNote(note)"
-                class="copy-btn"
-                :class="{ copied: copiedId === note.id }"
-                :title="copiedId === note.id ? 'Copied!' : 'Copy note'"
+            <template #default="{ item: row }">
+              <div
+                class="virtual-note-row"
+                :style="{ gridTemplateColumns: `repeat(${noteColumnCount}, minmax(0, 1fr))` }"
               >
-                <svg v-if="copiedId === note.id" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-check"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-copy"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-              </button>
-              <button
-                v-if="note.archivedAt"
-                @click.stop="restoreArchivedNote(note)"
-                class="restore-btn"
-                title="Restore archived note"
-              >Restore</button>
-              <button
-                v-else
-                @click.stop="triggerDeleteConfirm(note.id)"
-                class="delete-btn"
-                title="Archive note"
-              >×</button>
-            </div>
-
-            <div class="note-content">
-              <span
-                v-if="presenceCount(note.id)"
-                class="presence-dot"
-                :title="presenceTitle(note.id)"
-                :aria-label="presenceTitle(note.id)"
-              ></span>
-              <!-- Canvas note: show thumbnail -->
-              <div v-if="note.type === 'canvas'" class="canvas-thumbnail-wrapper">
-                <img 
-                  v-if="note.thumbnail" 
-                  :src="note.thumbnail" 
-                  class="canvas-thumbnail" 
-                  alt="Canvas thumbnail"
+                <DashboardNoteCard
+                  v-for="entry in row.items"
+                  :key="entry.id"
+                  :entry="entry"
+                  :detail="noteDetailFor(entry)"
+                  :dashboard-tab="dashboardTab"
+                  :selected="selectedNoteIds.has(entry.id)"
+                  :editing="entry.id === editingId"
+                  :has-draft="draftNoteIds.has(entry.id)"
+                  :copied="copiedId === entry.id"
+                  :color-menu-open="openColorNoteId === entry.id"
+                  :presence-count="presenceCount(entry.id)"
+                  :presence-title="presenceTitle(entry.id)"
+                  :render-content="renderContent"
+                  :format-date="formatDate"
+                  @open="handleCardClick"
+                  @toggle-select="toggleSelect"
+                  @toggle-color="toggleNoteColorPicker"
+                  @select-color="setNoteColor"
+                  @copy="copyNote"
+                  @restore="restoreArchivedNote"
+                  @archive="triggerDeleteConfirm"
+                  @select-tag="selectTag"
+                  @content-click="onContentClick"
                 />
-                <div v-else class="canvas-thumbnail-placeholder">
-                  <span>✏️</span>
-                  <span>Whiteboard</span>
-                </div>
               </div>
-              <h3>
-                {{ getDisplayTitle(note, { fallback: note.type === 'canvas' ? 'Untitled Whiteboard' : 'Untitled' }) }}
-                <span v-if="note.archivedAt" class="revision-badge">Archived</span>
-              </h3>
-              <div v-if="note.tags && note.tags.length" class="card-tags">
-                <button
-                  v-for="tag in note.tags"
-                  :key="tag"
-                  type="button"
-                  class="tag-chip"
-                  @click.stop="selectTag({ tag })"
-                  :title="'Filter by #' + tag"
-                >#{{ tag }}</button>
-              </div>
-              <MarkdownView
-                v-if="note.type !== 'canvas'"
-                class="note-preview"
-                :html="renderContent(note.content)"
-                @click="onContentClick($event, note)"
-              />
-              <small class="note-date">{{ formatDate(note.updatedAt) }}</small>
-            </div>
-          </div>
+            </template>
+          </RecycleScroller>
         </div>
           </div>
         </div>
@@ -407,9 +505,24 @@
         :include-unresolved="graphIncludeUnresolved"
         :loading="graphLoading"
         :error="graphError"
+        :mod-key="modKey"
         @close="graphOpen = false"
         @refresh="refreshGraph"
         @open="openGraphNode"
+      />
+
+      <SelectionLinksPanel
+        v-if="selectionLinksOpen"
+        :summary="selectionLinksData"
+        :selected-count="selectedNoteIds.size"
+        :selected-ids="selectedNoteIdList"
+        :loading="selectionLinksLoading"
+        :error="selectionLinksError"
+        :mode="selectionLinksMode"
+        :mod-key="modKey"
+        @update:mode="selectionLinksMode = $event"
+        @close="closeSelectionLinks"
+        @open="openSelectionLinkNote"
       />
 
       <!-- MCP settings -->
@@ -417,7 +530,7 @@
         <div class="modal-content mcp-settings-modal">
           <div class="modal-header">
             <h2>🔌 MCP access</h2>
-            <button class="close-modal-btn" @click="mcpSettingsOpen = false">×</button>
+            <button class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="mcpSettingsOpen = false">×</button>
           </div>
           <p class="mcp-hint">
             MCP clients use one token per client. Read/write tokens can search, read, and edit;
@@ -439,7 +552,7 @@
                 Max read sessions per token
                 <input v-model.number="mcpLimitsForm.maxReadSessions" type="number" min="1" max="64" required>
               </label>
-              <button type="submit" class="save-btn" :disabled="mcpLimitsSaving || mcpLimitsLoading">
+              <button type="submit" class="save-btn" :data-shortcut="shortcut('mcpSaveLimits')" :disabled="mcpLimitsSaving || mcpLimitsLoading">
                 {{ mcpLimitsSaving ? 'Saving…' : 'Save limits' }}
               </button>
             </form>
@@ -454,11 +567,11 @@
               <option value="read,write,admin">read, write, admin</option>
             </select>
             <input v-model.number="mcpTokenExpiresDays" type="number" min="0" placeholder="Expires in days">
-            <button type="submit" class="save-btn" :disabled="!mcpTokenName.trim()">Create token</button>
+            <button type="submit" class="save-btn" :data-shortcut="shortcut('mcpCreateToken')" :disabled="!mcpTokenName.trim()">Create token</button>
           </form>
           <div v-if="mcpNewToken" class="mcp-token-reveal">
             <code>{{ mcpNewToken }}</code>
-            <button type="button" @click="copyMcpToken">Copy</button>
+            <button type="button" :data-shortcut="shortcut('mcpCopyToken')" @click="copyMcpToken">Copy</button>
           </div>
           <p v-if="mcpTokenError" class="error">{{ mcpTokenError }}</p>
           <p v-if="mcpTokenLoading" class="mcp-hint">Loading tokens…</p>
@@ -504,7 +617,7 @@
         <div class="modal-content account-modal">
           <div class="modal-header">
             <h2>{{ accountSettingsForced ? 'Set a new password' : 'Account settings' }}</h2>
-            <button v-if="!accountSettingsForced" type="button" class="close-modal-btn" @click="closeAccountSettings">×</button>
+            <button v-if="!accountSettingsForced" type="button" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="closeAccountSettings">×</button>
           </div>
           <div class="account-summary">
             <span class="account-avatar large">{{ userInitials }}</span>
@@ -532,8 +645,8 @@
             <p v-if="changePasswordError" class="error">{{ changePasswordError }}</p>
             <p v-if="changePasswordNotice" class="account-success">{{ changePasswordNotice }}</p>
             <div class="account-actions">
-              <button type="submit" class="save-btn">Update password</button>
-              <button v-if="!accountSettingsForced" type="button" class="cancel-btn" @click="closeAccountSettings">Cancel</button>
+              <button type="submit" class="save-btn" :data-shortcut="shortcut('accountSavePassword')">Update password</button>
+              <button v-if="!accountSettingsForced" type="button" class="cancel-btn" :data-shortcut="shortcut('accountCancel')" @click="closeAccountSettings">Cancel</button>
             </div>
           </form>
           <div class="account-danger">
@@ -541,8 +654,57 @@
               <strong>Sign out everywhere</strong>
               <small>Revoke all browser sessions for this account.</small>
             </div>
-            <button type="button" class="cancel-btn" @click="logoutAll">Sign out all</button>
+            <button type="button" class="cancel-btn" :data-shortcut="shortcut('logoutAll')" @click="logoutAll">Sign out all</button>
           </div>
+        </div>
+      </div>
+
+      <!-- Interface settings -->
+      <div v-if="uiSettingsOpen" class="modal-overlay" @mousedown.self="closeUiSettings">
+        <div class="modal-content ui-settings-modal">
+          <div class="modal-header">
+            <h2>🎛 Interface settings</h2>
+            <button type="button" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="closeUiSettings">×</button>
+          </div>
+          <p class="ui-settings-hint">
+            Defaults come from <code>{{ uiSettings.filePath || 'config.json' }}</code>.
+            Runtime overrides are stored in the database and applied to every connected client.
+          </p>
+          <p v-if="uiSettings.fileError" class="error">
+            Config file error: {{ uiSettings.fileError }}
+          </p>
+          <p v-if="uiSettingsLoading" class="ui-settings-loading">Loading…</p>
+          <form v-else class="ui-settings-form" @submit.prevent="saveUiSettings">
+            <div class="ui-settings-grid">
+              <label v-for="field in uiConfigFields" :key="field.key">
+                <span>{{ field.label }}</span>
+                <input
+                  v-model.number="uiSettingsForm[field.key]"
+                  type="number"
+                  :min="field.min"
+                  :max="field.max"
+                  :step="field.step"
+                  required
+                >
+                <small>{{ field.min }}–{{ field.max }} px</small>
+              </label>
+            </div>
+            <p v-if="uiSettingsError" class="error">{{ uiSettingsError }}</p>
+            <p v-if="uiSettingsNotice" class="account-success">{{ uiSettingsNotice }}</p>
+            <div class="ui-settings-actions">
+              <button type="submit" class="save-btn" :data-shortcut="shortcut('uiSave')" :disabled="uiSettingsSaving">
+                {{ uiSettingsSaving ? 'Saving…' : 'Save and apply' }}
+              </button>
+              <button
+                type="button"
+                class="cancel-btn"
+                :data-shortcut="shortcut('uiReset')"
+                :disabled="uiSettingsSaving"
+                @click="resetUiSettings"
+              >Reset to config file</button>
+              <button type="button" class="cancel-btn" :data-shortcut="shortcut('uiClose')" @click="closeUiSettings">Close</button>
+            </div>
+          </form>
         </div>
       </div>
 
@@ -551,7 +713,7 @@
         <div class="modal-content users-modal">
           <div class="modal-header">
             <h2>👥 People</h2>
-            <button type="button" class="close-modal-btn" @click="usersOpen = false">×</button>
+            <button type="button" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="usersOpen = false">×</button>
           </div>
           <p class="users-hint">Everyone shares this workspace. Admins can add people, reset passwords, and disable accounts.</p>
 
@@ -563,7 +725,7 @@
               <option value="member">Member</option>
               <option value="admin">Admin</option>
             </select>
-            <button type="submit" class="save-btn">Add person</button>
+            <button type="submit" class="save-btn" :data-shortcut="shortcut('usersAdd')">Add person</button>
           </form>
           <p v-if="usersError" class="error">{{ usersError }}</p>
           <div v-if="resetPasswordResult" class="temp-password">
@@ -572,7 +734,7 @@
               <code>{{ resetPasswordResult }}</code>
               <small>Share it once; the user must change it after signing in.</small>
             </div>
-            <button type="button" @click="copyToClipboard(resetPasswordResult)">Copy</button>
+            <button type="button" :data-shortcut="shortcut('usersCopyTempPassword')" @click="copyToClipboard(resetPasswordResult)">Copy</button>
           </div>
 
           <p v-if="usersLoading" class="users-hint">Loading…</p>
@@ -609,8 +771,8 @@
       <div v-if="embeddingSettingsOpen" class="modal-overlay" @mousedown.self="embeddingSettingsOpen = false">
         <div class="modal-content embedding-modal">
           <div class="modal-header">
-            <h2>✨ Semantic search</h2>
-            <button type="button" class="close-modal-btn" @click="embeddingSettingsOpen = false">×</button>
+            <h2>✨ Hybrid search</h2>
+            <button type="button" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="embeddingSettingsOpen = false">×</button>
           </div>
           <p class="embedding-hint">
             OpenAI-compatible embeddings (SiliconFlow by default). The API key is encrypted at rest.
@@ -620,7 +782,7 @@
           <form class="embedding-form" @submit.prevent="saveEmbeddingSettings">
             <label class="embedding-check">
               <input v-model="embeddingForm.enabled" type="checkbox">
-              Enable semantic search
+              Enable hybrid search (semantic + keyword)
             </label>
             <label>
               Base URL
@@ -709,7 +871,7 @@
                   >
                 </label>
               </div>
-              <button type="button" class="rerank-test-btn" :disabled="rerankTesting" @click="testRerankSettings">
+              <button type="button" class="rerank-test-btn" :data-shortcut="shortcut('embeddingTestRerank')" :disabled="rerankTesting" @click="testRerankSettings">
                 {{ rerankTesting ? 'Testing rerank…' : 'Test rerank' }}
               </button>
             </div>
@@ -717,15 +879,15 @@
             <p v-if="embeddingError" class="error">{{ embeddingError }}</p>
             <p v-if="embeddingNotice" class="account-success">{{ embeddingNotice }}</p>
             <div class="embedding-actions">
-              <button type="submit" class="save-btn" :disabled="embeddingSaving">
+              <button type="submit" class="save-btn" :data-shortcut="shortcut('embeddingSave')" :disabled="embeddingSaving">
                 {{ embeddingSaving ? 'Saving…' : 'Save & enable' }}
               </button>
-              <button type="button" class="cancel-btn" :disabled="embeddingTesting" @click="testEmbeddingSettings">
+              <button type="button" class="cancel-btn" :data-shortcut="shortcut('embeddingTest')" :disabled="embeddingTesting" @click="testEmbeddingSettings">
                 {{ embeddingTesting ? 'Testing…' : 'Test connection' }}
               </button>
-              <button type="button" class="cancel-btn" @click="reindexEmbeddings">Rebuild index</button>
-              <button type="button" class="cancel-btn" :disabled="embeddingQueue?.running" @click="resetEmbeddingIndex">Reset index</button>
-              <button type="button" class="cancel-btn" @click="refreshEmbeddingStatus">Refresh status</button>
+              <button type="button" class="cancel-btn" :data-shortcut="shortcut('embeddingRebuild')" @click="reindexEmbeddings">Rebuild index</button>
+              <button type="button" class="cancel-btn" :data-shortcut="shortcut('embeddingReset')" :disabled="embeddingQueue?.running" @click="resetEmbeddingIndex">Reset index</button>
+              <button type="button" class="cancel-btn" :data-shortcut="shortcut('embeddingRefresh')" @click="refreshEmbeddingStatus">Refresh status</button>
             </div>
           </form>
 
@@ -775,6 +937,7 @@
                 type="button"
                 @click="openGraph(editingId)"
                 class="history-btn"
+                :data-shortcut="shortcut('noteGraph')"
                 title="Open relationship graph for this note"
               >🕸 Graph</button>
               <button
@@ -782,6 +945,7 @@
                 type="button"
                 @click="openBacklinks"
                 class="history-btn"
+                :data-shortcut="shortcut('noteBacklinks')"
                 title="Show notes linking here"
               >🔗 Backlinks</button>
               <button
@@ -789,9 +953,10 @@
                 type="button"
                 @click="openHistory"
                 class="history-btn"
+                :data-shortcut="shortcut('noteHistory')"
                 title="View revision history"
               >🕘 History</button>
-              <button @click="closeModal" class="close-modal-btn">×</button>
+              <button @click="closeModal" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')">×</button>
             </div>
           </div>
           <form @submit.prevent="editingId ? saveEdit() : addNote()">
@@ -811,6 +976,7 @@
                   type="button"
                   class="mode-btn"
                   :class="{ active: editorMode === 'write' }"
+                  :data-shortcut="shortcut('noteVisual')"
                   @click="setEditorMode('write')"
                   title="Rendered markdown; images displayed"
                 >Visual</button>
@@ -818,19 +984,27 @@
                   type="button"
                   class="mode-btn"
                   :class="{ active: editorMode === 'plain' }"
+                  :data-shortcut="shortcut('noteSource')"
                   @click="setEditorMode('plain')"
                   title="Raw markdown source; images shown as URLs"
                 >Source</button>
               </div>
               <span class="toolbar-divider"></span>
-              <template v-if="editorMode === 'write'">
-                <button type="button" @click="formatBold" class="toolbar-btn" title="Bold (Ctrl+B)" aria-label="Bold"><b>B</b></button>
-                <button type="button" @click="formatItalic" class="toolbar-btn" title="Italic (Ctrl+I)" aria-label="Italic"><i>I</i></button>
-                <button type="button" @click="insertLink" class="toolbar-btn" title="Insert link" aria-label="Insert link">🔗</button>
-                <button type="button" @click="insertCheckbox" class="toolbar-btn" title="Checkbox (to-do item)" aria-label="Checkbox">☑</button>
-              </template>
+              <MarkdownToolbar
+                :mod-key="modKey"
+                :shortcuts-visible="shortcutsVisible"
+                @command="runEditorCommand"
+              />
               <span class="toolbar-spacer"></span>
-              <button type="button" @click="triggerImageUpload" class="image-btn" :disabled="imageUploading" title="Insert image">
+              <select
+                v-model="pasteMode"
+                class="paste-mode-select"
+                title="Paste behavior: plain keeps clipboard text exactly; rich converts HTML to markdown"
+              >
+                <option value="plain">Paste: plain</option>
+                <option value="rich">Paste: rich</option>
+              </select>
+              <button type="button" @click="triggerImageUpload" class="image-btn" :data-shortcut="shortcut('noteInsertImage')" :disabled="imageUploading" title="Insert image">
                 {{ imageUploading ? '⏳' : '🖼️' }}
               </button>
             </div>
@@ -856,14 +1030,14 @@
               class="note-editor markdown-source"
               spellcheck="false"
               placeholder="Markdown source (images shown as URLs)..."
-              @keydown.ctrl.enter.stop.prevent="editingId ? saveEdit() : addNote()"
-              @keydown.meta.enter.stop.prevent="editingId ? saveEdit() : addNote()"
+              @keydown="onEditorKeydown"
               @paste="onMarkdownPaste"
             ></textarea>
             <div class="note-form-actions">
               <div class="action-buttons">
-                <button type="submit" class="save-btn">{{ editingId ? 'Save' : 'Add Note' }}</button>
-                <button type="button" @click="closeModal" class="cancel-btn">Cancel</button>
+                <button type="submit" class="save-btn" :data-shortcut="shortcut('noteSave')">{{ editingId ? 'Save' : 'Add Note' }}</button>
+                <button v-if="editingId" type="button" @click="draftAndClose" class="draft-btn" :data-shortcut="shortcut('noteDraft')">Draft</button>
+                <button type="button" @click="discardChanges" class="cancel-btn" :data-shortcut="shortcut('noteDiscard')">Discard</button>
               </div>
               <small>{{ editingId ? `${modKey}+Enter to save` : `${modKey}+Enter to add` }}</small>
             </div>
@@ -881,7 +1055,7 @@
             <div class="history-panel">
               <div class="history-header">
                 <h3>Revision history</h3>
-                <button type="button" class="close-modal-btn" @click="closeHistory">×</button>
+                <button type="button" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="closeHistory">×</button>
               </div>
               <p v-if="historyLoading" class="history-loading">Loading history…</p>
               <p v-if="historyError" class="error">{{ historyError }}</p>
@@ -930,6 +1104,16 @@
             @open="openBacklinkSource"
           />
 
+          <LinkDialog
+            v-if="linkDialogOpen"
+            :mode="linkDialogMode"
+            :initial-text="linkDialogInitialText"
+            :search-notes="searchLinkNotes"
+            :mod-key="modKey"
+            @close="closeLinkDialog"
+            @submit="submitLinkDialog"
+          />
+
           <div class="modal-resize-handle" @mousedown.prevent="startResize"></div>
 
           <!-- Text-note deletion-elsewhere mask (no alert; inline prompt) -->
@@ -941,8 +1125,8 @@
               <h3>⚠️ This note was deleted on another client</h3>
               <p>Your local edits are still here. Save them as a new note, or discard.</p>
               <div class="deleted-mask-actions">
-                <button type="button" class="save-btn" @click="saveDeletedAsNew">Save as new note</button>
-                <button type="button" class="cancel-btn" @click="discardDeleted">Discard</button>
+                <button type="button" class="save-btn" :data-shortcut="shortcut('deletedSave')" @click="saveDeletedAsNew">Save as new note</button>
+                <button type="button" class="cancel-btn" :data-shortcut="shortcut('deletedDiscard')" @click="discardDeleted">Discard</button>
               </div>
             </div>
           </div>
@@ -957,9 +1141,10 @@
             You have unsaved changes. What would you like to do?
           </p>
           <div class="confirm-actions">
-            <button @click="saveAndClose" class="save-btn">Save</button>
-            <button @click="discardChanges" class="cancel-confirm-btn">Discard</button>
-            <button @click="cancelDiscardChanges" class="delete-confirm-btn">Continue Editing</button>
+            <button @click="saveAndClose" class="save-btn" :data-shortcut="shortcut('unsavedSave')">Save</button>
+            <button v-if="editingId" @click="draftAndClose" class="draft-btn" :data-shortcut="shortcut('unsavedDraft')">Draft</button>
+            <button @click="discardChanges" class="cancel-confirm-btn" :data-shortcut="shortcut('unsavedDiscard')">Discard</button>
+            <button @click="cancelDiscardChanges" class="continue-btn" :data-shortcut="shortcut('unsavedContinue')">Continue</button>
           </div>
         </div>
       </div>
@@ -973,21 +1158,21 @@
             Its revision history is kept and the note can be restored.
           </p>
           <div class="confirm-actions">
-            <button @click="confirmDelete" class="delete-confirm-btn">Archive</button>
-            <button @click="closeConfirm" class="cancel-confirm-btn">Cancel</button>
+            <button @click="confirmDelete" class="delete-confirm-btn" :data-shortcut="shortcut('confirmArchive')">Archive</button>
+            <button @click="closeConfirm" class="cancel-confirm-btn" :data-shortcut="shortcut('confirmCancel')">Cancel</button>
           </div>
         </div>
       </div>
 
       <!-- Floating Action Button -->
-      <div v-if="isAuthenticated" class="fab-container">
+      <div v-if="isAuthenticated" class="fab-container" :class="{ 'shortcuts-visible': shortcutsVisible }">
         <div v-if="fabMenuOpen" class="fab-menu">
-          <button @click="fabNewTextNote" class="fab-menu-item">
-            <span class="fab-menu-icon">📝</span>
+          <button @click="fabNewTextNote" class="fab-menu-item" :data-shortcut="shortcut('fabTextNote')">
+            <span class="fab-menu-icon"><AppIcon name="note" :size="18" /></span>
             <span>Text Note</span>
           </button>
-          <button @click="fabNewWhiteboard" class="fab-menu-item">
-            <span class="fab-menu-icon">✏️</span>
+          <button @click="fabNewWhiteboard" class="fab-menu-item" :data-shortcut="shortcut('fabWhiteboard')">
+            <span class="fab-menu-icon"><AppIcon name="whiteboard" :size="18" /></span>
             <span>Whiteboard</span>
           </button>
         </div>
@@ -995,9 +1180,11 @@
           @click="toggleFabMenu"
           class="fab-btn"
           :class="{ 'fab-open': fabMenuOpen }"
-          title="Create new"
+          data-label="Create new"
+          :data-shortcut="shortcut('fabMenu')"
+          :aria-label="`Create new (${shortcut('fabMenu')})`"
         >
-          +
+          <AppIcon name="plus" :size="26" :stroke-width="2.1" />
         </button>
       </div>
 
@@ -1011,20 +1198,38 @@
 </template>
 
 <script>
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { RecycleScroller } from 'vue-virtual-scroller'
 import debug from 'debug'
 import WhiteboardEditor from './components/WhiteboardEditor.vue'
 import TagSidebar from './components/TagSidebar.vue'
 import GraphView from './components/GraphView.vue'
 import BacklinksPanel from './components/BacklinksPanel.vue'
-import MarkdownView from './components/MarkdownView.vue'
+import SelectionLinksPanel from './components/SelectionLinksPanel.vue'
+import MarkdownToolbar from './components/MarkdownToolbar.vue'
+import LinkDialog from './components/LinkDialog.vue'
+import AppIcon from './components/AppIcon.vue'
+import DashboardNoteCard from './components/DashboardNoteCard.vue'
+import {
+  chunkDashboardItems,
+  dashboardColumnCount,
+  detailWindowRange,
+  orderBySearchResults,
+  virtualItemRange
+} from './utils/dashboardVirtual.js'
 import { getDisplayTitle } from './utils/notes.js'
 import { renderMermaidBlocks } from './utils/mermaid.js'
+import { matchEditorShortcut } from './shared/editorTools.js'
+import { SHORTCUTS, shortcutLabel, eventShortcut } from './shared/shortcuts.js'
+import { buildLinkMarkdown } from './shared/linkMarkdown.js'
+import {
+  DEFAULT_UI_CONFIG,
+  UI_CONFIG_FIELDS
+} from './shared/uiConfig.js'
 import {
   renderMarkdown,
   htmlToMarkdown,
-  normalizeMarkdown,
-  normalizePlainText
+  normalizeMarkdown
 } from './utils/markdown.js'
 import { serializeEditorToMarkdown as serializeEditorRoot } from './utils/editorSerialize.js'
 import { createTextCollabManager } from './collab/textCollabManager.js'
@@ -1060,7 +1265,7 @@ const modKey = isMac ? 'Cmd' : 'Ctrl'
 
 export default {
   name: 'App',
-  components: { WhiteboardEditor, TagSidebar, GraphView, BacklinksPanel, MarkdownView },
+  components: { WhiteboardEditor, TagSidebar, GraphView, BacklinksPanel, SelectionLinksPanel, MarkdownToolbar, LinkDialog, AppIcon, DashboardNoteCard, RecycleScroller },
   setup() {
     // Auth state
     const showSetup = ref(false)
@@ -1112,6 +1317,8 @@ export default {
       rerankApiKey: '',
       rerankModel: 'BAAI/bge-reranker-v2-m3'
     })
+    const HYBRID_SEARCH_KEY = 'local-keep-hybrid-search'
+    const semanticSearchAvailable = ref(false)
     const semanticSearchEnabled = ref(false)
 
     const isAdmin = computed(() => currentUser.value?.role === 'admin')
@@ -1125,8 +1332,29 @@ export default {
         .join('')
     })
 
-    // Notes state
-    const notes = ref([])
+    // Notes state. The index is the complete lightweight list; card bodies
+    // live in a bounded on-demand cache so the dashboard can virtualize.
+    const noteIndex = ref([])
+    const noteDetails = reactive(new Map())
+    const noteDetailRequests = new Set()
+    const noteDetailsLoading = ref(0)
+    const notesLoading = ref(false)
+    const notesError = ref('')
+    const openingNoteId = ref(null)
+    const notesGridRef = ref(null)
+    const notesScrollerRef = ref(null)
+    const dashboardWidth = ref(1200)
+    const NOTE_DETAIL_BATCH = 30
+    const NOTE_DETAIL_CACHE_TARGET = 120
+    const NOTE_ROW_HEIGHT = 396
+    const NOTE_RENDER_BUFFER = 800
+    const noteRowHeight = NOTE_ROW_HEIGHT
+    const noteRenderBuffer = NOTE_RENDER_BUFFER
+    let dashboardResizeObserver = null
+    let lastVirtualRange = { start: 0, end: 0 }
+    let noteCacheGeneration = 0
+    let editingOriginalTitle = ''
+    let editingOriginalContent = ''
     const notePresence = ref({})
     const newNoteTitle = ref('')
     const newNoteContent = ref('')
@@ -1145,6 +1373,24 @@ export default {
     let pendingRemoteTitle = null
     let compositionActive = false
     const editorMode = ref('write') // 'write' (Visual) | 'plain' (Source)
+    const PASTE_MODE_KEY = 'local-keep-paste-mode'
+    const storedPasteMode = (() => {
+      try {
+        return localStorage.getItem(PASTE_MODE_KEY) === 'rich' ? 'rich' : 'plain'
+      } catch (_) {
+        return 'plain'
+      }
+    })()
+    const pasteMode = ref(storedPasteMode) // 'plain' (text/plain only) | 'rich' (convert text/html)
+    watch(pasteMode, value => {
+      try { localStorage.setItem(PASTE_MODE_KEY, value) } catch (_) { /* private mode */ }
+    })
+    const shortcutsVisible = ref(false)
+    const shortcut = (id) => shortcutLabel(SHORTCUTS[id], modKey)
+    const linkDialogOpen = ref(false)
+    const linkDialogMode = ref('link')
+    const linkDialogInitialText = ref('')
+    let linkDialogSelection = null
     let editorDirty = false
     const revisionNotice = ref('')
     let revisionNoticeTimer = null
@@ -1162,8 +1408,13 @@ export default {
     const fabMenuOpen = ref(false)
     const sortBy = ref('updatedAt')
     const sortOrder = ref('desc')
+    let sortBeforeSearch = 'updatedAt'
     const selectedNoteIds = ref(new Set())
-    const showArchived = ref(false)
+    const openColorNoteId = ref(null)
+    const dashboardTab = ref('notes') // 'notes' | 'archived' | 'drafts'
+    const drafts = ref([])
+    const draftsLoading = ref(false)
+    const draftsError = ref('')
 
     // Tag / relationship state
     const tagsTree = ref({ tags: [], totalNotes: 0, untaggedCount: 0 })
@@ -1182,6 +1433,12 @@ export default {
     const backlinks = ref([])
     const backlinksLoading = ref(false)
     const backlinksError = ref('')
+    const selectionLinksOpen = ref(false)
+    const selectionLinksLoading = ref(false)
+    const selectionLinksError = ref('')
+    const selectionLinksMode = ref('both')
+    const selectionLinksData = ref({ noteIds: [], outgoing: [], incoming: [] })
+    const selectedNoteIdList = computed(() => Array.from(selectedNoteIds.value))
     const mcpSettingsOpen = ref(false)
     const mcpTokens = ref([])
     const mcpTokenName = ref('')
@@ -1198,12 +1455,39 @@ export default {
     const mcpLimitsNotice = ref('')
     const mcpEndpoint = computed(() => `${window.location.origin}/mcp`)
 
+    // Interface configuration (config.json defaults + runtime DB overrides)
+    const uiConfig = ref({ ...DEFAULT_UI_CONFIG })
+    const uiSettingsOpen = ref(false)
+    const uiSettings = ref({
+      defaults: { ...DEFAULT_UI_CONFIG },
+      overrides: {},
+      ui: { ...DEFAULT_UI_CONFIG },
+      filePath: null,
+      fileError: null
+    })
+    const uiSettingsForm = ref({ ...DEFAULT_UI_CONFIG })
+    const uiSettingsLoading = ref(false)
+    const uiSettingsSaving = ref(false)
+    const uiSettingsError = ref('')
+    const uiSettingsNotice = ref('')
+    const uiStyleVars = computed(() => ({
+      '--note-modal-width': `${uiConfig.value.noteModalWidth}px`,
+      '--note-modal-height': `${uiConfig.value.noteModalHeight}px`,
+      '--link-dialog-width': `${uiConfig.value.linkDialogWidth}px`,
+      '--graph-width': `${uiConfig.value.graphWidth}px`,
+      '--graph-height': `${uiConfig.value.graphHeight}px`,
+      '--links-panel-width': `${uiConfig.value.linksPanelWidth}px`,
+      '--links-panel-height': `${uiConfig.value.linksPanelHeight}px`
+    }))
+
     // Search state
     const searchOpen = ref(false)
     const searchQuery = ref('')
     const searchResults = ref(null)
+    const searchMode = ref('keyword') // 'keyword' | 'hybrid'
     const searchLoading = ref(false)
     let searchTimer = null
+    let searchSeq = 0
 
     // Canvas / Whiteboard state
     const currentView = ref('list') // 'list' | 'canvas'
@@ -1301,26 +1585,30 @@ export default {
               }
               return
             }
+            if (data.type === 'config' && data.config?.ui) {
+              uiConfig.value = { ...DEFAULT_UI_CONFIG, ...data.config.ui }
+              return
+            }
+            if (data.type === 'note-color' && data.noteId) {
+              patchNote(data.noteId, { color: data.color || null })
+              return
+            }
+            if (data.type === 'text-discarded' && data.noteId) {
+              scheduleDraftsRefresh()
+              return
+            }
             if (data.type === 'notes' && Array.isArray(data.notes)) {
-              console.log(`[${now}] 📨 Updating notes, count: ${data.notes.length}`)
+              console.log(`[${now}] 📨 Updating note index, count: ${data.notes.length}`)
+              const incoming = data.notes.map(toNoteIndexEntry)
               // Only update notes if the editor modal is not open
               if (!isModalOpen.value) {
-                // Force reactivity by creating a new array reference. The bulk
-                // active list intentionally omits archived rows; keep them in
-                // memory so filtering/link resolution stays correct.
-                const incomingIds = new Set(data.notes.map(n => n.id))
-                const archived = notes.value.filter(n => n.archivedAt && !incomingIds.has(n.id))
-                notes.value = [...data.notes, ...archived]
+                applyNoteIndex(incoming)
                 pendingNotes.value = null
                 scheduleTagsRefresh()
-                console.log(`[${now}] 📨 Notes set in Vue, length: ${notes.value.length}`)
-                // Force DOM update using queuePostFlushCb
-                requestAnimationFrame(() => {
-                  console.log(`[${now}] 📨 After RAF, notes length: ${notes.value.length}`)
-                })
+                scheduleVisibleHydration()
               } else {
                 console.log(`[${now}] 📨 Skipping - modal open. Buffering update.`)
-                pendingNotes.value = [...data.notes]
+                pendingNotes.value = incoming
               }
             } else if ((data.type === 'note-deleted' || data.type === 'note-gone') && data.noteId) {
               handleNoteDeletedElsewhere(data.noteId)
@@ -1422,14 +1710,326 @@ export default {
     }
 
     // Notes methods
-    const loadNotes = async () => {
+    function toNoteIndexEntry(note) {
+      return {
+        id: note.id,
+        title: note.title || '',
+        displayTitle: note.displayTitle || getDisplayTitle(note),
+        type: note.type || 'text',
+        revisionId: note.revisionId || note.headRevisionId || note.head_revision_id || null,
+        revisionNo: note.revisionNo || note.revision_no || 1,
+        archivedAt: note.archivedAt || note.archived_at || null,
+        createdAt: note.createdAt || note.created_at,
+        updatedAt: note.updatedAt || note.updated_at,
+        color: note.color || null,
+        tags: Array.isArray(note.tags) ? note.tags : [],
+        linkCount: note.linkCount || 0,
+        backlinkCount: note.backlinkCount || 0
+      }
+    }
+
+    function applyNoteIndex(incoming = []) {
+      const previous = new Map(noteIndex.value.map(note => [note.id, note]))
+      const nextIds = new Set(incoming.map(note => note.id))
+      for (const entry of incoming) {
+        const prior = previous.get(entry.id)
+        if (!prior ||
+            prior.revisionNo !== entry.revisionNo ||
+            prior.updatedAt !== entry.updatedAt ||
+            prior.title !== entry.title ||
+            prior.archivedAt !== entry.archivedAt) {
+          noteDetails.delete(entry.id)
+        }
+      }
+      for (const id of [...noteDetails.keys()]) {
+        if (!nextIds.has(id)) noteDetails.delete(id)
+      }
+      noteIndex.value = incoming
+    }
+
+    function patchNote(id, patch = {}) {
+      if (!id) return
+      const indexKeys = [
+        'title', 'displayTitle', 'type', 'revisionId', 'revisionNo',
+        'archivedAt', 'createdAt', 'updatedAt', 'color', 'tags',
+        'linkCount', 'backlinkCount'
+      ]
+      noteIndex.value = noteIndex.value.map(note => {
+        if (note.id !== id) return note
+        const next = { ...note }
+        for (const key of indexKeys) {
+          if (Object.prototype.hasOwnProperty.call(patch, key)) next[key] = patch[key]
+        }
+        if (!Object.prototype.hasOwnProperty.call(patch, 'displayTitle')) {
+          if (Object.prototype.hasOwnProperty.call(patch, 'content') && !next.title) {
+            next.displayTitle = getDisplayTitle({ title: '', content: patch.content })
+          } else if (Object.prototype.hasOwnProperty.call(patch, 'title')) {
+            next.displayTitle = patch.title || note.displayTitle
+          }
+        }
+        return next
+      })
+      const detail = noteDetails.get(id)
+      if (detail) {
+        const nextDetail = { ...detail, ...patch }
+        if (Object.prototype.hasOwnProperty.call(patch, 'content')) {
+          nextDetail.contentTruncated = false
+        }
+        noteDetails.set(id, nextDetail)
+      }
+    }
+
+    function upsertNote(note) {
+      if (!note?.id) return
+      const entry = toNoteIndexEntry(note)
+      const existing = noteIndex.value.some(item => item.id === entry.id)
+      noteIndex.value = existing
+        ? noteIndex.value.map(item => item.id === entry.id ? { ...item, ...entry } : item)
+        : [entry, ...noteIndex.value]
+      if (Object.prototype.hasOwnProperty.call(note, 'content') ||
+          Object.prototype.hasOwnProperty.call(note, 'canvasData')) {
+        noteDetails.set(note.id, { ...note, ...entry })
+      }
+    }
+
+    function noteIdsInRange(start, end) {
+      const items = dashboardNotes.value
+      const ids = []
+      if (!items.length) return ids
+      const from = Math.max(0, Math.min(items.length - 1, start))
+      const to = Math.max(from, Math.min(items.length - 1, end))
+      for (let index = from; index <= to; index += 1) {
+        const item = items[index]
+        if (!item?.isQuickShortcuts && !item?.isDraft) ids.push(item.id)
+      }
+      return ids
+    }
+
+    function detailKeepIds(start, end) {
+      const keep = new Set()
+      const windowRange = detailWindowRange(start, end, dashboardNotes.value.length, {
+        pageSize: NOTE_DETAIL_BATCH,
+        pages: 1
+      })
+      if (windowRange) {
+        for (const id of noteIdsInRange(windowRange.start, windowRange.end)) keep.add(id)
+      }
+      if (editingId.value) keep.add(editingId.value)
+      if (editingCanvasId.value) keep.add(editingCanvasId.value)
+      return keep
+    }
+
+    function evictNoteDetails(start, end) {
+      const keep = detailKeepIds(start, end)
+      for (const id of [...noteDetails.keys()]) {
+        if (!keep.has(id)) noteDetails.delete(id)
+      }
+      if (noteDetails.size <= NOTE_DETAIL_CACHE_TARGET) return
+      for (const id of [...noteDetails.keys()]) {
+        if (noteDetails.size <= NOTE_DETAIL_CACHE_TARGET) break
+        if (keep.has(id)) continue
+        noteDetails.delete(id)
+      }
+    }
+
+    async function fetchDetailBatch(ids) {
+      if (!ids.length) return
+      const generation = noteCacheGeneration
+      ids.forEach(id => noteDetailRequests.add(id))
+      noteDetailsLoading.value += ids.length
       try {
-        // Keep archived notes in the in-memory list so link resolution can
-        // identify archived targets and the archived filter is instant.
-        notes.value = await api('/api/notes?includeArchived=1')
-        await loadTags()
+        const rows = await api('/api/notes/window', {
+          method: 'POST',
+          body: JSON.stringify({ ids })
+        })
+        if (generation !== noteCacheGeneration) return
+        for (const row of rows) {
+          if (!row?.id) continue
+          const summary = noteIndex.value.find(note => note.id === row.id)
+          if (!summary) continue
+          if (summary.revisionNo && row.revisionNo &&
+              summary.revisionNo !== row.revisionNo) continue
+          noteDetails.set(row.id, row)
+        }
       } catch (e) {
+        console.error('Failed to load note cards', e)
+      } finally {
+        ids.forEach(id => noteDetailRequests.delete(id))
+        noteDetailsLoading.value = Math.max(0, noteDetailsLoading.value - ids.length)
+      }
+    }
+
+    function hydrateDetailRange(start, end) {
+      if (!dashboardNotes.value.length) return
+      evictNoteDetails(start, end)
+      const padded = detailWindowRange(start, end, dashboardNotes.value.length, {
+        pageSize: NOTE_DETAIL_BATCH,
+        pages: 1
+      }) || { start, end }
+      const ids = noteIdsInRange(padded.start, padded.end)
+      const missing = ids.filter(id => !noteDetails.has(id) && !noteDetailRequests.has(id))
+      for (let index = 0; index < missing.length; index += NOTE_DETAIL_BATCH) {
+        fetchDetailBatch(missing.slice(index, index + NOTE_DETAIL_BATCH))
+      }
+    }
+
+    function hydrateVisibleDetails() {
+      const range = virtualItemRange(
+        lastVirtualRange.start,
+        lastVirtualRange.end,
+        noteColumnCount.value,
+        dashboardNotes.value.length
+      )
+      if (range) hydrateDetailRange(range.start, range.end)
+    }
+
+    function scheduleVisibleHydration() {
+      nextTick(() => {
+        hydrateVisibleDetails()
+      })
+    }
+
+    function onVirtualUpdate(startRow, endRow, visibleStartRow, visibleEndRow) {
+      lastVirtualRange = {
+        start: Number.isFinite(visibleStartRow) && visibleStartRow >= 0 ? visibleStartRow : startRow,
+        end: Number.isFinite(visibleEndRow) && visibleEndRow >= 0 ? visibleEndRow : endRow
+      }
+      hydrateVisibleDetails()
+    }
+
+    function observeDashboardWidth() {
+      if (typeof ResizeObserver === 'undefined' || !notesGridRef.value) return
+      dashboardResizeObserver?.disconnect()
+      dashboardWidth.value = notesGridRef.value.getBoundingClientRect().width || dashboardWidth.value
+      dashboardResizeObserver = new ResizeObserver(entries => {
+        const width = entries[0]?.contentRect?.width
+        if (width) dashboardWidth.value = width
+      })
+      dashboardResizeObserver.observe(notesGridRef.value)
+    }
+
+    function scrollDashboardToTop() {
+      // Keep the RecycleScroller's own bookkeeping in sync, then scroll the
+      // page directly. `page-mode` scrolls the window, and relying only on
+      // scrollToPosition can leave the viewport in the middle of a shorter
+      // search result list.
+      notesScrollerRef.value?.scrollToPosition?.(0)
+      const grid = notesGridRef.value
+      if (!grid) {
+        window.scrollTo({ top: 0, behavior: 'auto' })
+        return
+      }
+      const header = document.querySelector('header')
+      const stickyBar = grid.previousElementSibling
+      const headerHeight = header?.getBoundingClientRect().height || 0
+      const barHeight = stickyBar?.getBoundingClientRect().height || 0
+      const gridTop = window.scrollY + grid.getBoundingClientRect().top
+      window.scrollTo({
+        top: Math.max(0, gridTop - headerHeight - barHeight),
+        behavior: 'auto'
+      })
+    }
+
+    async function ensureNoteDetail(id, { full = false } = {}) {
+      const summary = noteIndex.value.find(note => note.id === id)
+      if (!summary) return null
+      const cached = noteDetails.get(id)
+      const sameRevision = !cached ||
+        !cached.revisionNo ||
+        !summary.revisionNo ||
+        cached.revisionNo === summary.revisionNo
+      const complete = cached &&
+        Object.prototype.hasOwnProperty.call(cached, 'content') &&
+        !cached.contentTruncated &&
+        (summary.type !== 'canvas' || Object.prototype.hasOwnProperty.call(cached, 'canvasData'))
+      if (!full && complete && sameRevision) return { ...cached, ...summary }
+
+      const note = await api(`/api/notes/${id}`)
+      noteDetails.set(id, note)
+      return { ...summary, ...note }
+    }
+
+    async function openNoteById(id, options = {}) {
+      if (!id) return false
+      const summary = noteIndex.value.find(note => note.id === id)
+      if (!summary) {
+        showRevisionNotice(options.notFound || 'Note not found')
+        return false
+      }
+      if (summary.archivedAt) {
+        showRevisionNotice(options.archived || 'This note is archived. Restore it to open.')
+        return false
+      }
+      if (editingId.value === id && isModalOpen.value) return true
+      if (options.confirm && isModalOpen.value && hasUnsavedChanges() &&
+          !window.confirm(options.confirm)) return false
+      if (openingNoteId.value === id) return false
+      openingNoteId.value = id
+      try {
+        const note = await ensureNoteDetail(id, { full: options.full })
+        if (!note) {
+          showRevisionNotice(options.notFound || 'Note not found')
+          return false
+        }
+        if (isModalOpen.value) {
+          discardSharedDraftIfAlone()
+          closeModal(true)
+        }
+        await nextTick()
+        if (note.type === 'canvas') openCanvasNote(note)
+        else startEditing(note)
+        return true
+      } catch (e) {
+        showRevisionNotice(e.message || 'Failed to open note')
+        return false
+      } finally {
+        openingNoteId.value = null
+      }
+    }
+
+    const loadNotes = async () => {
+      notesLoading.value = true
+      notesError.value = ''
+      try {
+        // The index keeps every note's identity, tags, dates, and links so
+        // filters/link resolution stay complete without loading every body.
+        const incoming = await api('/api/notes/index?includeArchived=1')
+        noteCacheGeneration += 1
+        noteDetailRequests.clear()
+        noteDetailsLoading.value = 0
+        applyNoteIndex(incoming.map(toNoteIndexEntry))
+        noteDetails.clear()
+        await nextTick()
+        observeDashboardWidth()
+        hydrateVisibleDetails()
+        if (!noteDetails.size && !noteDetailRequests.size) {
+          hydrateDetailRange(0, Math.min(NOTE_DETAIL_BATCH - 1, dashboardNotes.value.length - 1))
+        }
+        await loadTags()
+        await loadDrafts()
+      } catch (e) {
+        notesError.value = e.message || 'Failed to load notes'
         console.error('Failed to load notes', e)
+      } finally {
+        notesLoading.value = false
+      }
+    }
+
+    const loadUiConfig = async () => {
+      try {
+        const data = await api('/api/config')
+        if (data?.ui) uiConfig.value = { ...DEFAULT_UI_CONFIG, ...data.ui }
+        const available = !!data?.search?.semanticEnabled
+        semanticSearchAvailable.value = available
+        if (!available) {
+          semanticSearchEnabled.value = false
+        } else {
+          let stored = null
+          try { stored = localStorage.getItem(HYBRID_SEARCH_KEY) } catch (_) { /* private mode */ }
+          semanticSearchEnabled.value = stored === null ? true : stored === '1'
+        }
+      } catch (e) {
+        console.error('Failed to load UI config', e)
       }
     }
 
@@ -1449,8 +2049,36 @@ export default {
       }, 600)
     }
 
-    const toggleShowArchived = () => {
-      showArchived.value = !showArchived.value
+    const loadDrafts = async () => {
+      draftsLoading.value = true
+      try {
+        drafts.value = await api('/api/drafts')
+        draftsError.value = ''
+      } catch (error) {
+        draftsError.value = error.message || 'Failed to load drafts'
+      } finally {
+        draftsLoading.value = false
+      }
+    }
+
+    let draftsRefreshTimer = null
+    const scheduleDraftsRefresh = () => {
+      if (draftsRefreshTimer) clearTimeout(draftsRefreshTimer)
+      draftsRefreshTimer = setTimeout(() => {
+        draftsRefreshTimer = null
+        loadDrafts()
+      }, 350)
+    }
+
+    const setDashboardTab = (tab) => {
+      if (dashboardTab.value === tab) {
+        if (tab === 'drafts') loadDrafts()
+        return
+      }
+      dashboardTab.value = tab
+      deselectAll()
+      closeNoteColorPicker()
+      if (tab === 'drafts') loadDrafts()
     }
 
     const selectTag = (payload) => {
@@ -1472,15 +2100,62 @@ export default {
     const restoreArchivedNote = async (note) => {
       try {
         const restored = await api(`/api/notes/${note.id}/restore`, { method: 'POST' })
-        const index = notes.value.findIndex(n => n.id === note.id)
-        if (index !== -1) {
-          notes.value[index] = { ...notes.value[index], ...restored }
-        }
+        patchNote(note.id, restored)
         showRevisionNotice(`Restored ${getDisplayTitle(restored)}.`)
         loadTags()
       } catch (e) {
         showRevisionNotice(e.message || 'Restore failed')
       }
+    }
+
+    const SHORTCUT_LAYER_SELECTOR = [
+      '.modal-overlay',
+      '.history-overlay',
+      '.graph-overlay',
+      '.links-overlay',
+      '.backlinks-overlay',
+      '.link-dialog-overlay',
+      '.deleted-mask'
+    ].join(', ')
+
+    function shortcutElementVisible(el) {
+      if (!el || el.disabled) return false
+      const style = window.getComputedStyle(el)
+      return style.visibility !== 'hidden' && style.display !== 'none' && el.getClientRects().length > 0
+    }
+
+    function shortcutRoot() {
+      const layers = [...document.querySelectorAll(SHORTCUT_LAYER_SELECTOR)]
+        .filter(shortcutElementVisible)
+      return layers.length ? layers[layers.length - 1] : document
+    }
+
+    function activateShortcutFromDom(e) {
+      if (e.defaultPrevented || e.isComposing || e.repeat) return false
+      const combo = eventShortcut(e, modKey)
+      if (!combo) return false
+      const active = document.activeElement
+      const typing = active && (
+        active.tagName === 'INPUT' ||
+        active.tagName === 'TEXTAREA' ||
+        active.tagName === 'SELECT' ||
+        active.isContentEditable
+      )
+      if (typing && !(e.ctrlKey || e.metaKey || e.altKey)) return false
+      const root = shortcutRoot()
+      const candidates = [...root.querySelectorAll('button[data-shortcut]')]
+        .filter(el => el.dataset.shortcut === combo &&
+          !el.classList.contains('md-tool-btn') &&
+          shortcutElementVisible(el))
+      // Prefer the submit button of the form the user is typing in, so
+      // Ctrl/Cmd+Enter saves the form that has focus when a modal has several.
+      const focusedForm = active?.closest?.('form')
+      const button = (focusedForm && candidates.find(el => focusedForm.contains(el))) || candidates[0]
+      if (!button) return false
+      e.preventDefault()
+      e.stopPropagation()
+      button.click()
+      return true
     }
 
     // Global KeyDown handler for shortcuts
@@ -1493,6 +2168,12 @@ export default {
 
       // 0. Skip keyboard shortcuts when in canvas editor view
       if (currentView.value === 'canvas') return
+
+      if (openColorNoteId.value && e.key === 'Escape' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault()
+        closeNoteColorPicker()
+        return
+      }
 
       // 1. Handlers when delete confirmation modal is open
       if (isConfirmOpen.value) {
@@ -1523,7 +2204,8 @@ export default {
       }
 
       // 3. Ctrl/Cmd+Shift+M cycles editor modes while the note modal is open
-      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'm' && isModalOpen.value) {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'm' &&
+          isModalOpen.value && !linkDialogOpen.value) {
         e.preventDefault()
         cycleEditorMode()
         return
@@ -1538,7 +2220,28 @@ export default {
         }
       }
 
-      // 5. Handlers when note editor modal is open
+      // 5. Link dialog Escape handling (nested above the note editor modal)
+      if (linkDialogOpen.value && e.key === 'Escape' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault()
+        closeLinkDialog()
+        return
+      }
+
+      // 6. Escape closes the topmost shortcut layer (history, backlinks,
+      // graph, admin modals) before falling through to the note editor.
+      if (e.key === 'Escape' && !e.ctrlKey && !e.metaKey) {
+        const layer = shortcutRoot()
+        const close = layer !== document
+          ? layer.querySelector('button[data-shortcut="Esc"]')
+          : null
+        if (close) {
+          e.preventDefault()
+          close.click()
+          return
+        }
+      }
+
+      // 7. Handlers when note editor modal is open
       if (isModalOpen.value) {
         if (e.key === 'Escape') {
           e.preventDefault()
@@ -1547,7 +2250,14 @@ export default {
         }
       }
 
-      // 6. Search bar Escape handling
+      // 7. Selection links overlay Escape handling
+      if (selectionLinksOpen.value && e.key === 'Escape' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault()
+        closeSelectionLinks()
+        return
+      }
+
+      // 8. Search bar Escape handling
       if (searchOpen.value && e.key === 'Escape' && !e.ctrlKey && !e.metaKey) {
         e.preventDefault()
         closeSearch()
@@ -1556,25 +2266,101 @@ export default {
 
       const activeEl = document.activeElement
       const isInputActive = activeEl && (
-        activeEl.tagName === 'INPUT' || 
-        activeEl.tagName === 'TEXTAREA' || 
+        activeEl.tagName === 'INPUT' ||
+        activeEl.tagName === 'TEXTAREA' ||
+        activeEl.tagName === 'SELECT' ||
         activeEl.isContentEditable
       )
+
+      // Declarative button shortcuts. This runs before the global
+      // Ctrl/Cmd+Enter create-note shortcut so a modal's Save button wins.
+      if (activateShortcutFromDom(e)) return
+
+      // Select All is only rendered after a selection exists, so its button
+      // shortcut cannot start a selection. Handle the initial press here.
+      if (shortcutRoot() === document &&
+          dashboardTab.value === 'notes' &&
+          !searchOpen.value &&
+          !e.ctrlKey && !e.metaKey && !e.altKey &&
+          !(activeEl && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA' ||
+            activeEl.tagName === 'SELECT' || activeEl.isContentEditable)) &&
+          e.key.toLowerCase() === 'a') {
+        e.preventDefault()
+        selectAll()
+        return
+      }
 
       // Cmd/Ctrl + Enter: Open new note modal if closed
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
         log('Cmd/Ctrl+Enter: modalOpen=%s confirmOpen=%s', isModalOpen.value, isConfirmOpen.value)
-        if (!isModalOpen.value && !isConfirmOpen.value) {
+        if (!isModalOpen.value && !isConfirmOpen.value &&
+            !searchOpen.value && shortcutRoot() === document) {
           e.preventDefault()
           openNewNoteModal()
         }
       }
     }
 
+    function onShortcutRevealDown(e) {
+      if (e.key === 'Alt' || e.key === 'Control' || e.key === 'Meta' ||
+          e.altKey || e.ctrlKey || e.metaKey) {
+        shortcutsVisible.value = true
+      }
+    }
+
+    function onShortcutRevealUp(e) {
+      if (!e.altKey && !e.ctrlKey && !e.metaKey) shortcutsVisible.value = false
+    }
+
+    function onShortcutRevealPointer(e) {
+      // Some environments do not deliver a reliable modifier keydown; a
+      // pointer event with Alt/Ctrl/Cmd held should still reveal hints.
+      if (e.altKey || e.ctrlKey || e.metaKey) shortcutsVisible.value = true
+    }
+
+    function resetShortcutReveal() {
+      shortcutsVisible.value = false
+    }
+
+    // Sticky dashboard chrome: measure the header so the control/selection bar
+    // can pin directly beneath it at any viewport width or header state.
+    const appHeader = ref(null)
+    let appHeaderObserver = null
+
+    function syncHeaderHeight() {
+      const height = appHeader.value?.offsetHeight
+      if (!height) return
+      document.documentElement.style.setProperty('--app-header-height', `${height}px`)
+    }
+
+    watch(isAuthenticated, async (authenticated) => {
+      appHeaderObserver?.disconnect()
+      appHeaderObserver = null
+      if (!authenticated) {
+        document.documentElement.style.removeProperty('--app-header-height')
+        dashboardResizeObserver?.disconnect()
+        dashboardResizeObserver = null
+        return
+      }
+      await nextTick()
+      syncHeaderHeight()
+      if (typeof ResizeObserver !== 'undefined' && appHeader.value) {
+        appHeaderObserver = new ResizeObserver(syncHeaderHeight)
+        appHeaderObserver.observe(appHeader.value)
+      }
+      observeDashboardWidth()
+    })
+
     // Bootstrap auth: first-run setup, persisted cookie, or the login screen.
     onMounted(async () => {
       window.addEventListener('keydown', handleKeyDown)
       window.addEventListener('paste', handleWindowPaste)
+      window.addEventListener('keydown', onShortcutRevealDown)
+      window.addEventListener('keyup', onShortcutRevealUp)
+      window.addEventListener('pointermove', onShortcutRevealPointer)
+      window.addEventListener('pointerdown', onShortcutRevealPointer)
+      window.addEventListener('blur', resetShortcutReveal)
+      document.addEventListener('click', closeNoteColorPicker)
       try {
         const bootstrap = await api('/api/auth/bootstrap')
         if (bootstrap.needsSetup) {
@@ -1588,6 +2374,7 @@ export default {
           if (status.user?.mustChangePassword) {
             openAccountSettings(true)
           } else {
+            await loadUiConfig()
             await loadNotes()
             connectWebSocket()
           }
@@ -1602,8 +2389,19 @@ export default {
     onUnmounted(() => {
       window.removeEventListener('keydown', handleKeyDown)
       window.removeEventListener('paste', handleWindowPaste)
+      window.removeEventListener('keydown', onShortcutRevealDown)
+      window.removeEventListener('keyup', onShortcutRevealUp)
+      window.removeEventListener('pointermove', onShortcutRevealPointer)
+      window.removeEventListener('pointerdown', onShortcutRevealPointer)
+      window.removeEventListener('blur', resetShortcutReveal)
+      document.removeEventListener('click', closeNoteColorPicker)
       if (revisionNoticeTimer) clearTimeout(revisionNoticeTimer)
       if (tagsRefreshTimer) clearTimeout(tagsRefreshTimer)
+      if (draftsRefreshTimer) clearTimeout(draftsRefreshTimer)
+      appHeaderObserver?.disconnect()
+      appHeaderObserver = null
+      dashboardResizeObserver?.disconnect()
+      dashboardResizeObserver = null
       disconnectWebSocket()
     })
 
@@ -1624,6 +2422,7 @@ export default {
         openAccountSettings(true)
         return
       }
+      await loadUiConfig()
       await loadNotes()
       connectWebSocket()
     }
@@ -1688,6 +2487,7 @@ export default {
       loginError.value = ''
       accountMenuOpen.value = false
       accountSettingsOpen.value = false
+      uiSettingsOpen.value = false
       usersOpen.value = false
       disconnectWebSocket()
       closeModal(true)
@@ -1732,6 +2532,7 @@ export default {
         changePasswordForm.value = { currentPassword: '', newPassword: '', confirm: '' }
         changePasswordNotice.value = 'Password updated. Other sessions were signed out.'
         if (wasForced) {
+          await loadUiConfig()
           await loadNotes()
           connectWebSocket()
         }
@@ -1751,6 +2552,7 @@ export default {
       currentUser.value = null
       isAuthenticated.value = false
       accountSettingsOpen.value = false
+      uiSettingsOpen.value = false
       accountMenuOpen.value = false
       loginForm.value.password = ''
       disconnectWebSocket()
@@ -1867,8 +2669,7 @@ export default {
           const textNode = document.createTextNode(md)
           this.parentNode.replaceChild(textNode, this)
           if (editorMode.value === 'write') {
-            markEditorDirty()
-            newNoteContent.value = serializeEditorToMarkdown()
+            syncVisualEditor()
           }
         }
       })
@@ -1928,20 +2729,78 @@ export default {
       })
     }
 
-    function insertMarkdownAsRich(markdown) {
-      const el = imageEditor.value
-      if (!el) return
-      el.focus()
-      const sel = window.getSelection()
-      if (!sel || !sel.rangeCount) {
-        newNoteContent.value = normalizeMarkdown(`${newNoteContent.value}\n\n${markdown}`)
-        renderEditorContent()
+    function insertPlainTextAtCursor(text) {
+      const value = String(text ?? '').replace(/\r\n?/g, '\n')
+      if (!value) return
+
+      if (editorMode.value === 'plain') {
+        const textarea = markdownTextarea.value
+        if (!textarea) {
+          newNoteContent.value = `${newNoteContent.value}${value}`
+          return
+        }
+        const start = textarea.selectionStart ?? newNoteContent.value.length
+        const end = textarea.selectionEnd ?? start
+        newNoteContent.value =
+          newNoteContent.value.slice(0, start) +
+          value +
+          newNoteContent.value.slice(end)
+        nextTick(() => {
+          if (!markdownTextarea.value) return
+          markdownTextarea.value.focus()
+          const pos = start + value.length
+          markdownTextarea.value.setSelectionRange(pos, pos)
+        })
         return
       }
-      const range = sel.getRangeAt(0)
-      if (!el.contains(range.startContainer)) {
+
+      const el = imageEditor.value
+      if (!el) {
+        newNoteContent.value = `${newNoteContent.value}${value}`
+        return
+      }
+
+      const sel = window.getSelection()
+      let range
+      if (!sel || !sel.rangeCount || !el.contains(sel.anchorNode)) {
+        el.focus()
+        range = document.createRange()
         range.selectNodeContents(el)
         range.collapse(false)
+        sel?.removeAllRanges()
+        sel?.addRange(range)
+      } else {
+        range = sel.getRangeAt(0)
+      }
+
+      range.deleteContents()
+      const node = document.createTextNode(value)
+      range.insertNode(node)
+      const after = document.createRange()
+      after.setStart(node, node.nodeValue.length)
+      after.collapse(true)
+      sel?.removeAllRanges()
+      sel?.addRange(after)
+      syncVisualEditor()
+    }
+
+    function insertMarkdownAsRich(markdown) {
+      const el = imageEditor.value
+      if (!el) {
+        newNoteContent.value = normalizeMarkdown(`${newNoteContent.value}\n\n${markdown}`)
+        return
+      }
+      el.focus()
+      const sel = window.getSelection()
+      let range
+      if (!sel || !sel.rangeCount || !el.contains(sel.anchorNode)) {
+        range = document.createRange()
+        range.selectNodeContents(el)
+        range.collapse(false)
+        sel?.removeAllRanges()
+        sel?.addRange(range)
+      } else {
+        range = sel.getRangeAt(0)
       }
       const html = renderMarkdown(markdown, { resolveLink: resolveWikiLink })
       const temp = document.createElement('div')
@@ -1950,12 +2809,10 @@ export default {
       while (temp.firstChild) fragment.appendChild(temp.firstChild)
       range.deleteContents()
       range.insertNode(fragment)
-      // Put the caret at the end of the inserted block.
       range.collapse(false)
-      sel.removeAllRanges()
-      sel.addRange(range)
-      markEditorDirty()
-      newNoteContent.value = serializeEditorToMarkdown()
+      sel?.removeAllRanges()
+      sel?.addRange(range)
+      syncVisualEditor()
       renderMermaidBlocks(el).catch((error) => console.error('Mermaid render failed:', error))
     }
 
@@ -1972,6 +2829,8 @@ export default {
       backlinks.value = []
       newNoteTitle.value = ''
       newNoteContent.value = ''
+      editingOriginalTitle = ''
+      editingOriginalContent = ''
       modalSize.value = { width: null, height: null }
       setTimeout(() => {
         if (modalTitleInput.value) {
@@ -1994,10 +2853,16 @@ export default {
       e.preventDefault()
       const html = e.clipboardData?.getData('text/html') || ''
       const text = e.clipboardData?.getData('text/plain') || ''
-      let markdown = html ? htmlToMarkdown(html) : normalizePlainText(text)
-      if (!markdown.trim()) return
-      markdown = (await normalizeDataUrlImages(markdown)).markdown
-      log('paste intercepted: markdownLength=%d', markdown.length)
+      let content = text.replace(/\r\n?/g, '\n')
+      if (pasteMode.value === 'rich' && html.trim()) {
+        const converted = htmlToMarkdown(html)
+        if (converted.trim()) content = converted
+      }
+      if (!content.trim()) return
+      if (pasteMode.value === 'rich') {
+        content = (await normalizeDataUrlImages(content)).markdown
+      }
+      log('paste intercepted: mode=%s textLength=%d', pasteMode.value, content.length)
       teardownTextCollab()
       isModalOpen.value = true
       editingId.value = null
@@ -2009,7 +2874,7 @@ export default {
       backlinksOpen.value = false
       backlinks.value = []
       newNoteTitle.value = ''
-      newNoteContent.value = markdown
+      newNoteContent.value = content
       modalSize.value = { width: null, height: null }
       nextTick(() => {
         renderEditorContent()
@@ -2020,11 +2885,8 @@ export default {
 
     const hasUnsavedChanges = () => {
       if (editingId.value) {
-        const original = notes.value.find(n => n.id === editingId.value)
-        if (original) {
-          return newNoteTitle.value !== original.title || newNoteContent.value !== original.content
-        }
-        return true
+        return newNoteTitle.value !== editingOriginalTitle ||
+          newNoteContent.value !== editingOriginalContent
       }
       return newNoteTitle.value.trim() !== '' || newNoteContent.value.trim() !== ''
     }
@@ -2045,17 +2907,20 @@ export default {
       historyOpen.value = false
       backlinksOpen.value = false
       backlinks.value = []
+      linkDialogOpen.value = false
+      linkDialogSelection = null
+      linkDialogInitialText.value = ''
       historyData.value = null
       historyPreview.value = null
       historyError.value = ''
       newNoteTitle.value = ''
       newNoteContent.value = ''
+      editingOriginalTitle = ''
+      editingOriginalContent = ''
       if (pendingNotes.value) {
-        const incoming = pendingNotes.value
-        const incomingIds = new Set(incoming.map(n => n.id))
-        const archived = notes.value.filter(n => n.archivedAt && !incomingIds.has(n.id))
-        notes.value = [...incoming, ...archived]
+        applyNoteIndex(pendingNotes.value)
         pendingNotes.value = null
+        scheduleVisibleHydration()
       }
       modalSize.value = { width: null, height: null }
     }
@@ -2069,6 +2934,23 @@ export default {
       isUnsavedChangesOpen.value = false
       discardSharedDraftIfAlone()
       closeModal(true)
+      scheduleDraftsRefresh()
+    }
+
+    const draftAndClose = () => {
+      isUnsavedChangesOpen.value = false
+      if (!editingId.value) {
+        closeModal(true)
+        return
+      }
+      const hadChanges = hasUnsavedChanges()
+      // Title/content watchers already sync into the shared Yjs draft; closing
+      // sends text-leave, which persists it. Do not discard it.
+      closeModal(true)
+      if (hadChanges) {
+        scheduleDraftsRefresh()
+        showRevisionNotice('Draft kept. Open it from the Drafts tab.')
+      }
     }
 
     const saveAndClose = async () => {
@@ -2116,7 +2998,9 @@ export default {
     const copyNote = async (note) => {
       console.log('[DEBUG] copyNote called for note:', note.id)
       try {
-        const textToCopy = note.title ? `${note.title}\n\n${note.content}` : note.content
+        const full = await ensureNoteDetail(note.id)
+        const source = full || note
+        const textToCopy = source.title ? `${source.title}\n\n${source.content}` : source.content
         if (navigator.clipboard && navigator.clipboard.writeText) {
           await navigator.clipboard.writeText(textToCopy)
         } else {
@@ -2159,9 +3043,11 @@ export default {
             content
           })
         })
-        notes.value.unshift(note)
+        upsertNote(note)
         scheduleTagsRefresh()
         closeModal(true)
+        if (dashboardTab.value === 'drafts') dashboardTab.value = 'notes'
+        scheduleDraftsRefresh()
       } catch (e) {
         console.error('Failed to add note', e)
         showRevisionNotice(e.message || 'Failed to add note')
@@ -2227,17 +3113,53 @@ export default {
     const deselectAll = () => {
       console.log('[DEBUG] deselectAll called')
       selectedNoteIds.value = new Set()
+      if (selectionLinksOpen.value) closeSelectionLinks()
     }
 
-    const handleCardClick = (note) => {
-      if (selectedNoteIds.value.size > 0) {
+    const handleCardClick = async (note) => {
+      if (note.isQuickShortcuts) return
+      if (selectedNoteIds.value.size > 0 && !note.isDraft) {
         toggleSelect(note.id)
-      } else if (note.archivedAt) {
-        showRevisionNotice('This note is archived. Restore it to edit.')
-      } else if (note.type === 'canvas') {
-        openCanvasNote(note)
-      } else {
-        startEditing(note)
+        return
+      }
+      const summary = noteIndex.value.find(item => item.id === note.id)
+      if (!summary) {
+        await loadNotes()
+        return
+      }
+      if (summary.archivedAt) {
+        showRevisionNotice(note.isDraft
+          ? 'This note is archived. Restore it to edit its draft.'
+          : 'This note is archived. Restore it to edit.')
+        if (note.isDraft) loadDrafts()
+        return
+      }
+      await openNoteById(note.id)
+    }
+
+    const toggleNoteColorPicker = (noteId) => {
+      openColorNoteId.value = openColorNoteId.value === noteId ? null : noteId
+    }
+
+    const closeNoteColorPicker = () => {
+      openColorNoteId.value = null
+    }
+
+    const setNoteColor = async (note, color) => {
+      const next = color || null
+      const previous = note.color || null
+      openColorNoteId.value = null
+      if (next === previous) return
+      patchNote(note.id, { color: next })
+      try {
+        const updated = await api(`/api/notes/${note.id}/color`, {
+          method: 'PUT',
+          body: JSON.stringify({ color: next })
+        })
+        patchNote(note.id, { color: updated.color || null })
+      } catch (error) {
+        patchNote(note.id, { color: previous })
+        showRevisionNotice(error.message || 'Failed to change the note color')
       }
     }
 
@@ -2255,8 +3177,10 @@ export default {
       historyData.value = null
       historyPreview.value = null
       historyError.value = ''
-      newNoteTitle.value = note.title
-      newNoteContent.value = note.content
+      newNoteTitle.value = note.title || ''
+      newNoteContent.value = note.content || ''
+      editingOriginalTitle = newNoteTitle.value
+      editingOriginalContent = newNoteContent.value
       isModalOpen.value = true
       modalSize.value = { width: null, height: null }
       nextTick(() => {
@@ -2315,16 +3239,14 @@ export default {
             textCollabManager?.setBaseRevision(message.baseRevisionId)
           }
           if (message.revisionNo) editingRevisionNo.value = message.revisionNo
-          const index = notes.value.findIndex(n => n.id === note.id)
-          if (index !== -1) {
-            notes.value[index] = {
-              ...notes.value[index],
-              title: message.title ?? notes.value[index].title,
-              content: message.content ?? notes.value[index].content,
-              revisionId: message.baseRevisionId || notes.value[index].revisionId,
-              revisionNo: message.revisionNo || notes.value[index].revisionNo
-            }
-          }
+          patchNote(note.id, {
+            title: message.title ?? note.title,
+            content: message.content ?? note.content,
+            revisionId: message.baseRevisionId || note.revisionId,
+            revisionNo: message.revisionNo || note.revisionNo,
+            updatedAt: new Date().toISOString()
+          })
+          scheduleDraftsRefresh()
         },
         onStatus(status) {
           textCollabStatus.value = status
@@ -2409,7 +3331,7 @@ export default {
       try {
         if (textChanged) newNoteContent.value = next.text
         if (titleChanged) {
-          if (document.activeElement === modalTitleInput.value) {
+          if (!initial && document.activeElement === modalTitleInput.value) {
             pendingRemoteTitle = next.title
           } else {
             newNoteTitle.value = next.title
@@ -2435,10 +3357,10 @@ export default {
         }
       }
 
-      const original = notes.value.find(n => n.id === editingId.value)
-      editorDirty = !original ||
-        newNoteContent.value !== original.content ||
-        newNoteTitle.value !== original.title
+      // The editor surface was just rendered from canonical markdown (or the
+      // textarea was updated), so it has no un-serialised DOM edits. Whether
+      // the document differs from the head is separate unsaved-change state.
+      editorDirty = false
       if (initial) textCollabStatus.value = 'connected'
     }
 
@@ -2530,10 +3452,7 @@ export default {
           })
         })
         // Keep the document identity stable; only the version pointer moves.
-        const index = notes.value.findIndex(n => n.id === editingId.value)
-        if (index !== -1) {
-          notes.value[index] = { ...notes.value[index], ...updated }
-        }
+        patchNote(editingId.value, updated)
         editingBaseRevisionId.value = updated.headRevisionId || updated.revisionId || null
         editingRevisionNo.value = updated.revisionNo || editingRevisionNo.value
         textCollabManager?.setBaseRevision(editingBaseRevisionId.value)
@@ -2545,6 +3464,8 @@ export default {
             : updated.notice
         )
         closeModal(true)
+        if (dashboardTab.value === 'drafts') dashboardTab.value = 'notes'
+        scheduleDraftsRefresh()
       } catch (e) {
         console.error('Failed to save note', e)
         showRevisionNotice(e.message || 'Save failed')
@@ -2585,10 +3506,7 @@ export default {
     }
 
     const applyRevisionResult = (result) => {
-      const index = notes.value.findIndex(n => n.id === result.id)
-      if (index !== -1) {
-        notes.value[index] = { ...notes.value[index], ...result }
-      }
+      patchNote(result.id, result)
       editingBaseRevisionId.value = result.headRevisionId || result.revisionId || null
       editingRevisionNo.value = result.revisionNo || editingRevisionNo.value
       showRevisionNotice(result.notice)
@@ -2652,27 +3570,13 @@ export default {
       await refreshGraph()
     }
 
-    const openGraphNode = (id) => {
+    const openGraphNode = async (id) => {
       if (!id || String(id).startsWith('unresolved:')) return
-      const note = notes.value.find(n => n.id === id)
-      if (!note) {
-        showRevisionNotice('The selected graph node is no longer available.')
-        return
-      }
-      if (note.archivedAt) {
-        showRevisionNotice('This note is archived. Restore it to open it.')
-        return
-      }
-      if (isModalOpen.value && hasUnsavedChanges() &&
-          !window.confirm('Discard unsaved changes and open the graph node?')) return
       graphOpen.value = false
-      if (isModalOpen.value) {
-        discardSharedDraftIfAlone()
-        closeModal(true)
-      }
-      nextTick(() => {
-        if (note.type === 'canvas') openCanvasNote(note)
-        else startEditing(note)
+      await openNoteById(id, {
+        notFound: 'The selected graph node is no longer available.',
+        archived: 'This note is archived. Restore it to open it.',
+        confirm: 'Discard unsaved changes and open the graph node?'
       })
     }
 
@@ -2691,23 +3595,45 @@ export default {
       }
     }
 
-    const openBacklinkSource = (noteId) => {
-      const note = notes.value.find(n => n.id === noteId)
-      if (!note) {
-        showRevisionNotice('The linking note is no longer available.')
-        return
-      }
-      if (note.archivedAt) {
-        showRevisionNotice('The linking note is archived.')
-        return
-      }
-      if (hasUnsavedChanges() && !window.confirm('Discard unsaved changes and open the linking note?')) return
+    const openBacklinkSource = async (noteId) => {
       backlinksOpen.value = false
-      discardSharedDraftIfAlone()
-      closeModal(true)
-      nextTick(() => {
-        if (note.type === 'canvas') openCanvasNote(note)
-        else startEditing(note)
+      await openNoteById(noteId, {
+        notFound: 'The linking note is no longer available.',
+        archived: 'The linking note is archived.',
+        confirm: 'Discard unsaved changes and open the linking note?'
+      })
+    }
+
+    const closeSelectionLinks = () => {
+      selectionLinksOpen.value = false
+      selectionLinksError.value = ''
+    }
+
+    const openSelectionLinks = async () => {
+      const ids = Array.from(selectedNoteIds.value)
+      if (ids.length === 0) return
+      selectionLinksOpen.value = true
+      selectionLinksLoading.value = true
+      selectionLinksError.value = ''
+      try {
+        selectionLinksData.value = await api('/api/notes/links/summary', {
+          method: 'POST',
+          body: JSON.stringify({ ids, includeArchived: true })
+        })
+      } catch (e) {
+        selectionLinksError.value = e.message || 'Failed to load selection links'
+        selectionLinksData.value = { noteIds: ids, outgoing: [], incoming: [] }
+      } finally {
+        selectionLinksLoading.value = false
+      }
+    }
+
+    const openSelectionLinkNote = async (noteId) => {
+      selectionLinksOpen.value = false
+      await openNoteById(noteId, {
+        notFound: 'The related note is no longer available.',
+        archived: 'This related note is archived. Restore it to open it.',
+        confirm: 'Discard unsaved changes and open the related note?'
       })
     }
 
@@ -2776,6 +3702,71 @@ export default {
       mcpTokenExpiresDays.value = null
       mcpLimitsNotice.value = ''
       await Promise.all([loadMcpTokens(), loadMcpLimits()])
+    }
+
+    function applyUiSettings(data) {
+      uiSettings.value = data
+      const effective = { ...DEFAULT_UI_CONFIG, ...(data?.ui || {}) }
+      uiConfig.value = effective
+      uiSettingsForm.value = { ...effective }
+    }
+
+    const openUiSettings = async () => {
+      accountMenuOpen.value = false
+      uiSettingsOpen.value = true
+      uiSettingsLoading.value = true
+      uiSettingsError.value = ''
+      uiSettingsNotice.value = ''
+      try {
+        applyUiSettings(await api('/api/admin/config'))
+      } catch (e) {
+        uiSettingsError.value = e.message || 'Failed to load interface settings'
+      } finally {
+        uiSettingsLoading.value = false
+      }
+    }
+
+    const closeUiSettings = () => {
+      if (uiSettingsSaving.value) return
+      uiSettingsOpen.value = false
+    }
+
+    const saveUiSettings = async () => {
+      uiSettingsSaving.value = true
+      uiSettingsError.value = ''
+      uiSettingsNotice.value = ''
+      try {
+        const ui = {}
+        for (const field of UI_CONFIG_FIELDS) {
+          ui[field.key] = Number(uiSettingsForm.value[field.key])
+        }
+        applyUiSettings(await api('/api/admin/config', {
+          method: 'PUT',
+          body: JSON.stringify({ ui })
+        }))
+        uiSettingsNotice.value = 'Interface settings saved and applied to all clients.'
+        setTimeout(() => { uiSettingsNotice.value = '' }, 3500)
+      } catch (e) {
+        uiSettingsError.value = e.message || 'Failed to save interface settings'
+      } finally {
+        uiSettingsSaving.value = false
+      }
+    }
+
+    const resetUiSettings = async () => {
+      if (!window.confirm('Reset runtime interface settings to the config.json defaults?')) return
+      uiSettingsSaving.value = true
+      uiSettingsError.value = ''
+      uiSettingsNotice.value = ''
+      try {
+        applyUiSettings(await api('/api/admin/config', { method: 'DELETE' }))
+        uiSettingsNotice.value = 'Runtime overrides cleared; config.json defaults are active.'
+        setTimeout(() => { uiSettingsNotice.value = '' }, 3500)
+      } catch (e) {
+        uiSettingsError.value = e.message || 'Failed to reset interface settings'
+      } finally {
+        uiSettingsSaving.value = false
+      }
     }
 
     const createMcpToken = async () => {
@@ -2931,9 +3922,10 @@ export default {
           })
         })
         applyEmbeddingStatus(data, { updateForm: true })
+        await loadUiConfig()
         embeddingNotice.value = data.settings?.enabled
           ? 'Saved. Indexing is running in the background.'
-          : 'Saved. Semantic search is disabled.'
+          : 'Saved. Hybrid search is disabled.'
       } catch (e) {
         embeddingError.value = e.message
       } finally {
@@ -2989,8 +3981,28 @@ export default {
     }
 
     function toggleSemanticSearch() {
+      if (!semanticSearchAvailable.value) {
+        showRevisionNotice('Hybrid search is not configured. Ask an admin to enable an embedding model.')
+        return
+      }
       semanticSearchEnabled.value = !semanticSearchEnabled.value
+      try { localStorage.setItem(HYBRID_SEARCH_KEY, semanticSearchEnabled.value ? '1' : '0') } catch (_) { /* private mode */ }
       if (searchQuery.value.trim()) onSearchInput()
+    }
+
+    function restoreSearchSort() {
+      if (sortBy.value === 'relevance') {
+        sortBy.value = sortBeforeSearch || 'updatedAt'
+      }
+    }
+
+    function clearSearchState() {
+      searchSeq += 1
+      if (searchTimer) clearTimeout(searchTimer)
+      searchResults.value = null
+      searchMode.value = 'keyword'
+      searchLoading.value = false
+      restoreSearchSort()
     }
 
     // Search methods
@@ -3004,8 +4016,7 @@ export default {
     const closeSearch = () => {
       searchOpen.value = false
       searchQuery.value = ''
-      searchResults.value = null
-      if (searchTimer) clearTimeout(searchTimer)
+      clearSearchState()
     }
 
     const toggleSearch = () => {
@@ -3020,40 +4031,57 @@ export default {
       if (searchTimer) clearTimeout(searchTimer)
       const q = searchQuery.value.trim()
       if (!q) {
-        searchResults.value = null
+        clearSearchState()
         return
       }
+      // The first query switches the list to relevance order; the user can
+      // still pick another sort while the search is active.
+      if (searchResults.value === null && sortBy.value !== 'relevance') {
+        sortBeforeSearch = sortBy.value
+        sortBy.value = 'relevance'
+      }
+      const seq = ++searchSeq
       searchTimer = setTimeout(async () => {
         searchLoading.value = true
         try {
-          if (semanticSearchEnabled.value) {
-            const data = await api(`/api/search/semantic?q=${encodeURIComponent(q)}&limit=50`)
+          if (semanticSearchEnabled.value && semanticSearchAvailable.value) {
+            const data = await api(`/api/search/hybrid?q=${encodeURIComponent(q)}&limit=50`)
+            if (seq !== searchSeq) return
             searchResults.value = (data.results || []).map(result => result.note_id)
+            searchMode.value = data.notice || !data.semantic_count ? 'keyword' : 'hybrid'
+            if (data.notice) showRevisionNotice(data.notice)
           } else {
-            searchResults.value = await api(`/api/search?q=${encodeURIComponent(q)}`)
+            const ids = await api(`/api/search?q=${encodeURIComponent(q)}`)
+            if (seq !== searchSeq) return
+            searchResults.value = ids
+            searchMode.value = 'keyword'
           }
         } catch (e) {
+          if (seq !== searchSeq) return
           if (semanticSearchEnabled.value) {
             semanticSearchEnabled.value = false
-            showRevisionNotice(`Semantic search unavailable: ${e.message}`)
+            showRevisionNotice(`Hybrid search unavailable: ${e.message}`)
             try {
-              searchResults.value = await api(`/api/search?q=${encodeURIComponent(q)}`)
+              const ids = await api(`/api/search?q=${encodeURIComponent(q)}`)
+              if (seq === searchSeq) {
+                searchResults.value = ids
+                searchMode.value = 'keyword'
+              }
             } catch (_) {
-              searchResults.value = []
+              if (seq === searchSeq) searchResults.value = []
             }
           } else {
             searchResults.value = []
           }
         } finally {
-          searchLoading.value = false
+          if (seq === searchSeq) searchLoading.value = false
         }
       }, 250)
     }
 
     const clearSearch = () => {
       searchQuery.value = ''
-      searchResults.value = null
-      if (searchTimer) clearTimeout(searchTimer)
+      clearSearchState()
       if (searchInput.value) searchInput.value.focus()
     }
 
@@ -3133,7 +4161,7 @@ export default {
               content: normalizeMarkdown(normalized.markdown)
             })
           })
-          notes.value.unshift(note)
+          upsertNote(note)
           scheduleTagsRefresh()
           closeModal(true)
           deletedMask.value = null
@@ -3153,7 +4181,7 @@ export default {
               canvasData
             })
           })
-          notes.value.unshift(note)
+          upsertNote(note)
           // Close the masked canvas and open the freshly-saved note.
           // Toggling the view off then on unmounts the old editor (calling
           // its collab.detach via onUnmounted) and remounts onto the new id.
@@ -3183,11 +4211,8 @@ export default {
     }
 
     // Computed
-    const sortedNotes = computed(() => {
-      let filtered = notes.value
-      if (!showArchived.value) {
-        filtered = filtered.filter(n => !n.archivedAt)
-      }
+    const filterDashboardNotes = (list) => {
+      let filtered = list
       if (searchQuery.value.trim() && searchResults.value !== null) {
         const matchIds = new Set(searchResults.value)
         filtered = filtered.filter(n => matchIds.has(n.id))
@@ -3201,21 +4226,150 @@ export default {
       if (untaggedOnly.value) {
         filtered = filtered.filter(n => !(n.tags || []).length)
       }
-      return [...filtered].sort((a, b) => {
+      return filtered
+    }
+
+    const searchResultRank = computed(() => new Map(
+      (searchResults.value || []).map((id, index) => [id, index])
+    ))
+
+    const sortDashboardNotes = (list) => {
+      if (sortBy.value === 'relevance' && searchResultRank.value.size) {
+        return orderBySearchResults(list, searchResults.value)
+      }
+      const field = sortBy.value === 'relevance' ? 'updatedAt' : sortBy.value
+      return [...list].sort((a, b) => {
         let valA, valB
-        if (sortBy.value === 'title') {
+        if (field === 'title') {
           valA = (a.title || '').toLowerCase()
           valB = (b.title || '').toLowerCase()
         } else {
-          valA = new Date(a[sortBy.value])
-          valB = new Date(b[sortBy.value])
+          valA = new Date(a[field])
+          valB = new Date(b[field])
         }
 
         if (valA < valB) return sortOrder.value === 'asc' ? -1 : 1
         if (valA > valB) return sortOrder.value === 'asc' ? 1 : -1
         return 0
       })
+    }
+
+    const sortedNotes = computed(() => {
+      const filtered = noteIndex.value.filter(note =>
+        dashboardTab.value === 'archived' ? !!note.archivedAt : !note.archivedAt
+      )
+      return sortDashboardNotes(filterDashboardNotes(filtered))
     })
+
+    const draftNotes = computed(() => drafts.value.map(draft => {
+      const note = noteIndex.value.find(item => item.id === draft.noteId)
+      const title = (draft.title || '').trim() || draft.headTitle || 'Untitled'
+      return {
+        id: draft.noteId,
+        isDraft: true,
+        type: draft.noteType || note?.type || 'text',
+        title,
+        displayTitle: title,
+        content: draft.content || '',
+        tags: note?.tags || [],
+        color: note?.color || draft.color || null,
+        createdAt: note?.createdAt || draft.updatedAt,
+        updatedAt: draft.updatedAt,
+        headTitle: draft.headTitle || '',
+        baseRevisionId: draft.baseRevisionId || null
+      }
+    }))
+
+    const sortedDrafts = computed(() => sortDashboardNotes(filterDashboardNotes(draftNotes.value)))
+    const draftNoteIds = computed(() => new Set(drafts.value.map(draft => draft.noteId)))
+
+    const notesTabCount = computed(() => noteIndex.value.filter(note => !note.archivedAt).length)
+    const archivedTabCount = computed(() => noteIndex.value.filter(note => note.archivedAt).length)
+    const visibleNoteCount = computed(() =>
+      dashboardTab.value === 'drafts' ? sortedDrafts.value.length : sortedNotes.value.length
+    )
+
+    const visibleCountText = computed(() => {
+      if (notesLoading.value && noteIndex.value.length === 0) return 'Loading notes…'
+      if (dashboardTab.value === 'drafts') {
+        if (draftsLoading.value) return 'Loading drafts…'
+        return `${visibleNoteCount.value} ${visibleNoteCount.value === 1 ? 'draft' : 'drafts'}`
+      }
+      if (searchQuery.value.trim()) {
+        if (searchLoading.value) return 'Searching…'
+        const mode = searchMode.value === 'hybrid' && semanticSearchEnabled.value ? 'hybrid ' : ''
+        return `${visibleNoteCount.value} ${mode}${visibleNoteCount.value === 1 ? 'result' : 'results'}`
+      }
+      if (dashboardTab.value === 'archived') return `${visibleNoteCount.value} archived`
+      return `${visibleNoteCount.value} ${visibleNoteCount.value === 1 ? 'note' : 'notes'}`
+    })
+
+    // The shortcut card is a read-only virtual note so the grid uses one card
+    // path for every tile. It is never part of the real note list, selection,
+    // sorting, or editing sessions.
+    const quickShortcutsNote = {
+      id: '__quick_shortcuts__',
+      isQuickShortcuts: true,
+      type: 'text',
+      title: 'Quick Shortcuts',
+      tags: [],
+      content: [
+        'Hold `Alt` / `Option` or `Ctrl` / `Cmd` to reveal shortcut hints.',
+        '',
+        `- \`${modKey} + Enter\` — Create note (closed)`,
+        `- \`${modKey} + Enter\` — Save note (editing)`,
+        `- \`${modKey} + V\` — Paste clipboard note`,
+        '- `Esc` — Cancel edit / delete',
+        `- \`${modKey} + I\` — Open search`,
+        `- \`${modKey} + Shift + M\` — Cycle Visual / Source`,
+        '- `R` — Refresh notes',
+        '- `T` — Toggle tags',
+        '- `1` / `2` / `3` — Notes / Archived / Drafts',
+        '- `A` / `Shift + A` — Select all / clear selection',
+        '- `Delete` — Archive selected notes',
+        '- `N` — Open the create menu'
+      ].join('\n')
+    }
+
+    const dashboardNotes = computed(() => {
+      if (dashboardTab.value === 'drafts') return sortedDrafts.value
+      if (dashboardTab.value === 'archived') return sortedNotes.value
+      const filtered = notesLoading.value || !!notesError.value ||
+        !!searchQuery.value.trim() || !!activeTag.value || untaggedOnly.value
+      return filtered ? sortedNotes.value : [quickShortcutsNote, ...sortedNotes.value]
+    })
+
+    const noteColumnCount = computed(() => dashboardColumnCount(dashboardWidth.value))
+    const virtualNoteRows = computed(() => chunkDashboardItems(dashboardNotes.value, noteColumnCount.value))
+    const noteDetailFor = (entry) => {
+      if (!entry || entry.isQuickShortcuts || entry.isDraft) return null
+      return noteDetails.get(entry.id) || null
+    }
+
+    watch(currentView, async (view) => {
+      if (view !== 'list') return
+      await nextTick()
+      observeDashboardWidth()
+      scheduleVisibleHydration()
+    })
+    watch(noteColumnCount, async () => {
+      await nextTick()
+      scheduleVisibleHydration()
+    })
+    watch(() => dashboardNotes.value.length, () => scheduleVisibleHydration())
+    watch(
+      [dashboardTab, sortBy, sortOrder, activeTag, untaggedOnly, () => searchResults.value],
+      async () => {
+        await nextTick()
+        scrollDashboardToTop()
+        // The virtual scroller updates its spacers after the DOM patch; a
+        // second frame keeps the reset reliable when the list shrinks.
+        requestAnimationFrame(() => {
+          scrollDashboardToTop()
+          scheduleVisibleHydration()
+        })
+      }
+    )
 
     const historyRevisionsNewest = computed(() => {
       if (!historyData.value?.revisions) return []
@@ -3236,10 +4390,10 @@ export default {
       let note = null
       if (target.startsWith('note:')) {
         const id = target.slice(5).trim()
-        note = notes.value.find(n => n.id === id) || null
+        note = noteIndex.value.find(n => n.id === id) || null
       } else {
         const wanted = normalizeWikiTitle(target)
-        const matches = notes.value.filter((n) => {
+        const matches = noteIndex.value.filter((n) => {
           const title = normalizeWikiTitle(n.title)
           const display = normalizeWikiTitle(n.displayTitle || getDisplayTitle(n))
           return wanted && (wanted === title || wanted === display)
@@ -3266,26 +4420,11 @@ export default {
         showRevisionNotice(`Unresolved link: ${label}`)
         return
       }
-      const note = notes.value.find(n => n.id === id)
-      if (!note) {
-        showRevisionNotice(`Linked note not found: ${label}`)
-        return
-      }
-      if (note.archivedAt) {
-        showRevisionNotice('The linked note is archived. Restore it to open it.')
-        return
-      }
       if (editingId.value === id && isModalOpen.value) return
-      if (isModalOpen.value && hasUnsavedChanges()) {
-        if (!window.confirm('Discard unsaved changes and open the linked note?')) return
-      }
-      if (isModalOpen.value) {
-        discardSharedDraftIfAlone()
-        closeModal(true)
-      }
-      nextTick(() => {
-        if (note.type === 'canvas') openCanvasNote(note)
-        else startEditing(note)
+      openNoteById(id, {
+        notFound: `Linked note not found: ${label}`,
+        archived: 'The linked note is archived. Restore it to open it.',
+        confirm: 'Discard unsaved changes and open the linked note?'
       })
     }
 
@@ -3355,7 +4494,11 @@ export default {
       resetUserPassword,
       copyToClipboard,
       // Notes
-      notes,
+      noteIndex,
+      noteDetails,
+      notesLoading,
+      notesError,
+      loadNotes,
       notePresence,
       presenceCount,
       presenceTitle,
@@ -3370,6 +4513,29 @@ export default {
       revisionNotice,
       dismissRevisionNotice,
       sortedNotes,
+      dashboardNotes,
+      notesGridRef,
+      notesScrollerRef,
+      virtualNoteRows,
+      noteRowHeight,
+      noteRenderBuffer,
+      noteColumnCount,
+      noteDetailFor,
+      onVirtualUpdate,
+      dashboardTab,
+      setDashboardTab,
+      notesTabCount,
+      archivedTabCount,
+      visibleNoteCount,
+      visibleCountText,
+      drafts,
+      draftsLoading,
+      draftsError,
+      loadDrafts,
+      draftNoteIds,
+      openColorNoteId,
+      toggleNoteColorPicker,
+      setNoteColor,
       addNote,
       startEditing,
       saveEdit,
@@ -3409,14 +4575,13 @@ export default {
       isUnsavedChangesOpen,
       fabMenuOpen,
       discardChanges,
+      draftAndClose,
       saveAndClose,
       cancelDiscardChanges,
       // Sorting and Selection
       sortBy,
       sortOrder,
       selectedNoteIds,
-      showArchived,
-      toggleShowArchived,
       restoreArchivedNote,
       toggleSelect,
       selectAll,
@@ -3445,6 +4610,30 @@ export default {
       backlinksError,
       openBacklinks,
       openBacklinkSource,
+      selectionLinksOpen,
+      selectionLinksData,
+      selectionLinksLoading,
+      selectionLinksError,
+      selectionLinksMode,
+      selectedNoteIdList,
+      openSelectionLinks,
+      closeSelectionLinks,
+      openSelectionLinkNote,
+      // Interface configuration
+      uiConfig,
+      uiConfigFields: UI_CONFIG_FIELDS,
+      uiStyleVars,
+      uiSettingsOpen,
+      uiSettings,
+      uiSettingsForm,
+      uiSettingsLoading,
+      uiSettingsSaving,
+      uiSettingsError,
+      uiSettingsNotice,
+      openUiSettings,
+      closeUiSettings,
+      saveUiSettings,
+      resetUiSettings,
       // MCP settings
       mcpSettingsOpen,
       mcpTokens,
@@ -3478,6 +4667,7 @@ export default {
       embeddingError,
       embeddingNotice,
       embeddingForm,
+      semanticSearchAvailable,
       semanticSearchEnabled,
       openEmbeddingSettings,
       refreshEmbeddingStatus,
@@ -3497,6 +4687,7 @@ export default {
       searchOpen,
       searchQuery,
       searchResults,
+      searchMode,
       searchLoading,
       searchInput,
       openSearch,
@@ -3529,8 +4720,18 @@ export default {
       triggerImageUpload,
       // Text formatting toolbar
       editorMode,
+      pasteMode,
+      shortcutsVisible,
+      shortcut,
       markdownTextarea,
       setEditorMode,
+      runEditorCommand,
+      linkDialogOpen,
+      linkDialogMode,
+      linkDialogInitialText,
+      searchLinkNotes,
+      closeLinkDialog,
+      submitLinkDialog,
       formatBold,
       formatItalic,
       insertLink,
@@ -3557,10 +4758,6 @@ export default {
         editorDirty = false
       }
       return newNoteContent.value
-    }
-
-    function markEditorDirty() {
-      editorDirty = true
     }
 
     function serializeEditorToMarkdown() {
@@ -3637,17 +4834,27 @@ export default {
         }
       }
 
-      markEditorDirty()
-      newNoteContent.value = serializeEditorToMarkdown()
+      syncVisualEditor()
     }
 
     function onEditorKeydown(e) {
-      // Cmd/Ctrl+Enter to save
+      // Ctrl/Cmd+Enter to save (allowed even during IME composition).
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault()
         editingId.value ? saveEdit() : addNote()
         return
       }
+      if (e.isComposing || compositionActive) return
+
+      // Markdown toolbar shortcuts in both Visual and Source modes.
+      const command = matchEditorShortcut(e)
+      if (command) {
+        e.preventDefault()
+        e.stopPropagation()
+        runEditorCommand(command)
+        return
+      }
+
       // Backspace on image → convert to editable markdown text
       if (e.key === 'Backspace' && isCursorBeforeImage()) {
         e.preventDefault()
@@ -3675,8 +4882,7 @@ export default {
         newRange.collapse(true)
         sel.removeAllRanges()
         sel.addRange(newRange)
-        markEditorDirty()
-        newNoteContent.value = serializeEditorToMarkdown()
+        syncVisualEditor()
       }
     }
 
@@ -3758,8 +4964,7 @@ export default {
         const oldMd = img.getAttribute('data-md') || ''
         const baseMd = oldMd.replace(/\{width=\d+\}$/, '')
         img.setAttribute('data-md', baseMd + `{width=${finalWidth}}`)
-        markEditorDirty()
-        newNoteContent.value = serializeEditorToMarkdown()
+        syncVisualEditor()
       }
 
       document.addEventListener('mousemove', onMouseMove)
@@ -3776,9 +4981,9 @@ export default {
     }
 
     // ── Text formatting toolbars ──
-    // The editor uses document.execCommand on the contentEditable body; the
-    // resulting <b>/<i>/<a> nodes are serialized to markdown by
-    // serializeEditorToMarkdown(). Checkbox inserts a markdown "- [ ] " prefix.
+    // Visual mode manipulates the contentEditable DOM and lets the serializer
+    // produce canonical markdown. Source mode edits the textarea selection
+    // directly. Both modes share the same toolbar command ids.
 
     function focusEditorAtSelection() {
       const el = imageEditor.value
@@ -3797,64 +5002,419 @@ export default {
       return sel
     }
 
+    function syncVisualEditor() {
+      newNoteContent.value = serializeEditorToMarkdown()
+      // The DOM and canonical markdown are now in sync. `editorDirty` means
+      // "the DOM needs serialising", not "the document differs from the head";
+      // unsaved-change detection is handled by hasUnsavedChanges().
+      editorDirty = false
+    }
+
+    function currentEditorBlock() {
+      const el = imageEditor.value
+      const sel = window.getSelection()
+      if (!el || !sel || !sel.rangeCount) return null
+      let node = sel.anchorNode
+      if (!node || !el.contains(node)) return null
+      if (node.nodeType === 3) node = node.parentNode
+      while (node && node !== el) {
+        if (/^(P|DIV|H[1-6]|LI|BLOCKQUOTE|PRE|TD|TH)$/.test(node.tagName)) return node
+        node = node.parentNode
+      }
+      return null
+    }
+
     function formatBold() {
       const sel = focusEditorAtSelection()
       if (!sel) return
       document.execCommand('bold', false, null)
-      markEditorDirty()
-      newNoteContent.value = serializeEditorToMarkdown()
+      syncVisualEditor()
     }
 
     function formatItalic() {
       const sel = focusEditorAtSelection()
       if (!sel) return
       document.execCommand('italic', false, null)
-      markEditorDirty()
-      newNoteContent.value = serializeEditorToMarkdown()
+      syncVisualEditor()
     }
 
-    function insertLink() {
+    function formatStrike() {
       const sel = focusEditorAtSelection()
       if (!sel) return
-      const hasSelection = sel.rangeCount && !sel.getRangeAt(0).collapsed
-      const url = window.prompt('Link URL:', 'https://')
-      if (!url) return
-      const ok = document.execCommand('createLink', false, url)
-      if (!ok) {
-        // Fallback: insert "<url>" as plain text link
-        const range = sel.getRangeAt(0)
-        range.deleteContents()
-        range.insertNode(document.createTextNode(url))
-      }
-      markEditorDirty()
-      newNoteContent.value = serializeEditorToMarkdown()
+      document.execCommand('strikeThrough', false, null)
+      syncVisualEditor()
     }
 
-    function insertCheckbox() {
-      const el = imageEditor.value
-      if (!el) return
+    function formatInlineCode() {
       const sel = focusEditorAtSelection()
       if (!sel) return
       const range = sel.getRangeAt(0)
-      // Find the start of the current line so we can prefix it.
-      let node = range.startContainer
-      let lineStart = 0
-      if (node.nodeType === 3) {
-        const textBefore = node.textContent.slice(0, range.startOffset)
-        const nl = textBefore.lastIndexOf('\n')
-        lineStart = nl === -1 ? 0 : nl + 1
-      }
-      // Insert "- [ ] " at the caret; the content is preserved on serialize.
-      const marker = document.createTextNode('- [ ] ')
-      range.insertNode(marker)
-      // Move caret after the marker
-      const newRange = document.createRange()
-      newRange.setStartAfter(marker)
-      newRange.collapse(true)
+      const selected = range.toString()
+      const code = document.createElement('code')
+      code.textContent = selected || 'code'
+      range.deleteContents()
+      range.insertNode(code)
+      const nextRange = document.createRange()
+      nextRange.selectNodeContents(code)
+      if (selected) nextRange.collapse(false)
       sel.removeAllRanges()
-      sel.addRange(newRange)
-      markEditorDirty()
-      newNoteContent.value = serializeEditorToMarkdown()
+      sel.addRange(nextRange)
+      syncVisualEditor()
+    }
+
+    function insertLink() {
+      openLinkDialog('link')
+    }
+
+    function insertWikiLink() {
+      openLinkDialog('wiki')
+    }
+
+    function captureLinkSelection() {
+      if (editorMode.value === 'plain') {
+        const value = newNoteContent.value
+        const textarea = markdownTextarea.value
+        const start = textarea ? textarea.selectionStart : value.length
+        const end = textarea ? textarea.selectionEnd : start
+        return { mode: 'plain', start, end, text: value.slice(start, end) }
+      }
+      const el = imageEditor.value
+      const sel = window.getSelection()
+      if (el && sel && sel.rangeCount && el.contains(sel.anchorNode)) {
+        const range = sel.getRangeAt(0).cloneRange()
+        return { mode: 'write', range, text: range.toString() }
+      }
+      return { mode: 'write', range: null, text: '' }
+    }
+
+    function openLinkDialog(mode) {
+      if (!isModalOpen.value || linkDialogOpen.value) return
+      const selection = captureLinkSelection()
+      linkDialogSelection = selection
+      linkDialogInitialText.value = selection.text
+      linkDialogMode.value = mode === 'wiki' ? 'wiki' : 'link'
+      linkDialogOpen.value = true
+    }
+
+    function closeLinkDialog() {
+      linkDialogOpen.value = false
+      linkDialogInitialText.value = ''
+      linkDialogSelection = null
+    }
+
+    async function searchLinkNotes(query) {
+      const q = String(query || '').trim()
+      const active = noteIndex.value.filter(note =>
+        !note.archivedAt && note.id !== editingId.value
+      )
+      if (!q) {
+        return active
+          .sort((a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0))
+          .slice(0, 8)
+      }
+      const ids = await api(`/api/search?q=${encodeURIComponent(q)}`)
+      const byId = new Map(active.map(note => [note.id, note]))
+      return (Array.isArray(ids) ? ids : [])
+        .map(id => byId.get(id))
+        .filter(Boolean)
+        .slice(0, 20)
+    }
+
+    function insertVisualLinkNode(range, payload) {
+      const el = imageEditor.value
+      if (!el) return
+      el.focus()
+      let target = range
+      if (!target || !el.contains(target.startContainer)) {
+        target = document.createRange()
+        target.selectNodeContents(el)
+        target.collapse(false)
+      }
+
+      let node
+      if (payload.mode === 'link') {
+        node = document.createElement('a')
+        node.setAttribute('href', payload.url)
+        node.textContent = payload.text
+      } else {
+        node = document.createElement('span')
+        node.className = 'note-link'
+        const title = payload.target?.title || ''
+        if (payload.target?.noteId) node.setAttribute('data-note-id', payload.target.noteId)
+        else node.setAttribute('data-note-target', title)
+        node.setAttribute('data-note-label', payload.label || title || 'Untitled')
+        node.textContent = payload.label || title || 'Untitled'
+      }
+
+      target.deleteContents()
+      target.insertNode(node)
+      const nextRange = document.createRange()
+      nextRange.setStartAfter(node)
+      nextRange.collapse(true)
+      const sel = window.getSelection()
+      sel.removeAllRanges()
+      sel.addRange(nextRange)
+      syncVisualEditor()
+    }
+
+    function submitLinkDialog(payload) {
+      const selection = linkDialogSelection || captureLinkSelection()
+      const markdown = buildLinkMarkdown(payload)
+      linkDialogOpen.value = false
+      linkDialogInitialText.value = ''
+      linkDialogSelection = null
+      nextTick(() => {
+        if (selection.mode === 'plain') {
+          replaceSourceRange(
+            selection.start,
+            selection.end,
+            markdown,
+            selection.start + markdown.length
+          )
+        } else {
+          insertVisualLinkNode(selection.range, payload)
+        }
+      })
+    }
+
+    function toggleHeading(level) {
+      const sel = focusEditorAtSelection()
+      if (!sel) return
+      const tag = `H${level}`
+      const block = currentEditorBlock()
+      document.execCommand('formatBlock', false, block?.tagName === tag ? 'P' : tag)
+      syncVisualEditor()
+    }
+
+    function toggleBlockquote() {
+      const sel = focusEditorAtSelection()
+      if (!sel) return
+      const block = currentEditorBlock()
+      document.execCommand('formatBlock', false, block?.tagName === 'BLOCKQUOTE' ? 'P' : 'BLOCKQUOTE')
+      syncVisualEditor()
+    }
+
+    function toggleVisualList(kind) {
+      const sel = focusEditorAtSelection()
+      if (!sel) return
+      document.execCommand(kind === 'ordered' ? 'insertOrderedList' : 'insertUnorderedList')
+      syncVisualEditor()
+    }
+
+    function insertCheckbox() {
+      const sel = focusEditorAtSelection()
+      if (!sel) return
+      const block = currentEditorBlock()
+      if (!block) return
+      const marker = document.createTextNode(block.tagName === 'LI' ? '[ ] ' : '- [ ] ')
+      const range = document.createRange()
+      range.selectNodeContents(block)
+      range.collapse(true)
+      range.insertNode(marker)
+      const nextRange = document.createRange()
+      nextRange.setStartAfter(marker)
+      nextRange.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(nextRange)
+      syncVisualEditor()
+    }
+
+    function insertCodeBlock() {
+      const sel = focusEditorAtSelection()
+      if (!sel) return
+      const range = sel.getRangeAt(0)
+      const selected = range.toString()
+      const pre = document.createElement('pre')
+      const code = document.createElement('code')
+      code.textContent = selected || 'code'
+      pre.appendChild(code)
+      range.deleteContents()
+      range.insertNode(pre)
+      const nextRange = document.createRange()
+      nextRange.selectNodeContents(code)
+      if (selected) nextRange.collapse(false)
+      sel.removeAllRanges()
+      sel.addRange(nextRange)
+      syncVisualEditor()
+    }
+
+    function insertTable() {
+      const sel = focusEditorAtSelection()
+      if (!sel) return
+      const range = sel.getRangeAt(0)
+      const table = document.createElement('table')
+      table.innerHTML = '<thead><tr><th>Column 1</th><th>Column 2</th></tr></thead>' +
+        '<tbody><tr><td>Cell</td><td>Cell</td></tr></tbody>'
+      range.deleteContents()
+      range.insertNode(table)
+      const cell = table.querySelector('th')
+      const nextRange = document.createRange()
+      nextRange.selectNodeContents(cell)
+      sel.removeAllRanges()
+      sel.addRange(nextRange)
+      syncVisualEditor()
+    }
+
+    function insertHorizontalRule() {
+      const sel = focusEditorAtSelection()
+      if (!sel) return
+      document.execCommand('insertHorizontalRule', false, null)
+      syncVisualEditor()
+    }
+
+    // ── Source-mode commands ──
+
+    function getSourceSelection() {
+      const value = newNoteContent.value
+      const textarea = markdownTextarea.value
+      const start = textarea ? textarea.selectionStart : value.length
+      const end = textarea ? textarea.selectionEnd : start
+      return { value, start, end }
+    }
+
+    function replaceSourceRange(start, end, text, selectionStart = null, selectionEnd = null) {
+      const value = newNoteContent.value
+      newNoteContent.value = value.slice(0, start) + text + value.slice(end)
+      const nextStart = selectionStart == null ? start + text.length : selectionStart
+      const nextEnd = selectionEnd == null ? nextStart : selectionEnd
+      nextTick(() => {
+        const textarea = markdownTextarea.value
+        if (!textarea) return
+        textarea.focus()
+        textarea.setSelectionRange(nextStart, nextEnd)
+      })
+    }
+
+    function wrapSourceSelection(prefix, suffix = prefix, placeholder = 'text') {
+      const { value, start, end } = getSourceSelection()
+      const selected = value.slice(start, end) || placeholder
+      const text = prefix + selected + suffix
+      const selectedStart = start + prefix.length
+      replaceSourceRange(start, end, text, selectedStart, selectedStart + selected.length)
+    }
+
+    function getSourceLineRange() {
+      const { value, start, end } = getSourceSelection()
+      const lineStart = value.lastIndexOf('\n', Math.max(0, start - 1)) + 1
+      const newline = value.indexOf('\n', end)
+      return { value, start: lineStart, end: newline === -1 ? value.length : newline }
+    }
+
+    function transformSourceLines(transform) {
+      const range = getSourceLineRange()
+      const lines = range.value.slice(range.start, range.end).split('\n')
+      const next = transform(lines).join('\n')
+      replaceSourceRange(range.start, range.end, next, range.start + next.length)
+    }
+
+    function stripListPrefix(line) {
+      return line.replace(/^\s*(?:[-*+]|\d+\.)\s+(\[[ xX]\]\s+)?/, '')
+    }
+
+    function toggleSourceHeading(level) {
+      const pattern = new RegExp(`^#{${level}}\\s+`)
+      transformSourceLines(lines => {
+        const active = lines.every(line => pattern.test(line))
+        return lines.map(line => {
+          const stripped = line.replace(/^#{1,6}\s+/, '')
+          return active ? stripped : `${'#'.repeat(level)} ${stripped}`
+        })
+      })
+    }
+
+    function toggleSourceQuote() {
+      transformSourceLines(lines => {
+        const active = lines.every(line => /^\s*>\s?/.test(line))
+        return lines.map(line => active ? line.replace(/^\s*>\s?/, '') : `> ${line}`)
+      })
+    }
+
+    function toggleSourceList(kind) {
+      const patterns = {
+        bullet: /^\s*[-*+]\s+/,
+        ordered: /^\s*\d+\.\s+/,
+        task: /^\s*[-*+]\s+\[[ xX]\]\s+/
+      }
+      transformSourceLines(lines => {
+        const active = lines.every(line => patterns[kind].test(line))
+        return lines.map((line, index) => {
+          const stripped = stripListPrefix(line)
+          if (active) return stripped
+          if (kind === 'ordered') return `${index + 1}. ${stripped}`
+          if (kind === 'task') return `- [ ] ${stripped}`
+          return `- ${stripped}`
+        })
+      })
+    }
+
+    function insertSourceCodeBlock() {
+      const { value, start, end } = getSourceSelection()
+      const selected = value.slice(start, end)
+      const body = selected || ''
+      const trailing = !body || !body.endsWith('\n') ? '\n' : ''
+      const insert = '```\n' + body + trailing + '```'
+      const bodyStart = start + 4
+      replaceSourceRange(start, end, insert, bodyStart, bodyStart + body.length)
+    }
+
+    function insertSourceTable() {
+      const { start, end } = getSourceSelection()
+      const template = '| Column 1 | Column 2 |\n| --- | --- |\n| Cell | Cell |'
+      replaceSourceRange(start, end, template, start + 2, start + 2 + 'Column 1'.length)
+    }
+
+    function insertSourceHorizontalRule() {
+      const { start, end } = getSourceSelection()
+      replaceSourceRange(start, end, '\n---\n', start + 5)
+    }
+
+    function runSourceCommand(command) {
+      switch (command) {
+        case 'bold': return wrapSourceSelection('**', '**', 'bold text')
+        case 'italic': return wrapSourceSelection('*', '*', 'italic text')
+        case 'strike': return wrapSourceSelection('~~', '~~', 'strikethrough')
+        case 'inline-code': return wrapSourceSelection('`', '`', 'code')
+        case 'link': return openLinkDialog('link')
+        case 'wiki-link': return openLinkDialog('wiki')
+        case 'heading-1': return toggleSourceHeading(1)
+        case 'heading-2': return toggleSourceHeading(2)
+        case 'heading-3': return toggleSourceHeading(3)
+        case 'quote': return toggleSourceQuote()
+        case 'bullet-list': return toggleSourceList('bullet')
+        case 'ordered-list': return toggleSourceList('ordered')
+        case 'task-list': return toggleSourceList('task')
+        case 'code-block': return insertSourceCodeBlock()
+        case 'table': return insertSourceTable()
+        case 'horizontal-rule': return insertSourceHorizontalRule()
+        default: return undefined
+      }
+    }
+
+    function runEditorCommand(command) {
+      if (!isModalOpen.value) return
+      if (editorMode.value === 'plain') {
+        runSourceCommand(command)
+        return
+      }
+      switch (command) {
+        case 'bold': return formatBold()
+        case 'italic': return formatItalic()
+        case 'strike': return formatStrike()
+        case 'inline-code': return formatInlineCode()
+        case 'link': return insertLink()
+        case 'wiki-link': return insertWikiLink()
+        case 'heading-1': return toggleHeading(1)
+        case 'heading-2': return toggleHeading(2)
+        case 'heading-3': return toggleHeading(3)
+        case 'quote': return toggleBlockquote()
+        case 'bullet-list': return toggleVisualList('bullet')
+        case 'ordered-list': return toggleVisualList('ordered')
+        case 'task-list': return insertCheckbox()
+        case 'code-block': return insertCodeBlock()
+        case 'table': return insertTable()
+        case 'horizontal-rule': return insertHorizontalRule()
+        default: return undefined
+      }
     }
 
     async function uploadImageBlob(blob, filename = 'pasted-image.png') {
@@ -3949,8 +5509,7 @@ export default {
       afterRange.collapse(true)
       sel.removeAllRanges()
       sel.addRange(afterRange)
-      markEditorDirty()
-      newNoteContent.value = serializeEditorToMarkdown()
+      syncVisualEditor()
     }
 
     async function onImageFileSelected(e) {
@@ -3963,8 +5522,7 @@ export default {
 
     async function onEditorPaste(e) {
       const items = e.clipboardData?.items
-      if (!items) return
-      for (const item of items) {
+      for (const item of items || []) {
         if (item.type.startsWith('image/')) {
           e.preventDefault()
           const file = item.getAsFile()
@@ -3978,18 +5536,23 @@ export default {
 
       const html = e.clipboardData?.getData('text/html') || ''
       const text = e.clipboardData?.getData('text/plain') || ''
-      if (!html && !text) return
+      if (pasteMode.value === 'rich' && html.trim()) {
+        e.preventDefault()
+        let markdown = htmlToMarkdown(html)
+        if (!markdown.trim()) markdown = text.replace(/\r\n?/g, '\n')
+        if (!markdown.trim()) return
+        markdown = (await normalizeDataUrlImages(markdown)).markdown
+        insertMarkdownAsRich(markdown)
+        return
+      }
+      if (!text) return
       e.preventDefault()
-      let markdown = html ? htmlToMarkdown(html) : normalizePlainText(text)
-      if (!markdown.trim()) return
-      markdown = (await normalizeDataUrlImages(markdown)).markdown
-      insertMarkdownAsRich(markdown)
+      insertPlainTextAtCursor(text)
     }
 
     async function onMarkdownPaste(e) {
       const items = e.clipboardData?.items
-      if (!items) return
-      for (const item of items) {
+      for (const item of items || []) {
         if (item.type.startsWith('image/')) {
           e.preventDefault()
           const file = item.getAsFile()
@@ -4003,11 +5566,18 @@ export default {
 
       const html = e.clipboardData?.getData('text/html') || ''
       const text = e.clipboardData?.getData('text/plain') || ''
-      if (!html && !text) return
+      if (pasteMode.value === 'rich' && html.trim()) {
+        e.preventDefault()
+        let markdown = htmlToMarkdown(html)
+        if (!markdown.trim()) markdown = text.replace(/\r\n?/g, '\n')
+        if (!markdown.trim()) return
+        markdown = (await normalizeDataUrlImages(markdown)).markdown
+        insertMarkdownAtCursor(markdown)
+        return
+      }
+      if (!text) return
       e.preventDefault()
-      let markdown = html ? htmlToMarkdown(html) : normalizePlainText(text)
-      markdown = (await normalizeDataUrlImages(markdown)).markdown
-      insertMarkdownAtCursor(markdown)
+      insertPlainTextAtCursor(text)
     }
 
     // Gallery rendering is handled by the shared sanitised markdown renderer.
@@ -4242,192 +5812,292 @@ export default {
   min-height: 100vh;
 }
 
+:root {
+  /* Fallback until the real header is measured; keeps sticky bars aligned. */
+  --app-header-height: 66px;
+}
+
 header {
-  background: white;
-  padding: 1rem 2rem;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  border-bottom: 1px solid #f1f3f4;
+  background: rgba(255, 255, 255, 0.9);
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
   position: sticky;
   top: 0;
   z-index: 10;
+  backdrop-filter: saturate(180%) blur(14px);
+  -webkit-backdrop-filter: saturate(180%) blur(14px);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.02);
 }
 
-header h1 {
-  font-size: 1.5rem;
+.header-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0.85rem 2rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+}
+
+.brand-mark {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: linear-gradient(135deg, #1d4ed8 0%, #0ea5e9 100%);
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.28);
+  flex-shrink: 0;
+}
+
+.brand h1 {
+  margin: 0;
+  font-size: 1.22rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  color: #0f172a;
+  white-space: nowrap;
+}
+
+/* Header icon buttons */
+.icon-btn {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 11px;
+  background: transparent;
+  color: #475569;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+  flex-shrink: 0;
+}
+
+.icon-btn:hover:not(:disabled) {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.icon-btn:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.icon-btn.active {
+  background: #e8f0fe;
+  border-color: #d2e3fc;
+  color: #1a73e8;
+}
+
+.icon-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.icon-btn--sm {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
 }
 
 .header-search-field {
   display: flex;
   align-items: center;
   flex: 1;
-  gap: 0;
-  background: #f1f3f4;
-  border-radius: 8px;
-  transition: background 0.2s, box-shadow 0.2s;
+  gap: 0.15rem;
+  padding: 0.2rem;
+  background: #f1f5f9;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  transition: background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
   max-width: 600px;
 }
 
 .header-search-field:focus-within {
-  background: white;
-  box-shadow: 0 1px 4px rgba(26, 115, 232, 0.2);
+  background: #fff;
+  border-color: #bfdbfe;
+  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.12);
 }
 
 .header-search-field .search-icon {
-  padding-left: 12px;
-  font-size: 1rem;
-  color: #80868b;
-  flex-shrink: 0;
-}
-
-.search-toggle-btn {
-  width: 36px;
-  height: 36px;
-  border: none;
-  background: #f1f3f4;
-  color: #5f6368;
-  border-radius: 50%;
-  cursor: pointer;
-  font-size: 1.1rem;
-  display: flex;
+  padding-left: 0.5rem;
+  color: #64748b;
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
-  transition: background 0.2s;
-}
-
-.search-toggle-btn:hover {
-  background: #e8eaed;
-}
-
-.cleanup-btn {
-  border: none;
-  background: transparent;
-  font-size: 1.1rem;
-  cursor: pointer;
-  padding: 0.3rem 0.5rem;
-  border-radius: 4px;
-  transition: background 0.2s;
-}
-
-.cleanup-btn:hover:not(:disabled) {
-  background: #e8eaed;
-}
-
-.cleanup-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
+  flex-shrink: 0;
 }
 
 .search-input {
   width: 100%;
-  padding: 0.55rem 0.5rem;
+  padding: 0.55rem 0.35rem;
   border: none;
   background: transparent;
   font-size: 0.95rem;
-  color: #202124;
+  color: #0f172a;
   outline: none;
   border-radius: 8px;
 }
 
 .search-input::placeholder {
-  color: #80868b;
+  color: #94a3b8;
 }
 
 .search-semantic-btn {
-  width: 28px;
-  height: 28px;
-  border: none;
-  background: transparent;
-  border-radius: 50%;
-  cursor: pointer;
-  font-size: 0.9rem;
   opacity: 0.55;
-  flex-shrink: 0;
 }
 
 .search-semantic-btn.active {
   opacity: 1;
-  background: #e8f0fe;
 }
 
-.search-clear-btn {
-  width: 28px;
-  height: 28px;
-  border: none;
-  background: transparent;
-  color: #80868b;
-  font-size: 1.2rem;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  transition: background 0.2s;
-  flex-shrink: 0;
+.search-semantic-btn:disabled {
+  opacity: 0.25;
+  cursor: not-allowed;
 }
 
-.search-clear-btn:hover {
-  background: #e0e0e0;
-  color: #202124;
+/* Shortcut tooltips: action name on hover, keybinding while Alt/Option is held. */
+.icon-btn[data-label]::after,
+.fab-btn[data-label]::after {
+  content: attr(data-label);
+  position: absolute;
+  top: calc(100% + 9px);
+  left: 50%;
+  transform: translateX(-50%) translateY(-2px);
+  padding: 0.28rem 0.5rem;
+  background: #0f172a;
+  color: #fff;
+  border-radius: 6px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.22);
+  z-index: 320;
 }
 
-.search-close-btn {
-  width: 28px;
-  height: 28px;
-  border: none;
-  background: transparent;
-  color: #80868b;
-  font-size: 1rem;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  transition: background 0.2s;
-  flex-shrink: 0;
-  margin-right: 4px;
+.icon-btn[data-label]:hover::after,
+.icon-btn[data-label]:focus-visible::after,
+.fab-btn[data-label]:hover::after,
+.fab-btn[data-label]:focus-visible::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 
-.search-close-btn:hover {
-  background: #e0e0e0;
-  color: #202124;
+.shortcuts-visible .icon-btn[data-shortcut]::after {
+  content: attr(data-shortcut);
+  background: #1d4ed8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 
-.search-input-wrapper {
-  max-width: 600px;
-  margin: 0 auto;
+/* Shortcut badges for regular buttons (tabs, modals, tag rows, etc.). */
+button[data-shortcut]:not(.icon-btn):not(.fab-btn):not(.md-tool-btn) {
   position: relative;
-  display: flex;
-  align-items: center;
-  background: #f1f3f4;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  transition: background 0.2s, border-color 0.2s, box-shadow 0.2s;
+}
+
+button[data-shortcut]:not(.icon-btn):not(.fab-btn):not(.md-tool-btn)::after {
+  content: attr(data-shortcut);
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 50%;
+  transform: translateX(-50%) translateY(2px);
+  padding: 0.26rem 0.46rem;
+  background: #0f172a;
+  color: #fff;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.66rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.22);
+  z-index: 330;
+}
+
+.shortcuts-visible button[data-shortcut]:not(.icon-btn):not(.fab-btn):not(.md-tool-btn)::after {
+  content: attr(data-shortcut);
+  background: #1d4ed8;
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 
 .header-right {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.35rem;
+  min-width: 0;
 }
 
 .sync-status {
-  font-size: 0.75rem;
-  color: #80868b;
-  padding: 0.25rem 0.5rem;
-  border-radius: 4px;
-  background: #f1f3f4;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.34rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.sync-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #94a3b8;
+  box-shadow: 0 0 0 2px rgba(148, 163, 184, 0.18);
+  flex-shrink: 0;
 }
 
 .sync-status.connected {
-  color: #1a73e8;
-  background: #e8f0fe;
+  color: #0f766e;
+  background: #ecfdf5;
+  border-color: #a7f3d0;
+}
+
+.sync-status.connected .sync-dot {
+  background: #10b981;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.18);
 }
 
 .sync-status.connecting {
-  color: #f9ab00;
-  background: #fef7e0;
+  color: #b45309;
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+
+.sync-status.connecting .sync-dot {
+  background: #f59e0b;
+  animation: sync-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes sync-pulse {
+  50% { opacity: 0.35; }
 }
 
 .account-menu-wrap {
@@ -4438,33 +6108,41 @@ header h1 {
   display: inline-flex;
   align-items: center;
   gap: 0.45rem;
-  padding: 0.3rem 0.55rem 0.3rem 0.3rem;
+  padding: 0.22rem 0.55rem 0.22rem 0.22rem;
   border: 1px solid #e2e8f0;
   background: #fff;
   border-radius: 999px;
   cursor: pointer;
   color: #334155;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 600;
+  transition: background 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
 }
 
 .account-btn:hover {
   background: #f8fafc;
+  border-color: #cbd5e1;
+}
+
+.account-btn:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
 }
 
 .account-avatar {
-  width: 26px;
-  height: 26px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #6366f1, #38bdf8);
+  background: linear-gradient(135deg, #2563eb, #0ea5e9);
   color: #fff;
   font-size: 0.68rem;
   font-weight: 800;
   letter-spacing: 0.02em;
   flex-shrink: 0;
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.22);
 }
 
 .account-avatar.large {
@@ -4482,7 +6160,8 @@ header h1 {
 
 .account-chevron {
   color: #94a3b8;
-  font-size: 0.65rem;
+  display: inline-flex;
+  align-items: center;
 }
 
 .account-menu {
@@ -4492,8 +6171,8 @@ header h1 {
   width: 230px;
   background: #fff;
   border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
+  border-radius: 12px;
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.2);
   padding: 0.4rem;
   z-index: 140;
 }
@@ -4519,11 +6198,14 @@ header h1 {
 
 .account-menu button {
   width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
   border: none;
   background: transparent;
   text-align: left;
   padding: 0.5rem 0.55rem;
-  border-radius: 6px;
+  border-radius: 7px;
   color: #334155;
   font-size: 0.8rem;
   cursor: pointer;
@@ -4533,24 +6215,12 @@ header h1 {
   background: #f1f5f9;
 }
 
+.account-menu button .app-icon {
+  color: #64748b;
+}
+
 .account-menu .account-menu-danger {
   color: #b91c1c;
-}
-
-.refresh-btn {
-  width: 32px;
-  height: 32px;
-  border: none;
-  background: #f1f3f4;
-  color: #5f6368;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 1rem;
-  transition: background 0.2s;
-}
-
-.refresh-btn:hover {
-  background: #e8eaed;
 }
 
 main {
@@ -4568,11 +6238,6 @@ main {
 .workspace-content {
   flex: 1;
   min-width: 0;
-}
-
-.search-toggle-btn.active {
-  background: #e8f0fe;
-  color: #1a73e8;
 }
 
 .tag-filter-chip {
@@ -4684,22 +6349,30 @@ main {
 }
 
 .reconnect-btn {
-  padding: 0.25rem 0.5rem;
-  background: #e8f0fe;
-  color: #1a73e8;
-  border: 1px solid #dadce0;
-  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  height: 34px;
+  padding: 0 0.7rem;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
   cursor: pointer;
   font-size: 0.75rem;
-  transition: background 0.2s, border-color 0.2s;
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
+  font-weight: 600;
+  transition: background 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease;
 }
 
 .reconnect-btn:hover {
-  background: #d2e3fc;
-  border-color: #1a73e8;
+  background: #dbeafe;
+  border-color: #93c5fd;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.16);
+}
+
+.reconnect-btn:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
 }
 
 /* Canvas note card */
@@ -4747,61 +6420,18 @@ main {
   font-style: italic;
 }
 
-.shortcut-tips-card {
-  background: #fdfcf7;
-  border-color: #f1ebd9;
-  cursor: default !important;
-}
-
-.shortcut-tips-content {
-  margin-top: 1rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  overflow-y: auto;
-  flex: 1;
-}
-
-.shortcut-tips-card h3 {
-  font-size: 1rem;
-  font-weight: 600;
-  margin: 0;
-  color: #202124;
-  flex-shrink: 0;
-}
-
-.shortcut-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.375rem 0;
-  font-size: 0.8125rem;
-  text-align: left;
-}
-
-.shortcut-row:not(:last-child) {
-  border-bottom: 1px dashed #e8eaed;
-}
-
-.shortcut-keys {
-  display: flex;
-  gap: 0.25rem;
-}
-
-.shortcut-keys kbd {
-  background: white;
+/* Quick Shortcuts is a read-only virtual note, so it uses the normal card
+   preview and scrollbar. Only its inline shortcut keys get a kbd look. */
+.shortcut-tips-card .note-preview code {
+  background: #fff;
   border: 1px solid #dadce0;
   border-radius: 4px;
-  box-shadow: 0 1px 1px rgba(0,0,0,0.1);
-  color: #3c4043;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.08);
+  padding: 0.1rem 0.35rem;
   font-family: inherit;
-  font-size: 0.75rem;
+  font-size: 0.72rem;
   font-weight: 600;
-  padding: 0.125rem 0.375rem;
-}
-
-.shortcut-desc {
-  color: #5f6368;
+  color: #3c4043;
 }
 
 .notes-grid {
@@ -4810,37 +6440,201 @@ main {
   gap: 1rem;
 }
 
+.notes-grid-virtual {
+  display: block;
+}
+
+.notes-virtual-scroller {
+  width: 100%;
+}
+
+.virtual-note-row {
+  display: grid;
+  gap: 1rem;
+  align-items: start;
+  box-sizing: border-box;
+  height: 100%;
+  padding-bottom: 1rem;
+}
+
+.note-preview-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  padding-top: 0.35rem;
+}
+
+.note-preview-skeleton span {
+  display: block;
+  height: 0.65rem;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #eef1f6 0%, #f7f9fc 50%, #eef1f6 100%);
+  background-size: 200% 100%;
+  animation: note-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.note-preview-skeleton span:nth-child(2) {
+  width: 88%;
+}
+
+.note-preview-skeleton span:nth-child(3) {
+  width: 62%;
+}
+
+.note-card-loading {
+  cursor: progress;
+}
+
+@keyframes note-skeleton-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
 .note-card {
-  background: #fff;
-  border: 1px solid #e8eaed;
+  --card-surface-start: #ffffff;
+  --card-surface-end: #f4f8ff;
+  --card-border-color: #dbe7fb;
+  --card-accent-start: #8ab4f8;
+  --card-accent-end: #1a73e8;
+  background: linear-gradient(180deg, var(--card-surface-start) 0%, var(--card-surface-end) 100%);
+  border: 1px solid var(--card-border-color);
   border-radius: 8px;
   padding: 1rem;
   position: relative;
   cursor: pointer;
-  transition: box-shadow 0.2s, border-color 0.2s, background-color 0.2s;
+  transition: box-shadow 0.2s, border-color 0.2s, background-color 0.2s, transform 0.2s;
   height: 380px;
   width: 100%;
-  max-width: 260px;
-  margin: 0 auto;
+  max-width: none;
+  margin: 0;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
+  overflow: hidden;
+  box-shadow: 0 2px 10px rgba(26, 115, 232, 0.07);
+}
+
+.note-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--card-accent-start) 0%, var(--card-accent-end) 100%);
+  opacity: 0.9;
+  pointer-events: none;
+}
+
+.note-card.canvas-note {
+  --card-surface-start: #fefcff;
+  --card-surface-end: #f6f0ff;
+  --card-border-color: #e4d7f7;
+  --card-accent-start: #c58af9;
+  --card-accent-end: #7b4dd8;
+}
+
+/* Per-note tint overrides (notes.color). Default stays type-based. */
+.note-card.note-color-blue {
+  --card-surface-start: #f8fbff;
+  --card-surface-end: #e8f1ff;
+  --card-border-color: #bfdbfe;
+  --card-accent-start: #60a5fa;
+  --card-accent-end: #2563eb;
+}
+
+.note-card.note-color-green {
+  --card-surface-start: #f7fdf9;
+  --card-surface-end: #e6f8ee;
+  --card-border-color: #bbe9cf;
+  --card-accent-start: #4ade80;
+  --card-accent-end: #16a34a;
+}
+
+.note-card.note-color-amber {
+  --card-surface-start: #fffdf5;
+  --card-surface-end: #fdf3d7;
+  --card-border-color: #f6dfa6;
+  --card-accent-start: #fbbf24;
+  --card-accent-end: #d97706;
+}
+
+.note-card.note-color-rose {
+  --card-surface-start: #fff8f9;
+  --card-surface-end: #ffe9ec;
+  --card-border-color: #fecdd3;
+  --card-accent-start: #fb7185;
+  --card-accent-end: #e11d48;
+}
+
+.note-card.note-color-violet {
+  --card-surface-start: #fbf9ff;
+  --card-surface-end: #f1ebff;
+  --card-border-color: #ddd6fe;
+  --card-accent-start: #a78bfa;
+  --card-accent-end: #7c3aed;
+}
+
+.note-card.note-color-slate {
+  --card-surface-start: #fbfcfd;
+  --card-surface-end: #eef2f6;
+  --card-border-color: #dbe3ec;
+  --card-accent-start: #94a3b8;
+  --card-accent-end: #475569;
 }
 
 .note-card:hover {
-  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  border-color: var(--card-accent-end);
+  box-shadow: 0 10px 26px rgba(26, 115, 232, 0.16);
+  transform: translateY(-2px);
 }
 
 .note-card.editing {
   border-color: #1a73e8;
-  background-color: #f8fafd;
+  background: #f2f7ff;
   outline: 2px solid #1a73e8;
+  box-shadow: 0 10px 26px rgba(26, 115, 232, 0.2);
 }
 
 .note-card.archived {
   opacity: 0.72;
   background: #f8f9fa;
   border-style: dashed;
+  box-shadow: none;
+}
+
+.note-card.archived::before {
+  display: none;
+}
+
+.note-card.archived:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: #dadce0;
+}
+
+.shortcut-tips-card {
+  cursor: default;
+}
+
+.shortcut-tips-card .card-toolbar {
+  min-height: 24px;
+}
+
+.shortcut-tips-card:hover {
+  transform: none;
+  border-color: var(--card-border-color);
+  box-shadow: 0 2px 10px rgba(26, 115, 232, 0.07);
+}
+
+.draft-card .card-toolbar {
+  min-height: 24px;
+}
+
+.draft-badge,
+.revision-badge.draft-badge {
+  background: #fef7e0;
+  color: #b06000;
 }
 
 .restore-btn {
@@ -4857,23 +6651,6 @@ main {
   background: #e8f0fe;
 }
 
-.archived-toggle-btn {
-  border: 1px solid #dadce0;
-  background: #fff;
-  color: #5f6368;
-  border-radius: 4px;
-  padding: 0.25rem 0.5rem;
-  font-size: 0.75rem;
-  cursor: pointer;
-  margin-right: 0.5rem;
-}
-
-.archived-toggle-btn.active {
-  background: #e8f0fe;
-  border-color: #1a73e8;
-  color: #1a73e8;
-}
-
 .card-toolbar {
   display: flex;
   align-items: center;
@@ -4881,9 +6658,229 @@ main {
   margin-bottom: 0.5rem;
 }
 
+.control-left {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.dashboard-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.18rem;
+  background: #eef2f7;
+  border-radius: 10px;
+}
+
+.dashboard-tab {
+  border: none;
+  background: transparent;
+  color: #475569;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.38rem 0.7rem;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.dashboard-tab:hover {
+  background: rgba(255, 255, 255, 0.7);
+  color: #0f172a;
+}
+
+.dashboard-tab.active {
+  background: #fff;
+  color: #1a73e8;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.12);
+}
+
+.dashboard-tab:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 1px;
+}
+
+.tab-count {
+  min-width: 1.4rem;
+  padding: 0.18rem 0.38rem;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #64748b;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+  text-align: center;
+}
+
+.dashboard-tab.active .tab-count {
+  background: #e8f0fe;
+  color: #1a73e8;
+}
+
+.drafts-refresh-btn {
+  width: 30px;
+  height: 30px;
+  border: 1px solid #dadce0;
+  border-radius: 8px;
+  background: #fff;
+  color: #5f6368;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease;
+}
+
+.drafts-refresh-btn:hover:not(:disabled) {
+  background: #f1f5f9;
+}
+
+.drafts-refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.notes-empty {
+  grid-column: 1 / -1;
+  border: 1px dashed #dbe3ec;
+  border-radius: 12px;
+  padding: 2rem 1.25rem;
+  text-align: center;
+  color: #64748b;
+  background: #fbfcfe;
+}
+
+.notes-empty p {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
 .toolbar-spacer {
   flex: 1;
 }
+
+/* Note color picker (right of the card checkbox) */
+.card-color-picker {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.card-color-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--card-border-color);
+  border-radius: 50%;
+  background: #fff;
+  color: #64748b;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.card-color-btn:hover {
+  border-color: #94a3b8;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+.card-color-btn:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.card-color-btn--blue { color: #2563eb; }
+.card-color-btn--green { color: #16a34a; }
+.card-color-btn--amber { color: #d97706; }
+.card-color-btn--rose { color: #e11d48; }
+.card-color-btn--violet { color: #7c3aed; }
+.card-color-btn--slate { color: #475569; }
+
+.note-color-option--default {
+  background: linear-gradient(135deg, #ffffff 50%, #bfdbfe 50%);
+}
+
+.note-color-option--blue {
+  background: linear-gradient(135deg, #93c5fd, #2563eb);
+}
+
+.note-color-option--green {
+  background: linear-gradient(135deg, #86efac, #16a34a);
+}
+
+.note-color-option--amber {
+  background: linear-gradient(135deg, #fde68a, #d97706);
+}
+
+.note-color-option--rose {
+  background: linear-gradient(135deg, #fda4af, #e11d48);
+}
+
+.note-color-option--violet {
+  background: linear-gradient(135deg, #c4b5fd, #7c3aed);
+}
+
+.note-color-option--slate {
+  background: linear-gradient(135deg, #cbd5e1, #475569);
+}
+
+.note-color-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+  z-index: 8;
+}
+
+.note-color-option {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  border-radius: 50%;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.note-color-option:hover {
+  transform: scale(1.1);
+}
+
+.note-color-option.selected {
+  box-shadow: 0 0 0 2px #fff, 0 0 0 4px #1d4ed8;
+}
+
+.note-color-option:focus-visible {
+  outline: 2px solid #1d4ed8;
+  outline-offset: 3px;
+}
+
+.note-color-option--default { color: #1d4ed8; }
+.note-color-option--blue,
+.note-color-option--green,
+.note-color-option--rose,
+.note-color-option--violet,
+.note-color-option--slate { color: #fff; }
+.note-color-option--amber { color: #78350f; }
 
 .note-content {
   flex: 1;
@@ -4898,6 +6895,29 @@ main {
   margin-bottom: 0.5rem;
   color: #202124;
   flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  min-width: 0;
+  line-height: 1.3;
+}
+
+.card-title-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  min-width: 0;
+  max-height: 2.6em;
+}
+
+.note-content h3 .revision-badge {
+  margin-left: 0;
+  margin-top: 0.15rem;
+  flex: 0 0 auto;
 }
 
 .mermaid-block {
@@ -5139,8 +7159,51 @@ main {
 
 .confirm-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
-  gap: 1rem;
+  gap: 0.5rem;
+}
+
+.confirm-actions button {
+  flex: 1 1 0;
+  min-width: 72px;
+  padding: 0.5rem 0.35rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.continue-btn {
+  padding: 0.5rem 1.25rem;
+  background: #fff;
+  color: #1a73e8;
+  border: 1px solid #d2e3fc;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.continue-btn:hover {
+  background: #f8fafd;
+}
+
+.draft-btn {
+  padding: 0.5rem 1.25rem;
+  background: #fff7e6;
+  color: #b06000;
+  border: 1px solid #f6dfa6;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background 0.2s;
+}
+
+.draft-btn:hover {
+  background: #fef3c7;
 }
 
 .delete-confirm-btn {
@@ -5200,9 +7263,9 @@ main {
   background: white;
   border-radius: 12px;
   padding: 1.5rem;
-  width: min(620px, 90vw);
-  min-height: min(700px, 90vh);
-  max-height: 90vh;
+  width: min(var(--note-modal-width, 960px), 94vw);
+  height: min(var(--note-modal-height, 760px), 92vh);
+  max-height: 92vh;
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
   position: relative;
   animation: slideUp 0.2s ease-out;
@@ -5612,6 +7675,25 @@ main {
   gap: 0.5rem;
 }
 
+.action-buttons button {
+  min-width: 92px;
+}
+
+.paste-mode-select {
+  padding: 0.38rem 0.45rem;
+  background: #f8f9fa;
+  color: #5f6368;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  max-width: 130px;
+}
+
+.paste-mode-select:hover {
+  background: #e8eaed;
+}
+
 .image-btn {
   padding: 0.5rem 0.75rem;
   background: #f8f9fa;
@@ -5703,6 +7785,89 @@ main {
   background: #dadce0;
 }
 
+/* Interface settings */
+.ui-settings-modal {
+  width: min(720px, 94vw);
+  max-height: 88vh;
+  overflow-y: auto;
+}
+
+.ui-settings-hint {
+  margin: 0 0 0.9rem;
+  color: #5f6368;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.ui-settings-hint code {
+  background: #f1f3f4;
+  border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+}
+
+.ui-settings-loading {
+  color: #80868b;
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 1rem;
+}
+
+.ui-settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.ui-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.ui-settings-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #3c4043;
+}
+
+.ui-settings-grid input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #dadce0;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.ui-settings-grid input:focus {
+  outline: none;
+  border-color: #1a73e8;
+  box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.14);
+}
+
+.ui-settings-grid small {
+  font-size: 0.68rem;
+  font-weight: 400;
+  color: #80868b;
+}
+
+.ui-settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+  margin-top: 0.25rem;
+}
+
+@media (max-width: 620px) {
+  .ui-settings-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* Deletion-elsewhere mask (no alert; inline overlay + prompt) */
 .deleted-mask {
   position: fixed;
@@ -5784,11 +7949,16 @@ main {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
   margin-bottom: 1.5rem;
   padding: 0.5rem 1rem;
   background: #f8f9fa;
   border: 1px solid #dadce0;
   border-radius: 8px;
+  position: sticky;
+  top: var(--app-header-height, 66px);
+  z-index: 9;
 }
 
 .notes-count {
@@ -5856,6 +8026,9 @@ main {
   border-radius: 8px;
   color: #1a73e8;
   animation: fadeIn 0.2s ease-out;
+  position: sticky;
+  top: var(--app-header-height, 66px);
+  z-index: 9;
 }
 
 .selection-count {
@@ -5870,7 +8043,8 @@ main {
 }
 
 .btn-select-all,
-.btn-deselect-all {
+.btn-deselect-all,
+.btn-selection-links {
   padding: 0.375rem 0.75rem;
   background: transparent;
   color: #1a73e8;
@@ -5880,6 +8054,20 @@ main {
   font-size: 0.875rem;
   font-weight: 500;
   transition: background 0.2s;
+}
+
+.btn-selection-links {
+  border-color: #d2e3fc;
+  background: #fff;
+}
+
+.btn-selection-links:hover:not(:disabled) {
+  background: #f8fafd;
+}
+
+.btn-selection-links:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 .btn-select-all:hover,
@@ -5936,28 +8124,64 @@ main {
   right: 2rem;
   width: 56px;
   height: 56px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 17px;
+  background: linear-gradient(135deg, #2563eb 0%, #0ea5e9 100%);
   color: white;
   border: none;
-  font-size: 2rem;
-  font-weight: bold;
   cursor: pointer;
-  box-shadow: 0 4px 10px rgba(118, 75, 162, 0.4);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.2s, box-shadow 0.2s;
+  box-shadow: 0 10px 26px rgba(37, 99, 235, 0.34), 0 2px 6px rgba(15, 23, 42, 0.12);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-radius 0.18s ease;
   z-index: 99;
 }
 
 .fab-btn:hover {
-  transform: scale(1.05);
-  box-shadow: 0 6px 15px rgba(118, 75, 162, 0.6);
+  transform: translateY(-2px) scale(1.03);
+  box-shadow: 0 14px 32px rgba(37, 99, 235, 0.42), 0 3px 8px rgba(15, 23, 42, 0.14);
+}
+
+.fab-btn:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 3px;
+}
+
+.fab-btn svg {
+  transition: transform 0.2s ease;
 }
 
 .fab-btn.fab-open {
+  border-radius: 50%;
+}
+
+.fab-btn.fab-open svg {
   transform: rotate(45deg);
+}
+
+.fab-btn[data-label]::after {
+  top: auto;
+  bottom: calc(100% + 10px);
+  left: auto;
+  right: 0;
+  transform: translateY(2px);
+}
+
+.fab-btn[data-label]:hover::after,
+.fab-btn[data-label]:focus-visible::after {
+  transform: translateY(0);
+}
+
+.shortcuts-visible .fab-btn[data-shortcut]::after {
+  content: attr(data-shortcut);
+  background: #1d4ed8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.fab-btn.fab-open::after {
+  display: none;
 }
 
 .fab-container {
@@ -5980,24 +8204,31 @@ main {
 .fab-menu-item {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.55rem;
   padding: 0.625rem 1rem;
   background: white;
-  border: 1px solid #e0e0e0;
-  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
   cursor: pointer;
   font-size: 0.875rem;
+  font-weight: 500;
+  color: #1e293b;
   white-space: nowrap;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  transition: background 0.15s;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
 }
 
 .fab-menu-item:hover {
-  background: #f5f5f5;
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  transform: translateY(-1px);
 }
 
 .fab-menu-icon {
-  font-size: 1.125rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #2563eb;
 }
 
 .paste-receiver {
@@ -6599,7 +8830,90 @@ main {
   font-size: 0.72rem;
 }
 
+@media (max-width: 820px) {
+  .account-name {
+    display: none;
+  }
+
+  .account-btn {
+    padding: 0.2rem;
+  }
+
+  .header-right {
+    gap: 0.2rem;
+  }
+}
+
+@media (max-width: 620px) {
+  .sync-status {
+    display: none;
+  }
+
+  .brand h1 {
+    font-size: 1.05rem;
+  }
+
+  .brand-mark {
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+  }
+
+  .header-inner {
+    gap: 0.6rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .icon-btn {
+    width: 34px;
+    height: 34px;
+    border-radius: 9px;
+  }
+
+  .reconnect-btn {
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .reconnect-btn span {
+    display: none;
+  }
+
+  .brand h1 {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  .brand-mark {
+    width: 34px;
+    height: 34px;
+  }
+
+  .header-inner {
+    padding: 0.7rem 0.75rem;
+    gap: 0.35rem;
+  }
+}
+
 @media (max-width: 600px) {
+  :root {
+    --app-header-height: 63px;
+  }
+
+  .header-inner {
+    padding: 0.75rem 1rem;
+  }
+
   main {
     padding: 1rem;
   }
@@ -6617,7 +8931,6 @@ main {
     right: 1.5rem;
     width: 48px;
     height: 48px;
-    font-size: 1.75rem;
   }
 }
 </style>

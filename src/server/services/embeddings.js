@@ -41,6 +41,19 @@ function supportsDimensions(model) {
   return /^Qwen\/Qwen3-Embedding/i.test(String(model || ''))
 }
 
+const QWEN3_RETRIEVAL_INSTRUCTION =
+  'Given a web search query, retrieve relevant passages that answer the query'
+
+// Qwen3-Embedding is instruction-aware: queries use the retrieval instruction,
+// documents do not. Without it, short queries (especially Chinese) collapse
+// onto generic notes and the ranking looks random.
+function embeddingQueryInput(model, text) {
+  const value = String(text || '')
+  if (!/Qwen3-Embedding/i.test(String(model || ''))) return value
+  if (/^\s*Instruct:/i.test(value)) return value
+  return `Instruct: ${QWEN3_RETRIEVAL_INSTRUCTION}\nQuery: ${value}`
+}
+
 function safeKey(value) {
   if (!/^emb_[a-f0-9]{16}$/.test(String(value || ''))) {
     throw new Error('Invalid embedding table key')
@@ -736,7 +749,7 @@ export function createEmbeddingService({
       model: settings.model,
       dimensions: settings.dimensions
     })
-    const [vector] = await client.embed([text])
+    const [vector] = await client.embed([embeddingQueryInput(model.model, text)])
     if (!Array.isArray(vector) || vector.length !== Number(model.dimensions)) {
       throw fail(400, `Query embedding has ${vector?.length || 0} dimensions, expected ${model.dimensions}`, 'dimension_mismatch')
     }

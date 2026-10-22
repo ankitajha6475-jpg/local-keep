@@ -61,3 +61,87 @@ export function parseTags(text) {
 
   return [...found].slice(0, MAX_TAGS_PER_NOTE)
 }
+
+function canonicalTag(raw) {
+  return normalizeTag(raw).replace(/[/-]+$/, '')
+}
+
+export function isValidTag(raw) {
+  const tag = canonicalTag(raw)
+  if (!tag || tag.length > MAX_TAG_LENGTH) return false
+  if (/^[0-9a-f]{3,8}$/i.test(tag)) return false
+  return /^[\p{L}][\p{L}\p{N}_/-]*$/u.test(tag)
+}
+
+/**
+ * Add inline tags to markdown content without touching code blocks.
+ * Returns the new content plus the tags that were actually added.
+ */
+export function addTagsToContent(content, tags = []) {
+  const source = String(content ?? '')
+  const normalized = []
+  for (const raw of tags) {
+    if (!isValidTag(raw)) continue
+    const tag = canonicalTag(raw)
+    if (!normalized.includes(tag)) normalized.push(tag)
+  }
+
+  const existing = new Set(parseTags(source))
+  const additions = normalized.filter(tag => !existing.has(tag))
+  if (additions.length === 0) {
+    return { content: source, added: [], existing: [...existing] }
+  }
+  if (existing.size + additions.length > MAX_TAGS_PER_NOTE) {
+    throw new Error(`A note can have at most ${MAX_TAGS_PER_NOTE} tags`)
+  }
+
+  const line = additions.map(tag => `#${tag}`).join(' ')
+  const base = source
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n+$/, '')
+
+  // Prefer a trailing tag paragraph. If the note ends inside an unclosed
+  // fence, the parser will not see it, so fall back to a leading tag line.
+  let next = base ? `${base}\n\n${line}` : line
+  const found = new Set(parseTags(next))
+  if (!additions.every(tag => found.has(tag))) {
+    next = base ? `${line}\n\n${base}` : line
+  }
+
+  return { content: next, added: additions, existing: [...existing] }
+}
+
+/**
+ * Remove exact inline tags outside code blocks. Hierarchical tags are only
+ * removed when the full path matches, so removing `area` leaves
+ * `area/project` untouched.
+ */
+export function removeTagsFromContent(content, tags = []) {
+  const source = String(content ?? '')
+  const wanted = new Set()
+  for (const raw of tags) {
+    if (!isValidTag(raw)) continue
+    wanted.add(canonicalTag(raw))
+  }
+  if (wanted.size === 0) return { content: source, removed: [] }
+
+  const before = new Set(parseTags(source))
+  const removed = [...wanted].filter(tag => before.has(tag))
+  if (removed.length === 0) return { content: source, removed: [] }
+
+  let next = transformOutsideCode(source, segment => {
+    return segment
+      .replace(/(?<![A-Za-z0-9_/])#([\p{L}][\p{L}\p{N}_/-]*)/gu, (match, body) => {
+        const clean = body.replace(/[/-]+$/, '')
+        return wanted.has(normalizeTag(clean)) ? '' : match
+      })
+      .replace(/[ \t]{2,}/g, ' ')
+  })
+
+  next = next
+    .replace(/[ \t]+$/gm, '')
+    .replace(/^\n+|\n+$/g, '')
+  if (!next.trim()) next = ''
+
+  return { content: next, removed }
+}

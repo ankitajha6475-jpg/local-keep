@@ -9,7 +9,7 @@ and model, indexing starts in the background and existing notes are queued.
 
 ## Configure
 
-Avatar menu → **✨ Semantic search** (admin only), or:
+Avatar menu → **✨ Hybrid search** (admin only), or:
 
 ```http
 GET /api/admin/embeddings
@@ -41,6 +41,10 @@ Example configuration:
 - `Reset index` drops all embedding chunk/vector tables, clears model/index metadata, and reindexes with the current model/variant. It does not delete the note database or the embedding key.
 - Changing the chunk size/overlap forces a re-index.
 - `dimensions` defaults to 4096 for `Qwen/Qwen3-Embedding-8B` (2560 for 4B, 1024 for 0.6B). Qwen3 accepts 64–4096 depending on the model; for other models leave it empty and use the native dimensions from the connection probe.
+- Qwen3-Embedding queries automatically use the retrieval instruction
+  `Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: …`.
+  Indexed chunks remain unprefixed, so enabling or restoring this behavior does not
+  require a reindex. Other models receive the raw query.
 
 ## Rerank (optional)
 
@@ -109,7 +113,7 @@ operation in a future version.
 - Qwen3 dimensions: `Qwen/Qwen3-Embedding-8B` defaults to 4096; the API also accepts
   64–4096. Changing dimensions creates a new variant table and requires a re-index.
 - Runtime batch controls are stored in SQLite (`embedding_settings`) and are
-  editable under **Semantic search → Advanced indexing**:
+  editable under **Hybrid search → Advanced indexing**:
 
   - `batch_size` (1–128): inputs per request
   - `concurrency` (1–8): parallel requests within a note
@@ -137,13 +141,19 @@ operation in a future version.
 
 ### UI
 
-Click the ✨ button in the search field to use semantic search; otherwise search
-remains keyword/FTS. If semantic search is not configured or the provider fails,
-the UI falls back to keyword search and shows a notice.
+When embeddings are configured, the ✨ button defaults on and dashboard search uses
+`/api/search/hybrid` (keyword + vector RRF). Turn it off to use keyword/FTS only.
+The result list defaults to **Relevance** order; choose Last Modified, Date Created,
+or Title to re-sort. Clearing the search restores the previous sort.
+
+If hybrid search is unavailable or the provider fails, the UI shows the server
+notice and labels the results as keyword. `/api/config.search` exposes
+`semanticEnabled`, the model name, and `rerankEnabled`; no key is returned.
 
 ### REST
 
 ```http
+GET /api/config                 # search.semanticEnabled / model / rerankEnabled
 GET /api/search/semantic?q=...
 GET /api/search/hybrid?q=...
 ```

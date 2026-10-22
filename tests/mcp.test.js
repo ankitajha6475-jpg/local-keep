@@ -28,7 +28,7 @@ test('embedded MCP: tools, search timestamps, thread, links, whiteboard images',
 
     const tools = await client.listTools()
     const names = tools.tools.map(t => t.name)
-    for (const name of ['search_notes', 'semantic_search', 'create_note', 'edit_note', 'get_note_state', 'note_session', 'get_thread', 'get_whiteboard', 'get_backlinks', 'list_tags', 'get_graph', 'list_changes']) {
+    for (const name of ['list_notes', 'search_notes', 'semantic_search', 'create_note', 'edit_note', 'append_to_note', 'add_tags', 'remove_tags', 'purge_note', 'purge_archived', 'get_note_state', 'note_session', 'get_note', 'get_thread', 'get_whiteboard', 'get_backlinks', 'list_tags', 'get_graph', 'list_changes']) {
       assert.ok(names.includes(name), `missing tool ${name}`)
     }
 

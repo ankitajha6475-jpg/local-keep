@@ -97,8 +97,13 @@ export function serializeEditorToMarkdown(root) {
     }
     if (tag === 'SPAN' && node.classList && node.classList.contains('note-link')) {
       const noteId = node.getAttribute('data-note-id')
-      const label = node.getAttribute('data-note-label') || serializeChildren(node) || ''
-      return noteId ? `[[note:${noteId}|${label}]]` : `[[${label}]]`
+      const target = node.getAttribute('data-note-target') ||
+        node.getAttribute('data-note-label') ||
+        serializeChildren(node) || ''
+      const label = node.getAttribute('data-note-label') ||
+        serializeChildren(node) || target
+      if (noteId) return `[[note:${noteId}|${label}]]`
+      return label && label !== target ? `[[${target}|${label}]]` : `[[${target}]]`
     }
     return serializeChildren(node)
   }

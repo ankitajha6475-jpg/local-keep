@@ -136,6 +136,13 @@ test('two clients share a live text draft and presence updates', async () => {
     Y.applyUpdate(docA, base64ToBytes(updateForA.update), 'remote')
     assert.equal(docA.getText('content').toString(), 'AhelloB')
 
+    // The server persists Yjs drafts on a 400 ms debounce.
+    await new Promise(resolve => setTimeout(resolve, 700))
+    const draftsBeforeSave = await request('GET', '/api/drafts')
+    assert.equal(draftsBeforeSave.length, 1)
+    assert.equal(draftsBeforeSave[0].noteId, note.id)
+    assert.equal(draftsBeforeSave[0].content, 'AhelloB')
+
     const savedForB = waitForMessage(
       wsB,
       msg => msg.type === 'text-saved' && msg.noteId === note.id,
@@ -153,6 +160,9 @@ test('two clients share a live text draft and presence updates', async () => {
     assert.equal(textSaved.baseRevisionId, saved.revisionId)
     assert.equal(textSaved.revisionNo, 2)
     assert.equal(textSaved.content, 'AhelloB')
+
+    const draftsAfterSave = await request('GET', '/api/drafts')
+    assert.equal(draftsAfterSave.length, 0)
 
     const presenceAfterLeave = waitForMessage(
       wsA,

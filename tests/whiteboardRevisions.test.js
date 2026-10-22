@@ -53,6 +53,11 @@ test('whiteboard delta + checkpoint creates a revision under the same note id', 
 
     const notesMessage = await waitForMessage(ws, msg => msg.type === 'notes')
     assert.equal(notesMessage.notes.some(n => n.id === note.id), true)
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(notesMessage.notes.find(n => n.id === note.id), 'canvasData'),
+      false,
+      'the bulk notes message is an index, not full notes'
+    )
 
     const snapshotPromise = waitForMessage(ws, msg => msg.type === 'snapshot' && msg.noteId === note.id)
     ws.send(JSON.stringify({ type: 'join', noteId: note.id }))

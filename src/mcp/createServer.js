@@ -1,5 +1,11 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/server'
 import * as z from 'zod/v4'
+import {
+  addTagsToContent,
+  removeTagsFromContent,
+  isValidTag,
+  normalizeTag
+} from '../shared/tags.js'
 
 function actorFor(authInfo) {
   if (authInfo?.actor) return authInfo.actor
@@ -188,6 +194,204 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     throw error
   }
 
+  function noteSummary(note, extra = {}) {
+    if (!note) return null
+    return {
+      id: note.id,
+      title: note.title || '',
+      displayTitle: note.displayTitle || note.display_title || '',
+      type: note.type,
+      revisionId: note.revisionId || note.head_revision_id || null,
+      revisionNo: note.revisionNo || note.revision_no || 1,
+      archivedAt: note.archivedAt || note.archived_at || null,
+      color: note.color || null,
+      tags: note.tags || [],
+      linkCount: note.linkCount || 0,
+      backlinkCount: note.backlinkCount || 0,
+      createdAt: note.createdAt,
+      updatedAt: note.updatedAt,
+      contentLength: typeof note.content === 'string' ? note.content.length : 0,
+      ...extra
+    }
+  }
+
+  function revisionSummary(revision) {
+    if (!revision) return null
+    return {
+      id: revision.id,
+      noteId: revision.noteId || revision.note_id || null,
+      revisionNo: revision.revisionNo || revision.revision_no || 1,
+      title: revision.title || '',
+      displayTitle: revision.displayTitle || revision.display_title || '',
+      type: revision.type,
+      actor: revision.actor,
+      source: revision.source,
+      message: revision.message || null,
+      createdAt: revision.createdAt || revision.created_at || null,
+      contentLength: typeof revision.content === 'string' ? revision.content.length : 0
+    }
+  }
+
+  function appendMarkdown(base, addition) {
+    const left = String(base ?? '')
+      .replace(/[ \t]+$/gm, '')
+      .replace(/\n+$/, '')
+    const right = String(addition ?? '')
+      .replace(/^\n+/, '')
+      .replace(/\n+$/, '')
+    if (!left) return right
+    if (!right) return left
+    return `${left}\n\n${right}`
+  }
+
+  function normalizeTagInput(input) {
+    if (!Array.isArray(input) || input.length === 0) {
+      const error = new Error('At least one tag is required')
+      error.code = 'tags_required'
+      error.guide = 'Pass tags such as ["project", "project/local"] (the leading # is optional).'
+      throw error
+    }
+    const normalized = []
+    for (const raw of input) {
+      if (!isValidTag(raw)) {
+        const error = new Error(`Invalid tag: ${String(raw)}`)
+        error.code = 'invalid_tag'
+        error.guide = 'Tags must start with a letter and may contain letters, numbers, _, - and /. Hex colours and empty tags are rejected.'
+        throw error
+      }
+      const tag = normalizeTag(raw).replace(/[/-]+$/, '')
+      if (!normalized.includes(tag)) normalized.push(tag)
+    }
+    return normalized
+  }
+
+  function assertActiveNote(note) {
+    if (!note) {
+      const error = new Error('Note not found')
+      error.code = 'note_not_found'
+      throw error
+    }
+    if (note.archivedAt) {
+      const error = new Error('The note is archived')
+      error.code = 'note_archived'
+      error.data = { note_id: note.id, archived_at: note.archivedAt }
+      error.guide = 'Restore the note with restore_note before adding or removing tags.'
+      throw error
+    }
+  }
+
+  function mutationResponse(result, historyUrl, includeContent = false) {
+    return {
+      note: includeContent ? result : noteSummary(result),
+      revision: includeContent ? result.revision : revisionSummary(result.revision),
+      previous_revision: includeContent ? result.previousRevision : revisionSummary(result.previousRevision),
+      conflict: !!result.conflict,
+      notice: result.notice,
+      history_url: historyUrl
+    }
+  }
+
+  function runTagOperation({ noteIds, tagInput, mode, dryRun = false, commitMode = 'append', message = null }) {
+    requireWrite(authInfo)
+    assertNoWriteSession()
+    const tags = normalizeTagInput(tagInput)
+    const uniqueIds = [...new Set(noteIds)]
+    const results = []
+    let changed = 0
+    let skipped = 0
+    let failed = 0
+
+    for (const noteId of uniqueIds) {
+      try {
+        const note = notes.getNote(noteId)
+        if (note.archivedAt) {
+          skipped += 1
+          results.push({
+            note_id: noteId,
+            title: note.title || '',
+            changed: false,
+            skipped: 'note_archived',
+            archived_at: note.archivedAt,
+            guide: 'Restore the note with restore_note before changing its tags.'
+          })
+          continue
+        }
+
+        const change = mode === 'add'
+          ? addTagsToContent(note.content, tags)
+          : removeTagsFromContent(note.content, tags)
+        const affected = mode === 'add' ? change.added : change.removed
+        if (affected.length === 0) {
+          results.push({
+            ...noteSummary(note),
+            changed: false,
+            [mode === 'add' ? 'added' : 'removed']: [],
+            tags: note.tags || []
+          })
+          continue
+        }
+
+        if (dryRun) {
+          changed += 1
+          results.push({
+            ...noteSummary(note),
+            changed: true,
+            dry_run: true,
+            [mode === 'add' ? 'would_add' : 'would_remove']: affected,
+            tags: note.tags || []
+          })
+          continue
+        }
+
+        const updated = notes.updateNote({
+          id: noteId,
+          title: note.title,
+          content: change.content,
+          baseRevisionId: note.revisionId,
+          mode: commitMode,
+          actor,
+          source: 'mcp',
+          message: message || (mode === 'add'
+            ? `Add tags: ${affected.map(tag => `#${tag}`).join(' ')}`
+            : `Remove tags: ${affected.map(tag => `#${tag}`).join(' ')}`)
+        })
+        changed += 1
+        results.push({
+          ...noteSummary(updated),
+          changed: true,
+          [mode === 'add' ? 'added' : 'removed']: affected,
+          tags: updated.tags || [],
+          conflict: !!updated.conflict,
+          notice: updated.notice
+        })
+      } catch (error) {
+        failed += 1
+        results.push({
+          note_id: noteId,
+          changed: false,
+          error: {
+            code: error?.code || 'tool_error',
+            message: error?.message || String(error)
+          }
+        })
+      }
+    }
+
+    return {
+      ok: failed === 0,
+      partial: failed > 0 && changed > 0,
+      mode,
+      dry_run: !!dryRun,
+      results,
+      summary: {
+        requested: uniqueIds.length,
+        changed,
+        skipped,
+        failed
+      }
+    }
+  }
+
   function relatedAppendix(ids) {
     if (!Array.isArray(ids) || ids.length === 0) return ''
     const parts = []
@@ -292,11 +496,17 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
       revision_id: z.string().optional(),
       include_history: z.boolean().optional(),
       include_links: z.boolean().optional(),
-      include_backlinks: z.boolean().optional()
+      include_backlinks: z.boolean().optional(),
+      include_canvas: z.boolean().optional()
     })
   }, async (args) => {
     try {
-      const note = notes.getNote(args.note_id)
+      let note = notes.getNote(args.note_id)
+      const includeCanvas = args.include_canvas === true
+      if (note.type === 'canvas' && !includeCanvas) {
+        const { canvasData, thumbnail, ...rest } = note
+        note = { ...rest, canvas_omitted: true }
+      }
       const result = { note }
       if (args.revision_id) {
         const revision = revisions.getRevision(args.revision_id)
@@ -309,7 +519,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
           title: revision.title,
           content: revision.content,
           type: revision.type,
-          canvasData: revision.canvas_data,
+          ...(includeCanvas ? { canvasData: revision.canvas_data } : {}),
           actor: revision.actor,
           source: revision.source,
           createdAt: revision.created_at
@@ -320,7 +530,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
       if (args.include_backlinks) result.backlinks = links.backlinks(args.note_id)
       if (note.type === 'canvas') result.whiteboard = renders.latest(args.note_id)
       return text(result)
-    } catch (e) { return fail(e.message) }
+    } catch (e) { return failError(e) }
   })
 
   server.registerTool('create_note', {
@@ -334,10 +544,11 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
   }, async (args) => {
     try {
       requireWrite(authInfo)
-      const tagAppendix = Array.isArray(args.tags) && args.tags.length
-        ? `\n\n${args.tags.map(tag => `#${String(tag).replace(/^#/, '')}`).join(' ')}`
-        : ''
-      const content = `${args.content}${relatedAppendix(args.related_note_ids)}${tagAppendix}`
+      let content = `${args.content || ''}${relatedAppendix(args.related_note_ids)}`
+      if (Array.isArray(args.tags) && args.tags.length) {
+        const normalizedTags = normalizeTagInput(args.tags)
+        content = addTagsToContent(content, normalizedTags).content
+      }
       const note = notes.createNote({
         title: args.title || '',
         content,
@@ -350,7 +561,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
         revision: head ? revisions.getRevision(head.head_revision_id) : null,
         notice: 'Created revision 1.'
       })
-    } catch (e) { return fail(e.message) }
+    } catch (e) { return failError(e) }
   })
 
   server.registerTool('edit_note', {
@@ -361,20 +572,30 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
       base_revision_id: z.string().optional(),
       title: z.string().optional(),
       content: z.string().optional(),
+      tags: z.array(z.string()).optional(),
       message: z.string().optional(),
-      related_note_ids: z.array(z.string()).optional()
+      related_note_ids: z.array(z.string()).optional(),
+      include_content: z.boolean().optional()
     })
   }, async (args) => {
     try {
       requireWrite(authInfo)
       assertNoWriteSession()
+      const note = notes.getNote(args.note_id)
+      assertActiveNote(note)
       let content = args.content
       if (args.related_note_ids?.length) {
-        const note = notes.getNote(args.note_id)
         content = (content !== undefined ? content : note.content) + relatedAppendix(args.related_note_ids)
       }
+      let addedTags = []
+      if (Array.isArray(args.tags) && args.tags.length) {
+        const normalizedTags = normalizeTagInput(args.tags)
+        const change = addTagsToContent(content !== undefined ? content : note.content, normalizedTags)
+        content = change.content
+        addedTags = change.added
+      }
       if (content === undefined && args.title === undefined) {
-        throw new Error('edit_note requires title or content')
+        throw new Error('edit_note requires title, content, or tags')
       }
       const result = notes.updateNote({
         id: args.note_id,
@@ -384,15 +605,11 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
         mode: args.commit_mode || 'append',
         actor,
         source: 'mcp',
-        message: args.message || null
+        message: args.message || (addedTags.length ? `Add tags: ${addedTags.map(tag => `#${tag}`).join(' ')}` : null)
       })
       return text({
-        note: result,
-        revision: result.revision,
-        previous_revision: result.previousRevision,
-        conflict: result.conflict,
-        notice: result.notice,
-        history_url: `${baseUrl}/#/note/${encodeURIComponent(args.note_id)}/history`
+        ...mutationResponse(result, `${baseUrl}/#/note/${encodeURIComponent(args.note_id)}/history`, args.include_content === true),
+        ...(addedTags.length ? { tags_added: addedTags } : {})
       })
     } catch (e) { return failError(e) }
   })
@@ -404,14 +621,25 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
       content: z.string(),
       commit_mode: z.enum(['append', 'branch', 'take_head']).optional(),
       base_revision_id: z.string().optional(),
-      title: z.string().optional()
+      title: z.string().optional(),
+      tags: z.array(z.string()).optional(),
+      message: z.string().optional(),
+      include_content: z.boolean().optional()
     })
   }, async (args) => {
     try {
       requireWrite(authInfo)
       assertNoWriteSession()
       const note = notes.getNote(args.note_id)
-      const content = `${note.content || ''}\n\n${args.content}`
+      assertActiveNote(note)
+      let content = appendMarkdown(note.content || '', args.content)
+      let addedTags = []
+      if (Array.isArray(args.tags) && args.tags.length) {
+        const normalizedTags = normalizeTagInput(args.tags)
+        const change = addTagsToContent(content, normalizedTags)
+        content = change.content
+        addedTags = change.added
+      }
       const result = notes.updateNote({
         id: args.note_id,
         title: args.title !== undefined ? args.title : note.title,
@@ -420,16 +648,58 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
         mode: args.commit_mode || 'append',
         actor,
         source: 'mcp',
-        message: 'append via MCP'
+        message: args.message || (addedTags.length
+          ? `Append and add tags: ${addedTags.map(tag => `#${tag}`).join(' ')}`
+          : 'append via MCP')
       })
       return text({
-        note: result,
-        revision: result.revision,
-        previous_revision: result.previousRevision,
-        conflict: result.conflict,
-        notice: result.notice,
-        history_url: `${baseUrl}/#/note/${encodeURIComponent(args.note_id)}/history`
+        ...mutationResponse(result, `${baseUrl}/#/note/${encodeURIComponent(args.note_id)}/history`, args.include_content === true),
+        ...(addedTags.length ? { tags_added: addedTags } : {})
       })
+    } catch (e) { return failError(e) }
+  })
+
+  server.registerTool('add_tags', {
+    description: 'Add inline tags to one or more notes as new revisions. Supports dry_run. Archived notes must be restored first.',
+    inputSchema: z.object({
+      note_ids: z.array(z.string().min(1)).min(1).max(100),
+      tags: z.array(z.string().min(1)).min(1).max(100),
+      dry_run: z.boolean().optional(),
+      commit_mode: z.enum(['append', 'branch', 'take_head']).optional(),
+      message: z.string().optional()
+    })
+  }, async (args) => {
+    try {
+      return text(runTagOperation({
+        noteIds: args.note_ids,
+        tagInput: args.tags,
+        mode: 'add',
+        dryRun: args.dry_run === true,
+        commitMode: args.commit_mode || 'append',
+        message: args.message || null
+      }))
+    } catch (e) { return failError(e) }
+  })
+
+  server.registerTool('remove_tags', {
+    description: 'Remove exact inline tags from one or more notes as new revisions. Supports dry_run. Archived notes must be restored first.',
+    inputSchema: z.object({
+      note_ids: z.array(z.string().min(1)).min(1).max(100),
+      tags: z.array(z.string().min(1)).min(1).max(100),
+      dry_run: z.boolean().optional(),
+      commit_mode: z.enum(['append', 'branch', 'take_head']).optional(),
+      message: z.string().optional()
+    })
+  }, async (args) => {
+    try {
+      return text(runTagOperation({
+        noteIds: args.note_ids,
+        tagInput: args.tags,
+        mode: 'remove',
+        dryRun: args.dry_run === true,
+        commitMode: args.commit_mode || 'append',
+        message: args.message || null
+      }))
     } catch (e) { return failError(e) }
   })
 
@@ -749,19 +1019,195 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
   })
 
   server.registerTool('archive_note', {
-    description: 'Archive a note (history retained).',
+    description: 'Archive a note (history retained). Use purge_note for permanent deletion.',
     inputSchema: z.object({ note_id: z.string() })
   }, async (args) => {
-    try { requireWrite(authInfo); return text(notes.archiveNote(args.note_id, actor, 'mcp')) }
-    catch (e) { return fail(e.message) }
+    try {
+      requireWrite(authInfo)
+      const before = notes.getNote(args.note_id)
+      const note = notes.archiveNote(args.note_id, actor, 'mcp')
+      return text({
+        note: noteSummary(note),
+        notice: before.archivedAt ? 'Note was already archived.' : 'Note archived.'
+      })
+    } catch (e) { return failError(e) }
   })
 
   server.registerTool('restore_note', {
     description: 'Restore an archived note.',
     inputSchema: z.object({ note_id: z.string() })
   }, async (args) => {
-    try { requireWrite(authInfo); return text(notes.restoreNote(args.note_id, actor, 'mcp')) }
-    catch (e) { return fail(e.message) }
+    try {
+      requireWrite(authInfo)
+      const before = notes.getNote(args.note_id)
+      const note = notes.restoreNote(args.note_id, actor, 'mcp')
+      return text({
+        note: noteSummary(note),
+        notice: before.archivedAt ? 'Note restored.' : 'Note was not archived.'
+      })
+    } catch (e) { return failError(e) }
+  })
+
+  server.registerTool('purge_note', {
+    description: 'Permanently delete an archived note, its revisions, and its image references. Requires confirm=true; omit confirm for a preview.',
+    inputSchema: z.object({
+      note_id: z.string(),
+      confirm: z.boolean().optional(),
+      dry_run: z.boolean().optional(),
+      expected_title: z.string().optional()
+    })
+  }, async (args) => {
+    try {
+      requireWrite(authInfo)
+      assertNoWriteSession()
+      const note = notes.getNote(args.note_id)
+      if (!note.archivedAt) {
+        const error = new Error('Only archived notes can be purged')
+        error.code = 'note_not_archived'
+        error.data = { note_id: note.id, archived_at: null }
+        error.guide = 'Archive the note first with archive_note. Active notes are never purged by purge_note.'
+        throw error
+      }
+      if (args.expected_title !== undefined &&
+          String(note.title || '').trim() !== String(args.expected_title).trim()) {
+        const error = new Error('The note title does not match expected_title')
+        error.code = 'title_mismatch'
+        error.data = { note_id: note.id, title: note.title || '', expected_title: args.expected_title }
+        throw error
+      }
+      const summary = noteSummary(note)
+      if (args.confirm !== true || args.dry_run === true) {
+        return text({
+          mode: 'preview',
+          note: summary,
+          next_step: 'Call purge_note again with confirm: true to permanently delete this note.'
+        })
+      }
+      notes.purgeNote(args.note_id, actor, 'mcp')
+      return text({
+        mode: 'purged',
+        note: summary,
+        notice: 'Note and all revisions were permanently deleted.'
+      })
+    } catch (e) { return failError(e) }
+  })
+
+  server.registerTool('purge_archived', {
+    description: 'Permanently delete archived notes. Without confirm it returns a preview. Purging all archived notes requires expected_count.',
+    inputSchema: z.object({
+      note_ids: z.array(z.string().min(1)).min(1).max(500).optional(),
+      expected_count: z.number().int().min(0).optional(),
+      confirm: z.boolean().optional(),
+      dry_run: z.boolean().optional()
+    })
+  }, async (args) => {
+    try {
+      requireWrite(authInfo)
+      assertNoWriteSession()
+      const archived = notes.listArchivedNotes()
+      const archivedById = new Map(archived.map(note => [note.id, note]))
+      let candidates = archived
+
+      if (Array.isArray(args.note_ids) && args.note_ids.length) {
+        const wanted = [...new Set(args.note_ids)]
+        const active = []
+        const missing = []
+        for (const id of wanted) {
+          if (archivedById.has(id)) continue
+          try {
+            const note = notes.getNote(id)
+            if (!note.archivedAt) active.push(id)
+          } catch (_) {
+            missing.push(id)
+          }
+        }
+        if (active.length) {
+          const error = new Error('Some requested notes are not archived')
+          error.code = 'note_not_archived'
+          error.data = { active_note_ids: active }
+          error.guide = 'Archive active notes first, then call purge_archived again.'
+          throw error
+        }
+        if (missing.length) {
+          const error = new Error('Some requested notes were not found')
+          error.code = 'note_not_found'
+          error.data = { missing_note_ids: missing }
+          throw error
+        }
+        const wantedSet = new Set(wanted)
+        candidates = archived.filter(note => wantedSet.has(note.id))
+      }
+
+      if (args.expected_count !== undefined && args.expected_count !== candidates.length) {
+        const error = new Error('The archived-note count does not match expected_count')
+        error.code = 'count_mismatch'
+        error.data = {
+          expected_count: args.expected_count,
+          actual_count: candidates.length,
+          notes: candidates.map(note => ({
+            id: note.id,
+            title: note.title,
+            archived_at: note.archivedAt,
+            revision_no: note.revisionNo
+          }))
+        }
+        error.guide = 'Review the list, then retry with the current count. Nothing was deleted.'
+        throw error
+      }
+
+      const preview = args.confirm !== true || args.dry_run === true
+      if (preview) {
+        return text({
+          mode: 'preview',
+          count: candidates.length,
+          notes: candidates.map(note => ({
+            id: note.id,
+            title: note.title,
+            archived_at: note.archivedAt,
+            revision_no: note.revisionNo
+          })),
+          next_step: Array.isArray(args.note_ids) && args.note_ids.length
+            ? 'Call purge_archived again with confirm: true to permanently delete these notes.'
+            : 'Call purge_archived again with confirm: true and expected_count matching count to permanently delete all archived notes.'
+        })
+      }
+
+      if ((!Array.isArray(args.note_ids) || args.note_ids.length === 0) &&
+          args.expected_count === undefined) {
+        const error = new Error('expected_count is required when purging all archived notes')
+        error.code = 'expected_count_required'
+        error.data = { count: candidates.length }
+        error.guide = 'Pass expected_count from the preview to guard against deleting an unexpected set. Nothing was deleted.'
+        throw error
+      }
+
+      const purged = []
+      const failed = []
+      for (const note of candidates) {
+        try {
+          notes.purgeNote(note.id, actor, 'mcp')
+          purged.push(note)
+        } catch (error) {
+          failed.push({
+            id: note.id,
+            title: note.title,
+            error: { code: error?.code || 'tool_error', message: error?.message || String(error) }
+          })
+        }
+      }
+      return text({
+        mode: 'purged',
+        count: purged.length,
+        notes: purged.map(note => ({
+          id: note.id,
+          title: note.title,
+          archived_at: note.archivedAt,
+          revision_no: note.revisionNo
+        })),
+        failed_count: failed.length,
+        failed
+      })
+    } catch (e) { return failError(e) }
   })
 
   server.registerTool('promote_revision', {

@@ -1,0 +1,11 @@
+{
+  "ui": {
+    "noteModalWidth": 960,
+    "noteModalHeight": 760,
+    "linkDialogWidth": 540,
+    "graphWidth": 1100,
+    "graphHeight": 760,
+    "linksPanelWidth": 1100,
+    "linksPanelHeight": 780
+  }
+}

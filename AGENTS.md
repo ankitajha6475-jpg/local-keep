@@ -45,6 +45,7 @@ src/
   App.vue                         # Main app: note list/editor, history, archived view, WS
   components/
     WhiteboardEditor.vue          # Excalidraw wrapper (manual React mount, not veaury bridge)
+    DashboardNoteCard.vue         # virtual-list card (index summary + hydrated detail)
     TagSidebar.vue                # hierarchical tag tree/filter
     GraphView.vue, GraphCanvas.vue# relationship graph (d3-force)
     BacklinksPanel.vue            # incoming links + context
@@ -52,6 +53,7 @@ src/
     collabManager.js              # Client-side collab: delta, LWW, undo/redo, checkpoint
   server/
     db.js                         # openDatabase, migrations runner, backup
+    config.js                     # config.json loader and safe defaults
     schema.js                     # Pre-revision base tables + FTS
     auth/passwords.js             # scrypt hashing, legacy upgrade, temp passwords
     embeddings/client.js           # OpenAI-compatible /embeddings client
@@ -63,6 +65,14 @@ src/
     migrations/003-api-tokens.js
     migrations/004-multiuser-auth.js
     migrations/005-embeddings.js
+    migrations/006-optional-rerank.js
+    migrations/007-live-text-collab.js
+    migrations/008-embedding-variants.js
+    migrations/009-embedding-tuning.js
+    migrations/010-token-admin.js
+    migrations/011-mcp-session-limits.js
+    migrations/012-app-settings.js
+    migrations/013-note-color.js
     services/notes.js             # head CRUD, archive/restore/purge, history facade
     services/revisions.js         # immutable revisions, branch, restore/promote, checkpoints
     services/imageRefs.js         # head/revision/tile image refs + cleanup
@@ -71,6 +81,7 @@ src/
     services/tags.js              # tag sync, tree, descendant filter
     services/textCollab.js        # Yjs live text docs, persistence, base revision
     services/mcpEditing.js        # MCP write/read sessions, state/guide, TTL
+    services/uiSettings.js        # config-file defaults + runtime UI overrides
     services/links.js             # wiki-link sync/resolve, backlinks, graph
     services/renders.js           # whiteboard page manifests + staleness
     images.js, fts.js, canvas.js, events.js, sessionStore.js
@@ -80,15 +91,21 @@ src/
     notesText.js                  # display title + markdown-to-text (client/server)
     markdownCode.js               # code-aware transform helper
     tags.js, links.js             # tag/wiki-link parsers
+    linkMarkdown.js               # markdown/wiki-link builders for the link dialog
+    noteColors.js                 # dashboard note tint ids, labels, normalization
+    uiConfig.js                   # UI dimension fields, defaults, and clamping
+    shortcuts.js                  # central UI shortcut map + display/event normalization
   utils/
     markdown.js                   # sanitised renderer, Turndown paste conversion
     editorSerialize.js            # contentEditable -> canonical markdown
     whiteboardTiles.js            # pure reading-order page planner
+    dashboardVirtual.js           # column count, row chunking, ranges, search ordering
     notes.js                      # compatibility re-export of shared note text
 data/
   local-keep.db                   # SQLite database (head notes + revisions)
   images/                         # Content-addressed image files (SHA-256 hashed filenames)
   backups/                        # Pre-migration VACUUM INTO snapshots
+config.json                       # Interface defaults (or LOCAL_KEEP_CONFIG path)
 public/
   fonts/                          # Excalidraw fonts (served as static assets)
 tests/                            # node:test suite + helpers (temp DB, server process)
@@ -182,6 +199,18 @@ a client explicitly saves.
 - Restore/promote broadcasts `text-reset`; clients replace their local Y.Doc
   rather than merging (Yjs updates are additive).
 
+**Dashboard drafts**:
+- `GET /api/drafts` lists persisted `note_text_docs` rows whose title/content
+  differs from the head; archived notes and clean/corrupt rows are omitted.
+- The dashboard has mutually exclusive **Notes**, **Archived**, and **Drafts**
+  tabs (`dashboardTab`). `sortedNotes` filters active vs archived; the Drafts tab
+  maps API drafts to read-only cards. Quick Shortcuts appears only in Notes.
+- Editor **Draft** closes without discarding the shared Yjs document, so it stays
+  in the Drafts tab; **Discard** keeps the last-editor discard behavior; **Save**
+  commits a revision. The unsaved dialog offers Save/Draft/Discard/Continue.
+- Drafts are keyed by note id, so new-note drafts are not supported; the Draft
+  action is hidden while creating a note.
+
 **Protocol** (client → server):
 - `{ type: 'text-join', noteId }`
 - `{ type: 'text-leave', noteId }`
@@ -258,6 +287,25 @@ corresponding card while any session has that note open.
 - Direct MCP clients can keep using `http://localhost:5173/mcp`; browser MCP
   clients can use `https://192.168.3.222:5174/mcp`.
 
+### Interface Configuration
+
+- Interface dimensions live in `config.json` at the repo root. `LOCAL_KEEP_CONFIG`
+  overrides the path. File edits are read at startup; restart after changing them.
+- Fields are defined once in `src/shared/uiConfig.js` with min/max/step bounds:
+  note editor width/height, link dialog width, graph width/height, and selection-links
+  panel width/height. Default note editor is 960×760.
+- Admins can override values at runtime from **avatar → 🎛 Interface**. Overrides live
+  in `app_settings` (`key='ui'`, JSON patch), so they survive restarts without touching
+  the file. **Reset to config file** deletes the override row.
+- `GET /api/config` returns effective UI values to any authenticated user.
+  `/api/admin/config` provides defaults, overrides, file path/error, and PUT/DELETE.
+  Writes broadcast `{ type: 'config', config: { ui } }`; the WS handshake also sends it.
+- The client applies values as CSS variables on `#app`. Components use
+  `min(var(--…), viewport)` so large values still fit small screens. Manual note-modal
+  resizing still wins via inline styles for that open modal.
+- Migration 12 creates `app_settings`. Config-file values are clamped; runtime admin
+  values are rejected with 400 when out of range.
+
 ### Semantic Search / Embeddings
 
 - Optional admin-configured semantic search over text notes and canvas text.
@@ -288,35 +336,82 @@ corresponding card while any session has that note open.
   In-flight results are discarded if the note hash changed.
 - Search: `GET /api/search/semantic|hybrid`; MCP `search_notes` with
   `mode: keyword|semantic|hybrid` plus `semantic_search`. Hybrid uses RRF.
-  UI ✨ search toggle falls back to keyword with a notice on failure.
+  Without a reranker, semantic results are cosine-similarity order and hybrid is
+  RRF order; do not flatten either to `updatedAt`.
+- Qwen3-Embedding is instruction-aware. `searchMatches` prefixes **queries** with
+  `Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: …`.
+  Indexed document chunks stay unprefixed; existing indexes remain valid. This
+  asymmetry is required for short queries, especially Chinese (`云存储`). Other
+  models use the raw query.
+- Dashboard search uses `GET /api/search/hybrid` when hybrid is enabled, not the
+  semantic-only endpoint. `GET /api/config.search` exposes non-secret availability
+  (`semanticEnabled`, model, `rerankEnabled`). The browser toggle defaults on when
+  available and honors `localStorage['local-keep-hybrid-search'] = '0'`; it is
+  disabled when unavailable.
+- Search results are displayed in API order. The first search switches the sort to
+  **Relevance** (remembering the previous sort), and `orderBySearchResults` maps ids
+  to ranks; missing ids sort last. Users may choose date/title sort during search.
+  Clearing/closing search restores the previous sort. Hybrid `notice` / request
+  failure or `semantic_count: 0` is labelled keyword; server notices are shown as a toast.
+  Tab/sort/tag/search changes reset the viewport to the notes grid top below the
+  sticky header and control/selection bar; keep the second RAF pass for virtual
+  spacer updates.
 - Optional rerank (`BAAI/bge-reranker-v2-m3` etc.). If unset, semantic search is
   vector-only. If configured, it reorders the semantic candidate list; failure
   falls back to vector order with `rerank.error`. It can reuse the embedding
   base URL/key or use a separate encrypted key. Rerank does not partition tables.
-- Admin UI: avatar → **✨ Semantic search**; APIs under `/api/admin/embeddings`.
+- Admin UI: avatar → **✨ Hybrid search**; APIs under `/api/admin/embeddings`.
   `Rebuild index` force-queues all notes. Old model tables are preserved.
 
 ### Markdown Editor and Rendering
 
 - Canonical text content is markdown. The client renderer lives in
-  `src/utils/markdown.js`: `marked` (GFM, breaks) + `DOMPurify`; HTML paste conversion
-  uses `Turndown` + `turndown-plugin-gfm`.
+  `src/utils/markdown.js`: `marked` (GFM, breaks) + `DOMPurify`. Paste defaults to
+  plain text (`text/plain`) with a toolbar switch for opt-in rich mode; rich mode converts
+  `text/html` through Turndown + GFM. The preference is per browser (`local-keep-paste-mode`
+  in localStorage).
 - Two modes: **Visual** (contentEditable, rendered markdown, images displayed) and
   **Source** (raw markdown textarea, image references shown as URLs). `Ctrl/Cmd+Shift+M`
   toggles them. Preview was removed because Visual already renders the note; the gallery
   and detail view are the read-only surfaces.
+- The markdown toolbar (`MarkdownToolbar.vue` + `shared/editorTools.js`) is available in
+  both modes: inline formatting, headings, quote, lists, links/wiki links, code, tables,
+  and rules. Shortcuts require Ctrl/Cmd; hold Alt/Option to replace tooltips with shortcuts.
+  Toolbar buttons prevent `mousedown` so the editor/textarea selection is preserved.
+- The same Alt/Option reveal state (`shortcutsVisible` in `App.vue`) drives dashboard
+  action tooltips. Header controls use `AppIcon.vue` (inline SVG) with
+  `data-label`/`data-shortcut`; holding Alt reveals shortcut hints for actions that
+  declare a shortcut, even without hover. Do not reintroduce emoji or add hints for
+  shortcuts that are not actually handled.
+- Link insertion uses `LinkDialog.vue`, not `window.prompt`. Regular links edit Text + URL;
+  wiki links search `/api/search` as you type (excluding the current/archived notes), offer
+  recent notes for an empty query, and allow new titles. The pre-dialog editor selection is
+  captured and replaced on submit.
+- The wiki renderer emits `data-note-target` + `data-note-label`; the serializer uses both so
+  aliased unresolved links round-trip as `[[target|label]]`.
 - Images: Visual renders them; Source shows `![alt](/api/images/...)`; image insertion
   and paste insert an `<img>` in Visual and a markdown reference in Source. Switching
   modes never rewrites images or URLs.
-- Switching out of Visual serialises **only when the editor is dirty**; switching back
-  re-renders from markdown. Merely opening a note or toggling modes must not rewrite
-  canonical markdown or trigger the unsaved-changes prompt.
+- Switching out of Visual serialises **only when the DOM is un-serialised**; switching
+  back re-renders from markdown. Merely opening a note (including a shared draft) or
+  toggling modes must not rewrite canonical markdown or trigger the unsaved-changes prompt.
+  `editorDirty` means "DOM needs serialising", not "content differs from head"; use
+  `hasUnsavedChanges()` for the latter. `syncVisualEditor()` serialises and clears the
+  flag; `applySharedText()` clears it after rendering a snapshot.
+- Marked v18's GFM tokenizer accepts a single tilde as strikethrough. A `literalTilde`
+  inline extension consumes lone `~` as text so paths such as `~/.config` stay literal;
+  only `~~text~~` strikes through. Do not remove this extension or add a preprocess strip
+  that could alter link URLs.
 - `src/utils/editorSerialize.js` converts the rich editor to markdown: headings,
   paragraphs, ordered/unordered lists, blockquotes, fenced/inline code, tables, HR,
   links, wiki-link spans, images with `{width=N}`.
-- Rich paste is converted to markdown and sanitised; `data:image` sources are uploaded
-  and rewritten to `/api/images/<hash>.<ext>` before insertion/save. Save aborts with a
-  notice if an image upload fails (no silent base64 persistence).
+- Paste defaults to plain text: read `text/plain`, ignore `text/html`, and insert literally
+  (Visual text node with `white-space: pre-wrap`; Source at the textarea caret). This keeps
+  Source byte-identical to what was pasted. The editor toolbar's **Paste: plain/rich**
+  switch opts into rich mode, which converts `text/html` with `htmlToMarkdown` and inserts
+  rendered markdown (Visual) or converted markdown (Source). Clipboard image files remain
+  an exception and are uploaded as markdown images in both modes. Save still normalises
+  `data:image` references and aborts with a notice if an upload fails.
 - Raw HTML in note markdown is escaped, not interpreted. This preserves technical notes
   containing literal `<type>` snippets. The renderer has an optional `resolveLink`
   callback for `[[...]]`; unresolved links get `.note-link--broken`.
@@ -328,6 +423,30 @@ corresponding card while any session has that note open.
   the note.
 - Gallery cards and preview share the same renderer; do not reintroduce the old regex
   `renderContent`/`markdownToHTML` helpers.
+
+### Keyboard Shortcuts
+
+- `src/shared/shortcuts.js` is the single source of truth for workspace
+  shortcuts (`SHORTCUTS`), platform labels, and event normalization. `App.vue`
+  exposes `shortcut(id)` to templates; components that render outside the app
+  tree receive `modKey` as a prop.
+- Buttons declare `data-shortcut` with the display label (`R`, `Ctrl+Enter`,
+  `Ctrl+Alt+V`). The global dispatcher finds a matching visible button in the
+  topmost overlay and clicks it; hidden dashboard buttons are not activated
+  while a modal is open. If a form field has focus, a matching submit button in
+  that form wins over another form's button in the same modal.
+- Alt/Option **and** Ctrl/Cmd reveal shortcut hints. Plain-key shortcuts are
+  ignored while an input, textarea, select, or contenteditable has focus;
+  modifier shortcuts still work (for example `Ctrl+Alt+D` for Draft).
+- `Esc` closes the topmost overlay, `Ctrl/Cmd+Enter` submits the focused form,
+  and secondary actions use `Ctrl/Cmd+Alt+...`. Avoid browser-reserved combos.
+- Every unique action button in `App.vue` and primary overlay components has a
+  shortcut. Repeated per-row controls (revision View/Restore/Promote, user
+  reset/disable, token revoke, note color swatches, tag rows, card actions)
+  remain native keyboard-accessible controls without ambiguous global bindings.
+- The tag sidebar shows a leaf tag icon instead of depth indentation; parent
+  rows keep the expand/collapse arrow. The Quick Shortcuts card documents the
+  core shortcuts and the Alt/Ctrl reveal behavior.
 
 ### Relationships and Tags
 
@@ -344,7 +463,64 @@ corresponding card while any session has that note open.
   so link resolution stays complete; the API also supports `tag`/`exactTag` for external
   clients. Descendants are included by default.
 - Components: `TagSidebar`, `GraphView`/`GraphCanvas` (`d3-force`), `BacklinksPanel`.
+- The gallery's multi-select **🔗 Links** action calls `POST /api/notes/links/summary`
+  and shows both directions in `SelectionLinksPanel`; it groups by counterpart note and
+  is read-only (opening a row follows the normal note-open flow).
 - Do not make tags/links describe branch revisions; they are head-level materialised views.
+
+### Dashboard Notes and Colors
+
+- `notes.color` stores an optional tint id from `src/shared/noteColors.js`
+  (`blue`, `green`, `amber`, `rose`, `violet`, `slate`); `NULL` means the note-type
+  default (blue text notes, violet whiteboards). It is head-level presentation metadata:
+  it is not revisioned, does not change `updatedAt`, and survives edits/archive/restore.
+- `PUT /api/notes/:id/color` validates the palette, returns the updated DTO, and
+  broadcasts `{ type: 'note-color', noteId, color }`. The dashboard picker sits right of
+  the card checkbox; it applies optimistically, reverts on failure, and closes on
+  outside click/Escape.
+- Card tints are shared CSS variables (`--card-surface-*`, `--card-border-color`,
+  `--card-accent-*`) set by `.note-color-*` classes. Keep archived rules after color
+  classes so archived cards stay muted.
+- Quick Shortcuts is a read-only **virtual** note (`isQuickShortcuts`) prepended by
+  `dashboardNotes` for rendering only in the unfiltered Notes tab. It is never in
+  `noteIndex`, `sortedNotes`, Select All, counts, search, tag filters, or editing
+  sessions. Its markdown body uses the normal `.note-preview` scrollbar; the checkbox,
+  color picker, copy, and delete/restore are hidden and `handleCardClick` returns early.
+- The Drafts tab maps `GET /api/drafts` entries to read-only cards (`isDraft`). They
+  show a Draft badge, hide selection/color/copy/delete, and open the real note so
+  `startTextCollab` can load the shared draft.
+
+### Virtualized Dashboard
+
+- The dashboard no longer keeps every full note in memory. `noteIndex` is the complete
+  lightweight list (id, title, display title, type, revision, archived state, dates,
+  color, tags, link counts); `noteDetails` is a bounded reactive `Map` of card bodies.
+  Use the index for filters, sorting, counts, search-result ids, wiki-link resolution,
+  Select All, drafts, and Link dialog recents.
+- `GET /api/notes/index` returns the index and `POST /api/notes/window` returns ordered
+  card DTOs for up to 200 ids. Window DTOs include text content (first 12,000 chars,
+  flagged `contentTruncated`), canvas thumbnails, and omit `canvasData`; opening a note
+  with a truncated/missing body fetches the full note.
+- `vue-virtual-scroller` renders responsive **rows**, not individual cards. `noteColumnCount`
+  comes from the measured container width; `chunkDashboardItems` groups the flat list;
+  each row has a fixed `396px` height (380px card + 16px gap). The scroller uses
+  `page-mode`, an `800px` render buffer, and `:emit-update="true"`.
+- Card bodies hydrate in 30-note batches as the visible range changes. Keep one batch of
+  prefetch on each side, evict outside that padded range, and never evict the editing
+  note. The hard cache cap is 120 notes. `DashboardNoteCard` shows summary metadata plus a
+  skeleton until its detail arrives.
+- Open paths go through `openNoteById` / `ensureNoteDetail`, which fetch the full note when
+  the cached body is missing or when a canvas scene is required. The editor baseline for
+  unsaved-change detection is captured at `startEditing` (`editingOriginal*`), not read
+  from the index.
+- The WebSocket bulk `notes` message is now an index. Apply it with `applyNoteIndex`,
+  invalidate details whose revision/timestamp/title changed, and rehydrate the visible
+  range. While the editor is open, buffer the index until close as before.
+- `DashboardNoteCard.vue` renders Quick Shortcuts, drafts, archived cards, colors,
+  presence, and all card actions. Keep its markup and the App-level handlers in sync; do
+  not reintroduce a second inline card template.
+- The virtual list is a rendering and detail-cache optimization, not server-side
+  filtering. Search, tags, and sorting remain client-side over the complete index.
 
 ### Whiteboard Pages
 
@@ -404,6 +580,23 @@ corresponding card while any session has that note open.
 - `note_session action=save` commits with source `mcp-open`; it updates the draft base and
   broadcasts `text-saved`. One-shot MCP edits use `source: 'mcp'` and must not move a live
   draft base. Archive/purge/restore/promote and token revocation close affected sessions.
+- `search_notes`/`list_notes` summaries include `archived_at` and `is_archived` when
+  archived rows are included; use these instead of diffing active/all lists.
+- Tags are inline content, so `add_tags`/`remove_tags` edit content and create one
+  revision per changed note. Both accept multiple note ids + `dry_run`; `edit_note` and
+  `append_to_note` also accept `tags`. Use `src/shared/tags.js` helpers, never a raw
+  regex append. Archived notes are skipped/`note_archived` until restored.
+- `purge_note` permanently deletes one archived note (preview without `confirm: true`,
+  optional `expected_title`). `purge_archived` previews by default; bulk purge requires
+  `expected_count`, while an explicit `note_ids` subset does not. Both reject active notes
+  and require no open write session. `archive_note` remains the reversible operation.
+- `edit_note`/`append_to_note` return compact note/revision metadata by default; pass
+  `include_content: true` for full bodies. `get_note` omits canvas `canvasData`/`thumbnail`
+  unless `include_canvas: true` (use `get_whiteboard` for page recall). `append_to_note`
+  normalizes blank lines and accepts `message`.
+- Opening a write/read session on an archived note returns `note_archived` (not
+  `note_not_found`). `note_session close` reports `draft_kept` from the persisted draft
+  row, so a saved clean draft reports `false`.
 - `get_whiteboard` returns ordered image blocks/markdown/URLs; stale renders can ask a
   connected browser via `render-request`. No server-side rendering.
 - Token management: UI 🔌 modal, `/api/mcp/tokens`, `npm run mcp:token`. Human admins and
@@ -419,7 +612,7 @@ corresponding card while any session has that note open.
 notes (
   id TEXT PK, title, content, type, canvasData, thumbnail, createdAt, updatedAt,
   head_revision_id, revision_no, display_title, content_hash, canvas_hash,
-  archived_at, last_checkpoint_at
+  archived_at, last_checkpoint_at, color
 )
 note_revisions (
   id TEXT PK, note_id, parent_revision_id, revision_no, title, content, display_title,
@@ -453,6 +646,7 @@ whiteboard_tiles (render_id, page_index, image_hash, ...)
 api_tokens (id, name, token_hash, scopes, created_at, last_used_at, revoked_at,
             expires_at, created_by)
 mcp_settings (id=1, max_write_sessions, max_read_sessions, updated_at)
+app_settings (key, value, updated_at)                     -- runtime UI overrides (key='ui')
 ```
 
 **Critical**: `canvas_text` column exists ONLY in `notes_fts`, NOT in `notes`. The
@@ -531,3 +725,18 @@ All notable changes must be recorded in `CHANGELOG.md`. When making changes:
 34. **MCP sessions are per token, not per process**: `authInfo.clientId` is the stable token id in the stateless transport. A token may hold several write sessions (default 5) so multiple sub-agents can share it; `state.writes` is authoritative and `state.write` is the first write for older clients. Do not use a global note lock.
 35. **MCP tools stay stable**: `get_note_state` and `note_session` are always registered. Every result/error includes `state`, `allowed_actions`, and `guide`; do not derive FSM state from `tools/list` or dynamic tool visibility.
 36. **MCP session save source**: `note_session action=save` commits with `source: 'mcp-open'` so the draft base moves and browsers get `text-saved`. One-shot `edit_note`/`append_to_note` use `source: 'mcp'` and must not move a live draft base.
+37. **Quick Shortcuts is virtual**: it is rendered by `dashboardNotes` only in the unfiltered Notes tab. Never insert `__quick_shortcuts__` into `noteIndex`, `sortedNotes`, selection, search, tags, counts, or API calls. Hide its card controls via `isQuickShortcuts`; do not reintroduce a separate card template.
+38. **Note colors are head metadata**: update `notes.color` only. Do not create a revision, bump `updatedAt`, or copy the tint into `note_revisions`; archived card styles must stay after `.note-color-*`.
+39. **Archived, Notes, and Drafts stay separate**: `dashboardTab` drives the lists; do not reintroduce a `showArchived` toggle that mixes archived rows into Notes. Switching tabs must clear selection.
+40. **Drafts are `note_text_docs`**: Draft closes the editor without discarding, Discard removes the shared document for the last editor, and only Save commits a revision. `GET /api/drafts` must omit clean and archived drafts; New Note has no draft because it has no note id yet.
+41. **MCP tag edits are content edits**: use `addTagsToContent`/`removeTagsFromContent` from `src/shared/tags.js`; they preserve code blocks and hierarchical exact matches. Do not append raw `#tags` in the MCP layer. Tag operations create revisions, and archived notes are rejected (`note_archived`).
+42. **MCP purge is archived-only and guarded**: `purge_note` requires `confirm: true`; `purge_archived` previews unless confirmed and requires `expected_count` for an all-archived purge. Never expose an unguarded delete action or purge active notes through these tools.
+43. **MCP mutation responses are compact by default**: return note/revision summaries unless `include_content: true`; strip canvas payloads from `get_note` unless `include_canvas: true`. Do not reintroduce full base64/canvas blobs into list or mutation output.
+44. **Single tildes are literal**: marked's GFM tokenizer accepts `~text~`. Keep the `literalTilde` inline extension so `~/.config` paths do not become `<del>` spans and do not round-trip into `~~`. Only `~~text~~` is strikethrough. `editorDirty` tracks un-serialised DOM edits only; `applySharedText`/`syncVisualEditor` must clear it so clean mode switches do not rewrite source.
+45. **Paste defaults to plain text**: plain mode uses `text/plain` and `insertPlainTextAtCursor`; rich mode (toolbar `pasteMode`, persisted in localStorage) uses `htmlToMarkdown` + `insertMarkdownAsRich` (Visual) or `insertMarkdownAtCursor` (Source). Keep plain as the default: HTML conversion is lossy for underline/highlight/spans and complex tables. Clipboard image files are the only non-text exception. `htmlToMarkdown` must keep the double-tilde strike rule, Google Docs wrapper cleanup, table-header promotion, and fenced `<pre>` handling.
+46. **The dashboard is index-first**: never restore `notes.value` as a full-note array. `noteIndex` drives ordering, tabs, counts, search, tags, links, and selection; `noteDetails` only holds card bodies/thumbnails for the bounded visible window. Use `patchNote`/`upsertNote` instead of mutating index entries.
+47. **Virtual rows must keep fixed height**: `RecycleScroller` item size is `396px` (380px card + 16px gap). If card height or grid gap changes, update `NOTE_ROW_HEIGHT` and the design/spec together. Keep `:emit-update="true"`; without it the visible-range hydration never fires (cards stay skeletons after scrolling).
+48. **Canvas cards and full notes are separate**: `/api/notes/window` omits `canvasData`, so whiteboards must go through `openNoteById`/`ensureNoteDetail` before `openCanvasNote`. Do not render a whiteboard from a card DTO. The WebSocket `notes` payload is an index, not full notes; do not assume `content` or `canvasData` exists on `data.notes`.
+49. **Search order is the ranking**: dashboard search must call `/api/search/hybrid` when hybrid is enabled and must render ids in returned order (default **Relevance**). Never re-sort search results by `updatedAt`; that silently discards BM25, cosine similarity, and RRF. The hybrid toggle defaults on when `/api/config.search.semanticEnabled`, is opt-out per browser, and falls back to keyword with the server `notice`. Search requests carry a sequence guard so stale responses cannot overwrite newer rankings.
+50. **Qwen3 queries need the instruction, documents do not**: `embeddingQueryInput()` adds the Qwen3-Embedding retrieval instruction only at query time. Do not add it to indexed chunks and do not send it to the reranker. Without it, short queries compress to ~0.5 similarity and rank unrelated notes first; no reindex is needed after adding it.
+51. **Keyboard shortcuts are declarative but handled**: every `data-shortcut` must have a visible button and a unique combo within its overlay context. The dispatcher only clicks the topmost visible layer; do not add hints for unhandled or background actions. Keep plain keys blocked in text entry, keep the focused form preference for `Mod+Enter`, and keep `Esc` on the topmost overlay close button.

@@ -2,13 +2,14 @@
   <aside class="tag-sidebar">
     <div class="tag-sidebar-header">
       <h3>🏷 Tags</h3>
-      <button type="button" class="tag-sidebar-close" @click="$emit('close')" title="Close tags">×</button>
+      <button type="button" class="tag-sidebar-close" :data-shortcut="shortcut('tagClose')" @click="$emit('close')" title="Close tags">×</button>
     </div>
 
     <button
       type="button"
       class="tag-row tag-row-root"
       :class="{ active: !activeTag && !untaggedOnly }"
+      :data-shortcut="shortcut('tagAll')"
       @click="$emit('select', { tag: null })"
     >
       <span class="tag-name">All notes</span>
@@ -19,6 +20,7 @@
       type="button"
       class="tag-row tag-row-root"
       :class="{ active: untaggedOnly }"
+      :data-shortcut="shortcut('tagUntagged')"
       @click="$emit('select', { tag: '__untagged__' })"
     >
       <span class="tag-name">Untagged</span>
@@ -31,7 +33,6 @@
         :key="node.tag"
         class="tag-row"
         :class="{ active: activeTag === node.tag }"
-        :style="{ paddingLeft: (10 + node.depth * 14) + 'px' }"
         @click="$emit('select', { tag: node.tag })"
       >
         <button
@@ -41,7 +42,7 @@
           @click.stop="toggle(node.tag)"
           :title="collapsed.has(node.tag) ? 'Expand' : 'Collapse'"
         >{{ collapsed.has(node.tag) ? '▸' : '▾' }}</button>
-        <span v-else class="tag-toggle-spacer"></span>
+        <span v-else class="tag-leaf-icon"><AppIcon name="tag" :size="12" /></span>
         <span class="tag-name">{{ node.name }}</span>
         <span class="tag-count" :title="node.direct + ' direct / ' + node.total + ' including children'">{{ node.total }}</span>
       </div>
@@ -52,17 +53,22 @@
 
 <script>
 import { computed, ref } from 'vue'
+import AppIcon from './AppIcon.vue'
+import { SHORTCUTS, shortcutLabel } from '../shared/shortcuts.js'
 
 export default {
   name: 'TagSidebar',
+  components: { AppIcon },
   props: {
     tree: { type: Object, default: () => ({ tags: [], totalNotes: 0, untaggedCount: 0 }) },
     activeTag: { type: String, default: null },
-    untaggedOnly: { type: Boolean, default: false }
+    untaggedOnly: { type: Boolean, default: false },
+    modKey: { type: String, default: 'Ctrl' }
   },
   emits: ['select', 'close'],
   setup(props) {
     const collapsed = ref(new Set())
+    const shortcut = (id) => shortcutLabel(SHORTCUTS[id], props.modKey)
 
     function walk(nodes, depth, out) {
       for (const node of nodes) {
@@ -90,7 +96,7 @@ export default {
       collapsed.value = next
     }
 
-    return { collapsed, flatTags, toggle }
+    return { collapsed, flatTags, toggle, shortcut }
   }
 }
 </script>
@@ -193,8 +199,13 @@ export default {
   font-size: 0.7rem;
 }
 
-.tag-toggle-spacer {
+.tag-leaf-icon {
   width: 1rem;
+  flex: 0 0 1rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #80868b;
 }
 
 .tag-tree {

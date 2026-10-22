@@ -291,7 +291,12 @@ test('MCP sessions use stable tools, explicit state, multiple writes, and reads'
       }
     }))
     assert.equal(oneshot.conflict, false)
-    assert.equal(oneshot.note.content, 'final content')
+    assert.equal(oneshot.note.contentLength, 'final content'.length)
+    const finalNote = jsonResult(await clientA.callTool({
+      name: 'get_note',
+      arguments: { note_id: note.id }
+    }))
+    assert.equal(finalNote.note.content, 'final content')
   } finally {
     if (clientA) await clientA.close().catch(() => {})
     if (clientB) await clientB.close().catch(() => {})

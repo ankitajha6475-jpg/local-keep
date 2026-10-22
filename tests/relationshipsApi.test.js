@@ -37,6 +37,25 @@ test('relationships/tags API: links, backlinks, filters, graph', async () => {
     assert.equal(backlinks[0].sourceNoteId, a.id)
     assert.match(backlinks[0].context, /\[\[Beta\]\]/)
 
+    const c = await request('POST', '/api/notes', {
+      title: 'Gamma',
+      content: 'See [[Beta]] and [[Alpha]]'
+    })
+    const summary = await request('POST', '/api/notes/links/summary', {
+      ids: [a.id, b.id],
+      includeArchived: true
+    })
+    assert.equal(summary.noteIds.length, 2)
+    assert.ok(summary.outgoing.some(entry => entry.targetNoteId === b.id))
+    const sourceC = summary.incoming.find(entry => entry.sourceNoteId === c.id)
+    assert.ok(sourceC)
+    assert.deepEqual(sourceC.links.map(link => link.targetNoteId).sort(), [a.id, b.id].sort())
+
+    await assert.rejects(
+      request('POST', '/api/notes/links/summary', { ids: [] }),
+      /non-empty array/
+    )
+
     const graph = await request('GET', `/api/graph?noteId=${a.id}&depth=1`)
     assert.equal(graph.nodes.some(n => n.id === a.id), true)
     assert.equal(graph.nodes.some(n => n.id === b.id), true)
@@ -52,7 +71,8 @@ test('relationships/tags API: links, backlinks, filters, graph', async () => {
       baseRevisionId: a.revisionId
     })
     assert.deepEqual(await request('GET', `/api/notes?tag=project`), [])
-    assert.deepEqual(await request('GET', `/api/notes/${b.id}/backlinks`), [])
+    const remainingBacklinks = await request('GET', `/api/notes/${b.id}/backlinks`)
+    assert.equal(remainingBacklinks.some(link => link.sourceNoteId === a.id), false)
   } finally {
     await server.stop()
   }

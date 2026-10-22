@@ -262,6 +262,58 @@ export function createTextCollabService({ db, persistDelay = DEFAULT_PERSIST_MS 
     try { deleteDoc.run(noteId) } catch (_) { /* note may already be gone */ }
   }
 
+  /**
+   * Dashboard draft listing. Read each persisted Yjs document without keeping
+   * it in the live `docs` map; clean drafts (same title/content as the head)
+   * are omitted.
+   */
+  function listDrafts() {
+    const rows = db.prepare(`
+      SELECT d.note_id, d.update_data, d.base_revision_id, d.updated_at,
+             n.title, n.content, n.type, n.color, n.head_revision_id, n.revision_no
+      FROM note_text_docs d
+      JOIN notes n ON n.id = d.note_id
+      WHERE n.archived_at IS NULL
+      ORDER BY d.updated_at DESC
+    `).all()
+
+    const drafts = []
+    for (const row of rows) {
+      const doc = new Y.Doc()
+      try {
+        Y.applyUpdate(doc, row.update_data, 'list-drafts')
+        const title = doc.getMap('meta').get('title') || ''
+        const content = doc.getText('content').toString()
+        if (title === (row.title || '') && content === (row.content || '')) continue
+        drafts.push({
+          noteId: row.note_id,
+          title,
+          content,
+          headTitle: row.title || '',
+          noteType: row.type || 'text',
+          color: row.color || null,
+          baseRevisionId: row.base_revision_id || null,
+          headRevisionId: row.head_revision_id || null,
+          revisionNo: row.revision_no || 1,
+          updatedAt: row.updated_at
+        })
+      } catch (_) {
+        // Ignore a corrupt draft row; the head remains usable.
+      } finally {
+        try { doc.destroy() } catch (_) { /* noop */ }
+      }
+    }
+    return drafts
+  }
+
+  function hasDraft(noteId) {
+    try {
+      return !!db.prepare('SELECT 1 AS present FROM note_text_docs WHERE note_id = ?').get(noteId)
+    } catch (_) {
+      return false
+    }
+  }
+
   function flushAll() {
     for (const noteId of [...docs.keys()]) persistNow(noteId)
   }
@@ -278,6 +330,8 @@ export function createTextCollabService({ db, persistDelay = DEFAULT_PERSIST_MS 
     resetToHead,
     discard,
     discardIfClean,
+    listDrafts,
+    hasDraft,
     flushAll
   }
 }

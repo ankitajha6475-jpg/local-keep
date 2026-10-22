@@ -6,7 +6,48 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+- Dashboard hybrid search now calls `/api/search/hybrid`, defaults on when embeddings are configured, and preserves RRF/vector/keyword result order via a **Relevance** sort instead of re-sorting every result by last-modified time
+- Qwen3-Embedding queries now include the model's retrieval instruction, fixing compressed/irrelevant rankings for short Chinese queries such as `云存储` without reindexing
+- Dashboard search, tab, sort, and tag changes now reset the viewport to the top of the note list below the sticky header and controls
+- Single tildes in paths such as `~/.config` no longer render as false strikethrough or turn into `~~` when Visual mode is serialised; only GFM `~~text~~` is struck through
+- Switching Visual/Source or opening a note with a shared draft no longer re-serialises the rendered DOM, so clean mode switches keep the source unchanged
+- MCP sessions opened on archived notes now return `note_archived` with a restore guide instead of `note_not_found`
+- `note_session close` now reports `draft_kept` from the persisted draft row, so a saved clean draft reports `false`
+- The dashboard header and the sort/selection action bar now stay pinned while the note list scrolls, with the bar offset following the measured header height
+- Header branding and controls now use the same centered 1200px container as the workspace, aligning the Local Keep logo with the tags sidebar and note grid
+- Long note titles now wrap to two lines and truncate with an ellipsis instead of overflowing the card
+
+### Changed
+- Shortcut hints now reveal while holding Ctrl/Cmd as well as Alt/Option, and every unique workspace action button has a shortcut; a central shortcut map and topmost-overlay dispatcher handle tabs, filters, selection, dialogs, editor modes, and admin actions
+- Tag sidebar leaf rows now use a tag icon instead of depth indentation; parent rows keep their expand/collapse arrow
+- The in-field search clear action now uses a broom icon, leaving the X icon for closing the search bar
+- The dashboard now loads a lightweight note index and renders responsive `vue-virtual-scroller` rows; card bodies hydrate in 30-note batches with a bounded 120-note cache as you scroll, while search, tags, counts, link resolution, and Select All stay complete from the index
+- Pasting defaults to clipboard `text/plain` and inserts it literally in Visual or Source, so Source shows exactly what was pasted; an editor toolbar **Paste: plain/rich** switch enables opt-in HTML-to-markdown conversion (per browser), and clipboard image files remain the non-text exception
+- MCP `edit_note` and `append_to_note` return compact note/revision metadata by default (`include_content: true` for full bodies), accept `tags`, and normalize append blank lines; `get_note` omits canvas payloads unless `include_canvas: true`
+- MCP `list_notes` and `search_notes` summaries now include `archived_at` and `is_archived` when archived rows are included
+- Dashboard views are now split into Notes, Archived, and Drafts tabs; archived notes no longer mix with active notes
+- The editor's bottom Cancel action is now Discard, and the unsaved-changes dialog offers Save, Draft, Discard, and equal-sized Continue
+- Dashboard note cards now use shared tint variables; the Quick Shortcuts tile is a read-only virtual note with the standard card styling and scrollbar
+- Dashboard header chrome refreshed with a gradient brand mark, glassy sticky bar, SVG icon actions, a dot-based sync pill, a compact account menu, and a matching create button
+- Dashboard cards now fill their grid columns and use a soft tint (blue for text notes, purple for whiteboards) with an accent stripe and stronger hover elevation
+
 ### Added
+- `/api/config` now exposes non-secret hybrid-search availability and model/rerank state so the dashboard can default its toggle correctly
+- `GET /api/notes/index` and `POST /api/notes/window` for the virtualized dashboard; the WebSocket `notes` broadcast now carries index summaries instead of full note bodies and canvas scenes
+- `DashboardNoteCard.vue` renders the dashboard card from an index summary plus a hydrated detail, with skeleton previews while a card body arrives
+- MCP `add_tags`/`remove_tags` for one or more notes with `dry_run`, exact hierarchical removal, code-safe content edits, and compact per-note results
+- MCP `purge_note` and `purge_archived` for permanent deletion of archived notes with previews, `expected_title`/`expected_count` guards, and archived-only enforcement
+- Drafts tab and `GET /api/drafts`: browser users can list, open, and retain the shared Yjs drafts already used by MCP sessions; editor Draft keeps changes without committing, and normal cards show a Draft badge
+- Per-note color tints with a palette picker next to the card checkbox; migration 13 adds `notes.color`, and `PUT /api/notes/:id/color` persists and broadcasts changes without creating revisions
+- Dashboard shortcut hints: holding Alt/Option immediately reveals the Search and Create shortcuts without hovering, while other actions keep their labels; pointer events recover the state when a browser misses the Alt keydown
+- `config.json` and `LOCAL_KEEP_CONFIG` set interface dimensions; admin **🎛 Interface** overrides persist in `app_settings`, apply live over the WebSocket, and can reset to file defaults
+- Note editor modal now defaults to 960×760 (was 620px wide); link dialog, graph, and selection-links panel dimensions are configurable too
+- Link and wiki-link tools now open a modal instead of a native prompt; regular links edit Text + URL, while wiki links search notes live and support arrow-key selection, recent suggestions, and new titles
+- Wiki links now preserve aliases through render → edit → save using `data-note-target`, so `[[Missing note|alias]]` no longer collapses to `[[alias]]`
+- Markdown editor toolbar now covers headings, lists, blockquotes, inline/code blocks, links, wiki links, tables, and horizontal rules in both Visual and Source modes, with platform-aware shortcuts and Alt/Option-revealed shortcut tooltips
+- Multi-select link summary: the selection bar's 🔗 Links action lists what the selected notes link to and what links to them, with Both / Links to / Linked from modes and click-to-open rows
+- `POST /api/notes/links/summary` returns deduplicated outgoing targets and incoming sources with context snippets for up to 2000 selected note ids
 - Embedding batch tuning is stored in `embedding_settings` and edited under Advanced indexing in the admin dialog; defaults for Qwen3-Embedding-8B are 64/2/1/80000 and apply to the next note without restart
 - Embedding variants: table partitions are keyed by model **and** dimensions, so `Qwen/Qwen3-Embedding-8B` at 4096 and 1024 dims use independent tables; Qwen3 defaults to 4096
 - Admin embedding dimensions field and `Reset index` action/API to drop all embedding tables and reindex cleanly

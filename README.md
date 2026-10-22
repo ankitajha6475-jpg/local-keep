@@ -10,10 +10,12 @@ A Google Keep-like notes app with text notes and Excalidraw whiteboard canvas. V
 - Revision history drawer with view, restore, and promote; archive by default with restore
 - Wiki-link relationships (`[[Note]]`), backlinks, and an interactive relationship graph
 - Hierarchical tags (`#area/project/topic`) with a tag tree, counts, and filtering
-- Two editor modes: **Visual** (rendered markdown, images and Mermaid diagrams displayed) and **Source** (raw markdown, images shown as URLs); rich-paste sanitisation and markdown image refs
+- Two editor modes: **Visual** (rendered markdown, images and Mermaid diagrams displayed) and **Source** (raw markdown, images shown as URLs); paste defaults to exact plain text with optional rich HTML conversion and markdown image refs
+- Configurable interface dimensions (note editor, link dialog, graph, links panel) via `config.json` and admin runtime overrides
 - Whiteboard page rendering: ordered page images (left→right, top→bottom) with a Pages drawer
 - Embedded MCP server: search with timestamps, revision threads, links/tags/graph, and whiteboard recall as multiple images
 - Persistent MCP sessions: stable `get_note_state`/`note_session` tools, multiple write sessions (default 5, admin-configurable) plus read sessions per token, explicit state/guide on session and mutation results, and `expected_version` conflict detection
+- MCP administration: batch `add_tags`/`remove_tags` with dry-run, guarded `purge_note`/`purge_archived` previews, archived flags in list/search, and compact mutation responses
 - MCP token management via the 🔌 header dialog or `npm run mcp:token`
 - Excalidraw whiteboard canvas with stylus/finger touch support
 - Real-time sync across multiple tabs/devices via WebSocket, including character-level live text collaboration on a shared draft
@@ -22,11 +24,12 @@ A Google Keep-like notes app with text notes and Excalidraw whiteboard canvas. V
 - Admin user management and password reset (UI or `npm run auth:reset`)
 - HTTPS using the shared local mkcert certificate
 - Optional semantic search with OpenAI-compatible embeddings (SiliconFlow/OpenAI), admin-configured and per-model vector tables via `sqlite-vec`
-- Hybrid keyword + vector search in MCP, REST (`/api/search/semantic`, `/api/search/hybrid`), and the UI search toggle
+- Hybrid keyword + vector search in MCP, REST (`/api/search/semantic`, `/api/search/hybrid`), and the UI search toggle; the dashboard defaults to hybrid when embeddings are configured and keeps RRF relevance order
 - Optional admin-configured rerank (`BAAI/bge-reranker-v2-m3` etc.); vector search works without it
 - Mermaid fenced diagrams rendered lazily in Visual/gallery; Source shows the diagram code
 - Shared live text drafts with explicit Save-to-revision semantics; Yjs CRDT merge and reconnect recovery
 - Presence dots on dashboard cards while a text note, whiteboard, or MCP edit session holds the note open
+- Virtualized dashboard: a lightweight note index drives filters/search/links, responsive rows render through `vue-virtual-scroller`, and card bodies hydrate in bounded 30-note batches as you scroll
 - Auto-save with debounced persistence
 - Whiteboard checkpoints (leave/manual/interval) create canvas revisions
 
@@ -41,6 +44,29 @@ The certificate SAN is the LAN IP, not `localhost`; see [docs/https.md](docs/htt
 
 Existing installs keep working: migration 4 creates an `admin` / `Administrator`
 account from the old single password. See [docs/auth.md](docs/auth.md).
+
+## Configuration
+
+Interface defaults live in [`config.json`](config.json). Set `LOCAL_KEEP_CONFIG`
+to use a different file path. Edit the file and restart the server to change the
+defaults.
+
+Admins can also change the same values at runtime from **avatar → 🎛 Interface**.
+Runtime overrides are stored in the database, apply immediately to connected
+clients via WebSocket, and can be reset to the config-file defaults.
+
+Configurable values (pixels):
+
+| Key | Default | Purpose |
+|---|---:|---|
+| `noteModalWidth` | 960 | Note editor modal width |
+| `noteModalHeight` | 760 | Note editor modal height |
+| `linkDialogWidth` | 540 | Link/wiki-link dialog width |
+| `graphWidth` / `graphHeight` | 1100 / 760 | Relationship graph |
+| `linksPanelWidth` / `linksPanelHeight` | 1100 / 780 | Multi-select links panel |
+
+All dimensions are viewport-capped, so large values still fit small screens.
+
 
 ## Development
 
@@ -82,6 +108,7 @@ SQLite database in `data/local-keep.db` with tables:
 - `whiteboard_renders` / `whiteboard_tiles` — legacy thumbnail page and future page renders
 - `users` — human accounts (username, display name, scrypt hash, role, disabled state)
 - `sessions` — signed session IDs mapped to users, with expiry
+- `app_settings` — runtime interface overrides (JSON key/value)
 - `embedding_settings` / `embedding_models` / `embedding_index_state` — admin embedding config and per-model indexing state
 - `embedding_chunks_emb_<hash>` / `embedding_vec_emb_<hash>` — per-model chunk metadata and `sqlite-vec` vectors
 

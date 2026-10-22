@@ -20,8 +20,8 @@
             >
             Unresolved
           </label>
-          <button type="button" @click="$emit('refresh', { depth, includeUnresolved })">↻ Refresh</button>
-          <button type="button" class="graph-close" @click="$emit('close')">×</button>
+          <button type="button" :data-shortcut="shortcut('graphRefresh')" @click="$emit('refresh', { depth, includeUnresolved })">↻ Refresh</button>
+          <button type="button" class="graph-close" :data-shortcut="shortcut('graphClose')" @click="$emit('close')">×</button>
         </div>
       </div>
       <p v-if="loading" class="graph-loading">Loading graph…</p>
@@ -42,6 +42,7 @@
 
 <script>
 import GraphCanvas from './GraphCanvas.vue'
+import { SHORTCUTS, shortcutLabel } from '../shared/shortcuts.js'
 
 export default {
   name: 'GraphView',
@@ -53,9 +54,15 @@ export default {
     depth: { type: Number, default: 1 },
     includeUnresolved: { type: Boolean, default: false },
     loading: { type: Boolean, default: false },
-    error: { type: String, default: '' }
+    error: { type: String, default: '' },
+    modKey: { type: String, default: 'Ctrl' }
   },
-  emits: ['close', 'refresh', 'open']
+  emits: ['close', 'refresh', 'open'],
+  methods: {
+    shortcut(id) {
+      return shortcutLabel(SHORTCUTS[id], this.modKey)
+    }
+  }
 }
 </script>
 
@@ -72,8 +79,8 @@ export default {
 }
 
 .graph-panel {
-  width: min(1100px, 96vw);
-  height: min(760px, 92vh);
+  width: min(var(--graph-width, 1100px), 96vw);
+  height: min(var(--graph-height, 760px), 92vh);
   background: #fff;
   border-radius: 12px;
   box-shadow: 0 18px 48px rgba(0, 0, 0, 0.3);

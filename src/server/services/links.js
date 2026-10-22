@@ -138,6 +138,107 @@ export function createLinkService({ db }) {
       }))
   }
 
+  function chunk(ids, size = 400) {
+    const chunks = []
+    for (let index = 0; index < ids.length; index += size) {
+      chunks.push(ids.slice(index, index + size))
+    }
+    return chunks
+  }
+
+  function summary(noteIds, { includeArchived = false } = {}) {
+    const ids = [...new Set(
+      (Array.isArray(noteIds) ? noteIds : []).filter(id => typeof id === 'string' && id)
+    )]
+    const outgoingByKey = new Map()
+    const incomingBySource = new Map()
+    if (ids.length === 0) return { noteIds: [], outgoing: [], incoming: [] }
+
+    for (const group of chunk(ids)) {
+      const placeholders = group.map(() => '?').join(',')
+
+      const outRows = db.prepare(`
+        SELECT l.*, s.title AS source_title, s.display_title AS source_display_title,
+               s.content AS source_content,
+               t.title AS target_title, t.display_title AS target_display_title,
+               t.type AS target_type, t.archived_at AS target_archived
+        FROM note_links l
+        JOIN notes s ON s.id = l.source_note_id
+        LEFT JOIN notes t ON t.id = l.target_note_id
+        WHERE l.source_note_id IN (${placeholders})
+        ORDER BY s.updatedAt DESC, l.id ASC
+      `).all(...group)
+
+      for (const row of outRows) {
+        const key = row.target_note_id
+          ? `note:${row.target_note_id}`
+          : `label:${row.status}:${normalizeLinkTitle(row.target_label)}`
+        let entry = outgoingByKey.get(key)
+        if (!entry) {
+          entry = {
+            targetNoteId: row.target_note_id || null,
+            title: row.target_title || row.target_label,
+            displayTitle: row.target_display_title || null,
+            type: row.target_type || 'unresolved',
+            status: row.status,
+            archived: !!row.target_archived,
+            links: []
+          }
+          outgoingByKey.set(key, entry)
+        }
+        entry.links.push({
+          sourceNoteId: row.source_note_id,
+          sourceTitle: row.source_title,
+          sourceDisplayTitle: row.source_display_title,
+          label: row.label,
+          raw: row.raw,
+          status: row.status,
+          context: snippet(row.source_content || '', row.raw)
+        })
+      }
+
+      const inRows = db.prepare(`
+        SELECT l.*, s.title AS source_title, s.display_title AS source_display_title,
+               s.type AS source_type, s.archived_at AS source_archived,
+               s.updatedAt AS source_updated_at, s.content AS source_content
+        FROM note_links l
+        JOIN notes s ON s.id = l.source_note_id
+        WHERE l.target_note_id IN (${placeholders})
+        ORDER BY s.updatedAt DESC, l.id ASC
+      `).all(...group)
+
+      for (const row of inRows) {
+        if (!includeArchived && row.source_archived) continue
+        let entry = incomingBySource.get(row.source_note_id)
+        if (!entry) {
+          entry = {
+            sourceNoteId: row.source_note_id,
+            sourceTitle: row.source_title,
+            sourceDisplayTitle: row.source_display_title,
+            sourceType: row.source_type,
+            sourceUpdatedAt: row.source_updated_at,
+            archived: !!row.source_archived,
+            links: []
+          }
+          incomingBySource.set(row.source_note_id, entry)
+        }
+        entry.links.push({
+          targetNoteId: row.target_note_id,
+          label: row.label,
+          raw: row.raw,
+          status: row.status,
+          context: snippet(row.source_content || '', row.raw)
+        })
+      }
+    }
+
+    return {
+      noteIds: ids,
+      outgoing: [...outgoingByKey.values()],
+      incoming: [...incomingBySource.values()]
+    }
+  }
+
   function countsByNote(noteIds) {
     const result = new Map()
     const ids = [...new Set(noteIds)].filter(Boolean)
@@ -301,6 +402,7 @@ export function createLinkService({ db }) {
     resolveAll,
     outgoing,
     backlinks,
+    summary,
     countsByNote,
     graph,
     deleteNote

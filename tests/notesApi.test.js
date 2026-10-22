@@ -2,6 +2,44 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { startTestServer } from './helpers/serverProcess.js'
 
+test('notes API: color tint persists without creating a revision', async () => {
+  const server = await startTestServer()
+  try {
+    const token = await server.setupAuth()
+    const request = server.client(token)
+
+    const created = await request('POST', '/api/notes', {
+      title: 'Tinted',
+      content: 'color me'
+    })
+    assert.equal(created.color, null)
+
+    const green = await request('PUT', `/api/notes/${created.id}/color`, { color: 'green' })
+    assert.equal(green.color, 'green')
+    assert.equal(green.revisionNo, created.revisionNo, 'color does not create a revision')
+
+    const listed = await request('GET', '/api/notes')
+    assert.equal(listed.find(note => note.id === created.id).color, 'green')
+
+    const edited = await request('PUT', `/api/notes/${created.id}`, {
+      title: 'Tinted',
+      content: 'still tinted',
+      baseRevisionId: created.revisionId
+    })
+    assert.equal(edited.color, 'green', 'editing preserves the tint')
+
+    await assert.rejects(
+      () => request('PUT', `/api/notes/${created.id}/color`, { color: 'neon' }),
+      error => error.status === 400
+    )
+
+    const reset = await request('PUT', `/api/notes/${created.id}/color`, { color: null })
+    assert.equal(reset.color, null)
+  } finally {
+    await server.stop()
+  }
+})
+
 test('notes API: revisions, stable ids, branch, archive, restore, purge', async () => {
   const server = await startTestServer()
   try {
@@ -85,6 +123,60 @@ test('notes API: revisions, stable ids, branch, archive, restore, purge', async 
     await assert.rejects(
       () => request('GET', `/api/notes/${created.id}/history`),
       error => error.status === 404
+    )
+  } finally {
+    await server.stop()
+  }
+})
+
+test('notes API: dashboard index and ordered card window omit heavy payloads', async () => {
+  const server = await startTestServer()
+  try {
+    const token = await server.setupAuth()
+    const request = server.client(token)
+
+    const alpha = await request('POST', '/api/notes', {
+      title: 'Alpha',
+      content: '#tag alpha body'
+    })
+    const beta = await request('POST', '/api/notes', {
+      title: 'Beta',
+      content: 'beta body'
+    })
+    const canvas = await request('POST', '/api/notes', {
+      type: 'canvas',
+      title: 'Board',
+      canvasData: JSON.stringify({ elements: [{ id: 'rect' }], files: {} }),
+      thumbnail: 'data:image/png;base64,AAAA'
+    })
+    const longNote = await request('POST', '/api/notes', {
+      title: 'Long',
+      content: 'x'.repeat(13000)
+    })
+    await request('DELETE', `/api/notes/${beta.id}`)
+
+    const index = await request('GET', '/api/notes/index?includeArchived=1')
+    assert.equal(index.length, 4)
+    const alphaIndex = index.find(note => note.id === alpha.id)
+    assert.equal(alphaIndex.title, 'Alpha')
+    assert.deepEqual(alphaIndex.tags, ['tag'])
+    assert.equal(Object.prototype.hasOwnProperty.call(alphaIndex, 'content'), false)
+    assert.equal(Object.prototype.hasOwnProperty.call(alphaIndex, 'canvasData'), false)
+    assert.ok(index.find(note => note.id === beta.id).archivedAt)
+
+    const windowed = await request('POST', '/api/notes/window', {
+      ids: [canvas.id, alpha.id, longNote.id, 'missing-note']
+    })
+    assert.deepEqual(windowed.map(note => note.id), [canvas.id, alpha.id, longNote.id])
+    assert.equal(windowed[0].thumbnail, 'data:image/png;base64,AAAA')
+    assert.equal(Object.prototype.hasOwnProperty.call(windowed[0], 'canvasData'), false)
+    assert.equal(windowed[1].content, '#tag alpha body')
+    assert.equal(windowed[2].content.length, 12000)
+    assert.equal(windowed[2].contentTruncated, true)
+
+    await assert.rejects(
+      () => request('POST', '/api/notes/window', { ids: 'not-an-array' }),
+      error => error.status === 400
     )
   } finally {
     await server.stop()

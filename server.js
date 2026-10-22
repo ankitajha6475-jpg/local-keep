@@ -29,6 +29,8 @@ import { createSearchService } from './src/server/services/search.js'
 import { createEmbeddingService } from './src/server/services/embeddings.js'
 import { createTokenService } from './src/server/services/tokens.js'
 import { createMcpSettingsService } from './src/server/services/mcpSettings.js'
+import { createUiSettingsService } from './src/server/services/uiSettings.js'
+import { loadConfig } from './src/server/config.js'
 import { createUserService } from './src/server/services/users.js'
 import { validatePassword, temporaryPassword } from './src/server/auth/passwords.js'
 import { createMcpServer } from './src/mcp/createServer.js'
@@ -52,6 +54,8 @@ import { migration008EmbeddingVariants } from './src/server/migrations/008-embed
 import { migration009EmbeddingTuning } from './src/server/migrations/009-embedding-tuning.js'
 import { migration010TokenAdmin } from './src/server/migrations/010-token-admin.js'
 import { migration011McpSessionLimits } from './src/server/migrations/011-mcp-session-limits.js'
+import { migration012AppSettings } from './src/server/migrations/012-app-settings.js'
+import { migration013NoteColor } from './src/server/migrations/013-note-color.js'
 
 import debugLib from 'debug'
 const log = debugLib('local-keep:server')
@@ -338,7 +342,7 @@ try {
 try {
   const migration = runMigrations({
     db,
-    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits],
+    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits, migration012AppSettings, migration013NoteColor],
     backupDir: BACKUPS_DIR,
     context: { imageStore }
   })
@@ -367,6 +371,13 @@ const tags = createTagService({ db })
 const links = createLinkService({ db })
 const tokens = createTokenService({ db })
 const mcpSettings = createMcpSettingsService({ db })
+const appConfig = loadConfig()
+const uiSettings = createUiSettingsService({
+  db,
+  defaults: appConfig.ui,
+  filePath: appConfig.filePath,
+  fileError: appConfig.fileError
+})
 const embeddings = createEmbeddingService({ db, dataDir: DATA_DIR, tags })
 const revisions = createRevisionService({ db, imageStore, imageRefs, bus, tags, links, embeddings })
 const textCollab = createTextCollabService({ db })
@@ -394,7 +405,11 @@ const mcpEditing = createMcpEditingService({
         try { textCollab.discardIfClean(session.noteId) } catch (_) { /* best effort */ }
       }
     }
-    return { discarded, remaining }
+    return {
+      discarded,
+      remaining,
+      draftKept: textCollab.hasDraft(session.noteId)
+    }
   },
   onDraftChange(noteId, update) {
     if (!update?.length) return
@@ -470,7 +485,7 @@ try {
 }
 
 function getAllNotes() {
-  return notesService.listNotes()
+  return notesService.listNoteIndex({ includeArchived: true })
 }
 
 // Middleware
@@ -1188,6 +1203,50 @@ app.put('/api/mcp/settings', checkAuth, requireAdmin, (req, res) => {
   } catch (e) { sendServiceError(res, e) }
 })
 
+app.get('/api/config', checkAuth, (req, res) => {
+  try {
+    const embeddingStatus = embeddings.status()
+    const settings = embeddingStatus.settings
+    res.json({
+      ui: uiSettings.get().ui,
+      search: {
+        semanticEnabled: !!(settings.enabled && settings.model &&
+          settings.dimensions && embeddingStatus.vector.loaded),
+        model: settings.model || null,
+        rerankEnabled: !!(settings.rerankEnabled && settings.rerankModel)
+      }
+    })
+  } catch (e) { sendServiceError(res, e) }
+})
+
+app.get('/api/admin/config', checkAuth, requireAdmin, (req, res) => {
+  try { res.json(uiSettings.get()) } catch (e) { sendServiceError(res, e) }
+})
+
+app.put('/api/admin/config', checkAuth, requireAdmin, (req, res) => {
+  try {
+    const result = uiSettings.update(req.body?.ui)
+    res.json(result)
+    broadcastToAllClients({ type: 'config', config: { ui: result.ui } })
+  } catch (e) { sendServiceError(res, e) }
+})
+
+app.delete('/api/admin/config', checkAuth, requireAdmin, (req, res) => {
+  try {
+    const result = uiSettings.reset()
+    res.json(result)
+    broadcastToAllClients({ type: 'config', config: { ui: result.ui } })
+  } catch (e) { sendServiceError(res, e) }
+})
+
+app.get('/api/drafts', checkAuth, (req, res) => {
+  try {
+    res.json(textCollab.listDrafts())
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
 app.get('/api/notes', checkAuth, (req, res) => {
   try {
     const notes = notesService.listNotes({
@@ -1224,9 +1283,51 @@ app.post('/api/notes', checkAuth, (req, res) => {
   }
 })
 
+app.get('/api/notes/index', checkAuth, (req, res) => {
+  try {
+    res.json(notesService.listNoteIndex({
+      includeArchived: req.query.includeArchived !== '0' && req.query.includeArchived !== 'false'
+    }))
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.post('/api/notes/window', checkAuth, (req, res) => {
+  try {
+    const ids = req.body?.ids
+    if (!Array.isArray(ids)) {
+      return res.status(400).json({ error: 'ids must be an array' })
+    }
+    if (ids.length > 200) {
+      return res.status(400).json({ error: 'At most 200 note ids are allowed' })
+    }
+    res.json(notesService.listNoteCardsByIds(ids))
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
 app.get('/api/notes/:id', checkAuth, (req, res) => {
   try {
     res.json(notesService.getNote(req.params.id))
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.post('/api/notes/links/summary', checkAuth, (req, res) => {
+  try {
+    const ids = req.body?.ids
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: 'ids must be a non-empty array', code: 'invalid_ids' })
+    }
+    if (ids.length > 2000) {
+      return res.status(400).json({ error: 'At most 2000 note ids are supported', code: 'too_many_ids' })
+    }
+    res.json(links.summary(ids, {
+      includeArchived: req.body?.includeArchived === true || req.body?.includeArchived === 1
+    }))
   } catch (error) {
     sendServiceError(res, error)
   }
@@ -1314,6 +1415,20 @@ app.put('/api/notes/:id', checkAuth, (req, res) => {
     })
     res.json(updated)
     broadcastNotes()
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.put('/api/notes/:id/color', checkAuth, (req, res) => {
+  try {
+    const note = notesService.setNoteColor(req.params.id, req.body?.color ?? null)
+    res.json(note)
+    broadcastToAllClients({
+      type: 'note-color',
+      noteId: note.id,
+      color: note.color ?? null
+    })
   } catch (error) {
     sendServiceError(res, error)
   }
@@ -1617,6 +1732,7 @@ wss.on('connection', (ws, req) => {
   // Send current notes immediately on connection
   const notes = getAllNotes()
   ws.send(JSON.stringify({ type: 'notes', notes }))
+  ws.send(JSON.stringify({ type: 'config', config: { ui: uiSettings.get().ui } }))
   ws.send(JSON.stringify({ type: 'presence', presence: presenceSnapshot() }))
 
   ws.on('close', () => {

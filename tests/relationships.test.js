@@ -52,6 +52,52 @@ test('tags and wiki links are indexed, resolved, and filterable', () => {
   }
 })
 
+test('bulk link summary groups targets and sources across a selection', () => {
+  const ctx = createFreshContext()
+  try {
+    const c = ctx.notes.createNote({ title: 'C', content: 'C body' })
+    ctx.notes.createNote({ title: 'D', content: 'D body' })
+    const a = ctx.notes.createNote({
+      title: 'A',
+      content: '[[C]] and [[C|again]] and [[D]] and [[Missing]]'
+    })
+    const b = ctx.notes.createNote({ title: 'B', content: '[[C]]' })
+    const e = ctx.notes.createNote({ title: 'E', content: 'From E: [[A]] and [[B]]' })
+
+    const summary = ctx.links.summary([a.id, b.id])
+    const targetC = summary.outgoing.find(entry => entry.targetNoteId === c.id)
+    assert.ok(targetC)
+    assert.equal(targetC.links.length, 3)
+    assert.ok(targetC.links.some(link => link.sourceNoteId === a.id))
+    assert.ok(targetC.links.some(link => link.sourceNoteId === b.id))
+    assert.match(targetC.links[0].context, /\[\[C\]\]/)
+
+    const missing = summary.outgoing.find(entry => entry.title === 'Missing')
+    assert.equal(missing.targetNoteId, null)
+    assert.equal(missing.status, 'unresolved')
+
+    const sourceE = summary.incoming.find(entry => entry.sourceNoteId === e.id)
+    assert.ok(sourceE)
+    assert.equal(sourceE.links.length, 2)
+    assert.deepEqual(sourceE.links.map(link => link.targetNoteId).sort(), [a.id, b.id].sort())
+
+    ctx.notes.archiveNote(e.id)
+    assert.equal(
+      ctx.links.summary([a.id, b.id]).incoming.some(entry => entry.sourceNoteId === e.id),
+      false
+    )
+    assert.equal(
+      ctx.links.summary([a.id, b.id], { includeArchived: true })
+        .incoming.find(entry => entry.sourceNoteId === e.id).archived,
+      true
+    )
+
+    assert.deepEqual(ctx.links.summary([]), { noteIds: [], outgoing: [], incoming: [] })
+  } finally {
+    ctx.cleanup()
+  }
+})
+
 test('ambiguous titles are marked and explicit ids are stable', () => {
   const ctx = createFreshContext()
   try {

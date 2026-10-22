@@ -92,11 +92,14 @@ stdio because it runs as a local process with direct database access.
 |---|---|
 | `search_notes` | Full-text or semantic/hybrid search (`mode`), tag/type/date filters; returns timestamps, revision, tags, links, whiteboard render info |
 | `semantic_search` | Vector similarity search using the admin-configured embedding model |
-| `list_notes` | Same summary shape without a query |
-| `get_note` | Markdown, metadata, optional history/links/backlinks, whiteboard summary |
+| `list_notes` | Same summary shape without a query; `include_archived` adds `archived_at` and `is_archived` |
+| `get_note` | Markdown, metadata, optional history/links/backlinks, whiteboard summary. Canvas payloads are omitted unless `include_canvas: true` |
 | `create_note` | Create revision 1; accepts tags and related note ids |
-| `edit_note` | One-shot edit; commits a revision. `commit_mode` controls stale-base behavior (`append`, `branch`, `take_head`) |
-| `append_to_note` | One-shot append as a new revision |
+| `edit_note` | One-shot edit; commits a revision. Accepts `tags`, `message`, and `include_content`. `commit_mode` controls stale-base behavior (`append`, `branch`, `take_head`) |
+| `append_to_note` | One-shot append as a new revision. Accepts `tags`, `message`, and `include_content`; normalizes trailing/leading blank lines |
+| `add_tags` / `remove_tags` | Add or remove exact inline tags on one or more notes. Supports `dry_run`; returns compact per-note results |
+| `purge_note` | Permanently delete one archived note, its revisions, and image refs. Requires `confirm: true`; previews without it |
+| `purge_archived` | Preview or permanently delete archived notes. Bulk purge requires `expected_count`; supports an explicit `note_ids` subset |
 | `get_note_state` | Always available; return the token's write/read sessions, allowed actions, and next-step guide |
 | `note_session` | Always available; open/read/edit/save/close persistent sessions |
 | `get_thread` | Revision tree / head-chain markers; `format: "text"` for ASCII |
@@ -197,6 +200,8 @@ Every search hit includes:
   "tags": ["project/local-keep"],
   "created_at": "2026-10-01T10:00:00.000Z",
   "updated_at": "2026-10-21T09:00:00.000Z",
+  "archived_at": null,
+  "is_archived": false,
   "revision_created_at": "2026-10-21T09:00:00.000Z",
   "revision_no": 2,
   "score": -1.2,
@@ -205,7 +210,9 @@ Every search hit includes:
 }
 ```
 
-Canvas hits also include `tile_count`, `rendered_at`, and `stale`.
+Canvas hits also include `tile_count`, `rendered_at`, and `stale`. When
+`include_archived: true` is used, archived rows carry their `archived_at` timestamp
+and `is_archived: true`; no separate archived-only query is needed.
 
 ### Semantic search
 
@@ -228,12 +235,12 @@ notice.
 ### Threads and edit notices
 
 `get_thread` returns flat revisions plus a tree; `onHeadChain` marks the current chain.
-`edit_note` returns:
+`edit_note` and `append_to_note` return compact metadata by default:
 
 ```json
 {
-  "note": { "id": "stable-note-id", "revisionNo": 3, "...": "..." },
-  "revision": { "id": "new-revision-id", "revisionNo": 3, "...": "..." },
+  "note": { "id": "stable-note-id", "revisionNo": 3, "tags": ["project"], "contentLength": 128 },
+  "revision": { "id": "new-revision-id", "revisionNo": 3, "message": "..." },
   "previous_revision": { "id": "...", "revisionNo": 2 },
   "conflict": false,
   "notice": "Saved revision 3; revision 2 kept.",
@@ -244,9 +251,55 @@ notice.
 }
 ```
 
+Pass `include_content: true` to return the full note and revision bodies. `get_note`
+still returns markdown; for canvas notes it omits `canvasData`/`thumbnail` unless
+`include_canvas: true` (use `get_whiteboard` for page recall).
+
 If `base_revision_id` is stale, the default is to keep the edit as a **branch** and leave
 the head unchanged. Use `commit_mode: "take_head"` only when you intentionally want to
 replace the head. The note id never changes.
+
+### Tags
+
+Tags are inline markdown (`#area/project`). `add_tags` and `remove_tags` operate on one
+or more notes and create one revision per changed note:
+
+```json
+{
+  "name": "add_tags",
+  "arguments": {
+    "note_ids": ["note-a", "note-b"],
+    "tags": ["project/local", "#mcp"],
+    "dry_run": true
+  }
+}
+```
+
+The result is a compact per-note list with `added`/`removed`, the current `tags`, revision
+number, and `conflict`. Use `dry_run: true` first for bulk changes. Archived notes are
+skipped with `skipped: "note_archived"`; call `restore_note` first. `edit_note` and
+`append_to_note` also accept `tags` for combined edits.
+
+### Archived cleanup and permanent deletion
+
+`purge_note` permanently deletes **one archived note**. Without `confirm: true` it returns
+a preview. Optionally pass `expected_title` as a guard:
+
+```json
+{ "name": "purge_note", "arguments": { "note_id": "note-a", "expected_title": "Old note" } }
+```
+
+`purge_archived` previews/deletes archived notes. Purging all archived notes requires an
+`expected_count` from the preview; passing an explicit `note_ids` subset does not:
+
+```json
+{ "name": "purge_archived", "arguments": {} }
+{ "name": "purge_archived", "arguments": { "confirm": true, "expected_count": 16 } }
+```
+
+`archive_note` is reversible; `purge_note`/`purge_archived` are not. Write sessions must be
+closed first, and active notes are never purged by these tools. A write session opened on
+an archived note fails with `note_archived` (not `note_not_found`).
 
 ## Persistent sessions
 
@@ -331,7 +384,7 @@ Open write returns the shared draft plus state:
 | `append` | write | Append markdown |
 | `set_title` | write | Change the draft title |
 | `save` | write | Commit the draft as a revision; the session stays open |
-| `close` | read or write | Release the session; for a write session, `discard: true` deletes the draft only when this is the last editor |
+| `close` | read or write | Release the session; reports `draft_kept` from the persisted draft state. For a write session, `discard: true` deletes the draft only when this is the last editor |
 | `status` | none | Alias for `get_note_state` |
 
 All mutation actions accept `expected_version`. If the shared draft changed, the tool
@@ -342,8 +395,10 @@ Edits go to the same Yjs `note_text_docs` draft used by the browser, so open bro
 MCP edits live. `note_session action=save` creates a normal revision with source
 `mcp-open`; a stale base still creates a branch.
 
-`close` releases the session but keeps the draft by default. `discard: true` removes it
-only if no browser or other MCP session is still editing the note.
+`close` releases the session but keeps a dirty draft by default. `discard: true` removes
+it only if no browser or other MCP session is still editing the note. After a `save`, the
+clean draft is cleaned up and `close` reports `draft_kept: false` rather than treating
+“not explicitly discarded” as a kept draft.
 
 ### Example: write-session limit reached
 
