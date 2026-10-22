@@ -1,7 +1,7 @@
 # Session Log: Editor chrome, toolbar layout, and discoverability fixes
 
 - **Date**: 2026-10-22 18:16
-- **Commit**: _pending_
+- **Commit**: `0d170b4` — feat(editor): streamline editor chrome and Alt-only shortcut reveal
 
 ## Changed Files
 
