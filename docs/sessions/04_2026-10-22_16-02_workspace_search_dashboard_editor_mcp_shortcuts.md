@@ -1,7 +1,7 @@
 # Session Log: Workspace search, dashboard, editor, MCP, and shortcut refinements
 
 - **Date**: 2026-10-22 16:02
-- **Commit**: `d69ce010c008e493ab8de801dc00ac1f8170024d` — feat(workspace): land dashboard, editor, MCP, search, and shortcut refinements
+- **Commit**: `7ed36e84ae7b34112f748ddce33802a4f1ccbd19` — feat(workspace): land dashboard, editor, MCP, search, and shortcut refinements
 
 ## Changed Files
 
