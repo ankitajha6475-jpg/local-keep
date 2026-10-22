@@ -475,6 +475,15 @@ mcp_settings (id=1, max_write_sessions, max_read_sessions, updated_at)
 - On finger lift → restore previous tool
 - Stylus side button: `keyup` with `key: 'Unidentified'`, `keyCode: 0` (no `keydown` in Safari)
 
+## OpenSpec
+
+Behavior changes belong in OpenSpec, even during fast iteration. Create or update a change
+under `openspec/changes/` with proposal/spec/design/tasks artifacts before implementing,
+and sync the delta specs into `openspec/specs/` when the behavior ships. Use the
+`openspec-*` skills or `/opsx-*` commands rather than editing main specs ad hoc. Run
+`openspec validate --strict` before archiving. If a change was implemented without specs,
+use the sync/archive skills as a redemption path and record the retrofit in the changelog.
+
 ## Changelog
 
 All notable changes must be recorded in `CHANGELOG.md`. When making changes:
