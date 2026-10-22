@@ -435,7 +435,10 @@ corresponding card while any session has that note open.
   topmost overlay and clicks it; hidden dashboard buttons are not activated
   while a modal is open. If a form field has focus, a matching submit button in
   that form wins over another form's button in the same modal.
-- Alt/Option **and** Ctrl/Cmd reveal shortcut hints. Plain-key shortcuts are
+- **Alt/Option only** reveals shortcut hints; Ctrl/Cmd alone does not. Bare Alt
+  keydown/keyup is `preventDefault`-ed at window level so the browser (Chrome's
+  menu bar) does not act on it. `Ctrl/Cmd+Alt+…` combos are unaffected because
+  only bare Alt presses are intercepted. Plain-key shortcuts are
   ignored while an input, textarea, select, or contenteditable has focus;
   modifier shortcuts still work (for example `Ctrl+Alt+D` for Draft).
 - `Esc` closes the topmost overlay, `Ctrl/Cmd+Enter` submits the focused form,
@@ -446,7 +449,12 @@ corresponding card while any session has that note open.
   remain native keyboard-accessible controls without ambiguous global bindings.
 - The tag sidebar shows a leaf tag icon instead of depth indentation; parent
   rows keep the expand/collapse arrow. The Quick Shortcuts card documents the
-  core shortcuts and the Alt/Ctrl reveal behavior.
+  core shortcuts and the hold-Alt reveal behavior.
+
+### Tags and sidebar layout
+
+- The tag sidebar is a fixed 230px column with `overflow-x: hidden`; long tag
+  names truncate with an ellipsis so a horizontal scrollbar can never appear.
 
 ### Relationships and Tags
 
@@ -477,7 +485,9 @@ corresponding card while any session has that note open.
 - `PUT /api/notes/:id/color` validates the palette, returns the updated DTO, and
   broadcasts `{ type: 'note-color', noteId, color }`. The dashboard picker sits right of
   the card checkbox; it applies optimistically, reverts on failure, and closes on
-  outside click/Escape.
+  outside click/Escape. `DashboardNoteCard` emits one `{ note, color }` payload;
+  `readNoteColorChange()` unwraps it before calling the API. Do not treat the
+  payload as the note object or the request becomes `/api/notes/undefined/color`.
 - Card tints are shared CSS variables (`--card-surface-*`, `--card-border-color`,
   `--card-accent-*`) set by `.note-color-*` classes. Keep archived rules after color
   classes so archived cards stay muted.

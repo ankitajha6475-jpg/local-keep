@@ -109,6 +109,7 @@ export default {
   background: #fafafa;
   padding: 0.75rem 0.5rem;
   overflow-y: auto;
+  overflow-x: hidden;
   max-height: calc(100vh - 90px);
   position: sticky;
   top: 80px;

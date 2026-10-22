@@ -923,8 +923,7 @@
         >
           <div class="modal-header">
             <h2>
-              {{ editingId ? 'Editing Note' : 'New Note' }}
-              <span v-if="editingId" class="revision-badge">v{{ editingRevisionNo }}</span>
+              Editor
               <span
                 v-if="editingId && textCollabReady"
                 class="text-collab-badge"
@@ -971,42 +970,17 @@
               @blur="applyPendingRemoteTitle"
             >
             <div class="note-editor-toolbar">
-              <div class="editor-mode-switch">
-                <button
-                  type="button"
-                  class="mode-btn"
-                  :class="{ active: editorMode === 'write' }"
-                  :data-shortcut="shortcut('noteVisual')"
-                  @click="setEditorMode('write')"
-                  title="Rendered markdown; images displayed"
-                >Visual</button>
-                <button
-                  type="button"
-                  class="mode-btn"
-                  :class="{ active: editorMode === 'plain' }"
-                  :data-shortcut="shortcut('noteSource')"
-                  @click="setEditorMode('plain')"
-                  title="Raw markdown source; images shown as URLs"
-                >Source</button>
-              </div>
-              <span class="toolbar-divider"></span>
               <MarkdownToolbar
                 :mod-key="modKey"
                 :shortcuts-visible="shortcutsVisible"
                 @command="runEditorCommand"
-              />
-              <span class="toolbar-spacer"></span>
-              <select
-                v-model="pasteMode"
-                class="paste-mode-select"
-                title="Paste behavior: plain keeps clipboard text exactly; rich converts HTML to markdown"
               >
-                <option value="plain">Paste: plain</option>
-                <option value="rich">Paste: rich</option>
-              </select>
-              <button type="button" @click="triggerImageUpload" class="image-btn" :data-shortcut="shortcut('noteInsertImage')" :disabled="imageUploading" title="Insert image">
-                {{ imageUploading ? '⏳' : '🖼️' }}
-              </button>
+                <template #append>
+                  <button type="button" @click="triggerImageUpload" class="image-btn" data-label="Insert image" :data-shortcut="shortcut('noteInsertImage')" :disabled="imageUploading" title="Insert image">
+                    {{ imageUploading ? '⏳' : '🖼️' }}
+                  </button>
+                </template>
+              </MarkdownToolbar>
             </div>
             <div
               v-if="editorMode === 'write'"
@@ -1034,12 +1008,39 @@
               @paste="onMarkdownPaste"
             ></textarea>
             <div class="note-form-actions">
+              <div class="editor-footer-controls">
+                <div class="editor-mode-switch">
+                  <button
+                    type="button"
+                    class="mode-btn"
+                    :class="{ active: editorMode === 'write' }"
+                    :data-shortcut="shortcut('noteVisual')"
+                    @click="setEditorMode('write')"
+                    title="Rendered markdown; images displayed"
+                  >Visual</button>
+                  <button
+                    type="button"
+                    class="mode-btn"
+                    :class="{ active: editorMode === 'plain' }"
+                    :data-shortcut="shortcut('noteSource')"
+                    @click="setEditorMode('plain')"
+                    title="Raw markdown source; images shown as URLs"
+                  >Source</button>
+                </div>
+                <select
+                  v-model="pasteMode"
+                  class="paste-mode-select"
+                  title="Paste behavior: plain keeps clipboard text exactly; rich converts HTML to markdown"
+                >
+                  <option value="plain">Paste: plain</option>
+                  <option value="rich">Paste: rich</option>
+                </select>
+              </div>
               <div class="action-buttons">
                 <button type="submit" class="save-btn" :data-shortcut="shortcut('noteSave')">{{ editingId ? 'Save' : 'Add Note' }}</button>
                 <button v-if="editingId" type="button" @click="draftAndClose" class="draft-btn" :data-shortcut="shortcut('noteDraft')">Draft</button>
                 <button type="button" @click="discardChanges" class="cancel-btn" :data-shortcut="shortcut('noteDiscard')">Discard</button>
               </div>
-              <small>{{ editingId ? `${modKey}+Enter to save` : `${modKey}+Enter to add` }}</small>
             </div>
             <input
               ref="imageUploadInput"
@@ -1233,6 +1234,7 @@ import {
 } from './utils/markdown.js'
 import { serializeEditorToMarkdown as serializeEditorRoot } from './utils/editorSerialize.js'
 import { createTextCollabManager } from './collab/textCollabManager.js'
+import { readNoteColorChange } from './shared/noteColors.js'
 
 const log = debug('local-keep:client')
 const API_BASE = window.location.origin
@@ -2302,20 +2304,28 @@ export default {
     }
 
     function onShortcutRevealDown(e) {
-      if (e.key === 'Alt' || e.key === 'Control' || e.key === 'Meta' ||
-          e.altKey || e.ctrlKey || e.metaKey) {
+      // Bare Alt only: reveal hints and preventDefault so the browser (e.g.
+      // Chrome's menu-bar focus) does not act on the Alt press. Ctrl/Cmd+Alt
+      // combos carry a real key and are never intercepted here.
+      if (e.key === 'Alt' && e.altKey && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault()
         shortcutsVisible.value = true
       }
     }
 
     function onShortcutRevealUp(e) {
-      if (!e.altKey && !e.ctrlKey && !e.metaKey) shortcutsVisible.value = false
+      if (e.key === 'Alt' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault()
+        shortcutsVisible.value = false
+        return
+      }
+      if (!e.altKey) shortcutsVisible.value = false
     }
 
     function onShortcutRevealPointer(e) {
-      // Some environments do not deliver a reliable modifier keydown; a
-      // pointer event with Alt/Ctrl/Cmd held should still reveal hints.
-      if (e.altKey || e.ctrlKey || e.metaKey) shortcutsVisible.value = true
+      // Some environments do not deliver a reliable Alt keydown; a pointer
+      // event with Alt held should still reveal hints. Ctrl/Cmd alone must not.
+      if (e.altKey) shortcutsVisible.value = true
     }
 
     function resetShortcutReveal() {
@@ -3145,20 +3155,22 @@ export default {
       openColorNoteId.value = null
     }
 
-    const setNoteColor = async (note, color) => {
-      const next = color || null
-      const previous = note.color || null
+    // DashboardNoteCard emits a single { note, color } payload for this action.
+    const setNoteColor = async (payload = {}) => {
+      const change = readNoteColorChange(payload)
+      if (!change) return
+      const { noteId, color: next, previous } = change
       openColorNoteId.value = null
       if (next === previous) return
-      patchNote(note.id, { color: next })
+      patchNote(noteId, { color: next })
       try {
-        const updated = await api(`/api/notes/${note.id}/color`, {
+        const updated = await api(`/api/notes/${noteId}/color`, {
           method: 'PUT',
           body: JSON.stringify({ color: next })
         })
-        patchNote(note.id, { color: updated.color || null })
+        patchNote(noteId, { color: updated.color || null })
       } catch (error) {
-        patchNote(note.id, { color: previous })
+        patchNote(noteId, { color: previous })
         showRevisionNotice(error.message || 'Failed to change the note color')
       }
     }
@@ -4314,7 +4326,7 @@ export default {
       title: 'Quick Shortcuts',
       tags: [],
       content: [
-        'Hold `Alt` / `Option` or `Ctrl` / `Cmd` to reveal shortcut hints.',
+        'Hold `Alt` / `Option` to reveal shortcut hints.',
         '',
         `- \`${modKey} + Enter\` — Create note (closed)`,
         `- \`${modKey} + Enter\` — Save note (editing)`,
@@ -6010,12 +6022,13 @@ header {
   transform: translateX(-50%) translateY(0);
 }
 
-/* Shortcut badges for regular buttons (tabs, modals, tag rows, etc.). */
-button[data-shortcut]:not(.icon-btn):not(.fab-btn):not(.md-tool-btn) {
+/* Shortcut badges for regular buttons (tabs, modals, tag rows, etc.).
+   Editor-toolbar buttons use the md-tool tooltip instead. */
+button[data-shortcut]:not(.icon-btn):not(.fab-btn):not(.md-tool-btn):not(.note-editor-toolbar button) {
   position: relative;
 }
 
-button[data-shortcut]:not(.icon-btn):not(.fab-btn):not(.md-tool-btn)::after {
+button[data-shortcut]:not(.icon-btn):not(.fab-btn):not(.md-tool-btn):not(.note-editor-toolbar button)::after {
   content: attr(data-shortcut);
   position: absolute;
   bottom: calc(100% + 7px);
@@ -6037,7 +6050,7 @@ button[data-shortcut]:not(.icon-btn):not(.fab-btn):not(.md-tool-btn)::after {
   z-index: 330;
 }
 
-.shortcuts-visible button[data-shortcut]:not(.icon-btn):not(.fab-btn):not(.md-tool-btn)::after {
+.shortcuts-visible button[data-shortcut]:not(.icon-btn):not(.fab-btn):not(.md-tool-btn):not(.note-editor-toolbar button)::after {
   content: attr(data-shortcut);
   background: #1d4ed8;
   opacity: 1;
@@ -6341,11 +6354,6 @@ main {
 
 .note-form-actions button:hover {
   background: #f8f9fa;
-}
-
-.note-form-actions small {
-  color: #80868b;
-  font-size: 0.75rem;
 }
 
 .reconnect-btn {
@@ -6658,6 +6666,10 @@ main {
   margin-bottom: 0.5rem;
 }
 
+.toolbar-spacer {
+  flex: 1;
+}
+
 .control-left {
   display: flex;
   align-items: center;
@@ -6760,10 +6772,6 @@ main {
   margin: 0;
   font-size: 0.9rem;
   line-height: 1.5;
-}
-
-.toolbar-spacer {
-  flex: 1;
 }
 
 /* Note color picker (right of the card checkbox) */
@@ -7667,7 +7675,15 @@ main {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
   margin-top: 0.5rem;
+}
+
+.editor-footer-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .action-buttons {
@@ -7714,6 +7730,67 @@ main {
   cursor: not-allowed;
 }
 
+/* Inside the editor toolbar the image button is a tool: match .md-tool-btn sizing */
+.note-editor-toolbar .image-btn {
+  position: relative;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 0.4rem;
+  background: #f8f9fa;
+  color: #3c4043;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Tooltip identical to .md-tool-btn: name normally, shortcut while Alt/Ctrl held. */
+.note-editor-toolbar .image-btn::after {
+  content: attr(data-label);
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.22rem 0.42rem;
+  background: #202124;
+  color: #fff;
+  border-radius: 4px;
+  font-size: 0.66rem;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  z-index: 320;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.note-editor-toolbar .image-btn:hover::after,
+.note-editor-toolbar .image-btn:focus-visible::after {
+  opacity: 1;
+}
+
+.shortcuts-visible .note-editor-toolbar .image-btn:hover::after,
+.shortcuts-visible .note-editor-toolbar .image-btn:focus-visible::after {
+  content: attr(data-shortcut);
+  background: #1a73e8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.note-editor-toolbar .image-btn:hover:not(:disabled) {
+  background: #e8eaed;
+  border-color: #c6cacd;
+}
+
+.note-editor-toolbar .image-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .note-editor-toolbar {
   display: flex;
   align-items: center;
@@ -7749,17 +7826,6 @@ main {
   background: #e8f0fe;
   color: #1a73e8;
   font-weight: 600;
-}
-
-.toolbar-divider {
-  width: 1px;
-  align-self: stretch;
-  background: #ededed;
-  margin: 0 0.25rem;
-}
-
-.toolbar-spacer {
-  flex: 1 1 auto;
 }
 
 .toolbar-btn {
@@ -7937,11 +8003,6 @@ main {
 
 .cancel-btn:hover {
   background: #e8eaed;
-}
-
-.note-form-actions small {
-  color: #80868b;
-  font-size: 0.75rem;
 }
 
 /* Sort / Action Bar */

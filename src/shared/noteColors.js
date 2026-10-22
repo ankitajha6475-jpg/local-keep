@@ -34,3 +34,18 @@ export function noteColorLabel(value) {
   const id = normalizeNoteColor(value)
   return NOTE_COLOR_OPTIONS.find(option => option.id === (id || null))?.label || 'Default'
 }
+
+/**
+ * Normalize the DashboardNoteCard `select-color` payload. The component emits
+ * `{ note, color }` as one argument; treating that payload as the note object
+ * produces `/api/notes/undefined/color`.
+ */
+export function readNoteColorChange(payload) {
+  const note = payload?.note
+  if (!note?.id) return null
+  return {
+    noteId: note.id,
+    color: payload.color || null,
+    previous: note.color || null
+  }
+}

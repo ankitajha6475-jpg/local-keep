@@ -6,10 +6,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- The note editor header now reads simply **Editor** (no revision badge or Ctrl+Enter hint); the Visual/Source mode switch and the Paste plain/rich select moved to the bottom-left of the editor, and the content toolbar holds only the markdown tools with the image button flowing inline after them
+- Shortcut hints now reveal on **Alt/Option only** (Ctrl/Cmd alone no longer reveals them) and bare Alt keydown/keyup is intercepted so Chrome does not focus its menu bar; `Ctrl/Cmd+Alt+…` combos keep working
+- The editor toolbar image button now uses the same tooltip and Alt-reveal behavior as the markdown tool buttons
+
 ### Fixed
+- The tag sidebar no longer shows a horizontal scrollbar; long tag names truncate with an ellipsis inside the fixed 230px column
 - Dashboard hybrid search now calls `/api/search/hybrid`, defaults on when embeddings are configured, and preserves RRF/vector/keyword result order via a **Relevance** sort instead of re-sorting every result by last-modified time
 - Qwen3-Embedding queries now include the model's retrieval instruction, fixing compressed/irrelevant rankings for short Chinese queries such as `云存储` without reindexing
 - Dashboard search, tab, sort, and tag changes now reset the viewport to the top of the note list below the sticky header and controls
+- Note color changes now unwrap the card's `{ note, color }` payload instead of sending `PUT /api/notes/undefined/color` and showing "Note not found"
 - Single tildes in paths such as `~/.config` no longer render as false strikethrough or turn into `~~` when Visual mode is serialised; only GFM `~~text~~` is struck through
 - Switching Visual/Source or opening a note with a shared draft no longer re-serialises the rendered DOM, so clean mode switches keep the source unchanged
 - MCP sessions opened on archived notes now return `note_archived` with a restore guide instead of `note_not_found`

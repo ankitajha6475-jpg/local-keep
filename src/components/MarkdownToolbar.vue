@@ -19,6 +19,7 @@
         </button>
       </div>
     </template>
+    <slot name="append"></slot>
   </div>
 </template>
 
@@ -69,6 +70,10 @@ export default {
   height: 20px;
   background: #e5e7eb;
   margin: 0 0.2rem;
+}
+
+.md-tools > :slotted(.image-btn) {
+  margin-left: 0.2rem;
 }
 
 .md-tool-btn {
