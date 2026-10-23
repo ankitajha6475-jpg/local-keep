@@ -105,11 +105,6 @@ export default {
     modKey: { type: String, default: 'Ctrl' }
   },
   emits: ['close', 'submit'],
-  methods: {
-    shortcut(id) {
-      return shortcutLabel(SHORTCUTS[id], this.modKey)
-    }
-  },
   data() {
     const hasText = !!String(this.initialText || '').trim()
     return {
@@ -167,6 +162,9 @@ export default {
     if (this.searchTimer) clearTimeout(this.searchTimer)
   },
   methods: {
+    shortcut(id) {
+      return shortcutLabel(SHORTCUTS[id], this.modKey)
+    },
     focusAndSelect(input) {
       if (!input) return
       input.focus()

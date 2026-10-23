@@ -28,9 +28,14 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus, onNot
   // Merge remote files defensively: never clobber a local entry that still has
   // a renderable `dataURL` with an incoming entry that lacks one. This protects
   // against out-of-order or in-flight messages (and partial legacy data).
+  // Returns { merged, added } where `added` are the incoming entries that must
+  // be registered with Excalidraw via registerFiles().
   function mergeFilesDefensively(incomingFiles) {
-    if (!incomingFiles || typeof incomingFiles !== 'object') return currentFiles
+    if (!incomingFiles || typeof incomingFiles !== 'object') {
+      return { merged: currentFiles, added: [] }
+    }
     const merged = { ...currentFiles }
+    const added = []
     for (const [id, incoming] of Object.entries(incomingFiles)) {
       const local = merged[id]
       if (local && local.dataURL && !(incoming && incoming.dataURL)) {
@@ -38,8 +43,25 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus, onNot
         continue
       }
       merged[id] = incoming
+      if (incoming && incoming.dataURL && incoming.dataURL !== local?.dataURL) {
+        added.push(incoming)
+      }
     }
-    return merged
+    return { merged, added }
+  }
+
+  // Register file binaries with Excalidraw. Excalidraw 0.18's updateScene()
+  // silently IGNORES a `files` field (SceneData = {elements, appState,
+  // collaborators}), so files must go through api.addFiles(). Call this AFTER
+  // the corresponding image elements were applied via updateScene and in the
+  // same tick: addFiles() loads images for scene elements that already have a
+  // file entry, while an element rendered before its file exists gets an error
+  // placeholder that is never retried (hence "needs a refresh").
+  function registerFiles(added) {
+    if (!added || added.length === 0) return
+    if (api && typeof api.addFiles === 'function') {
+      api.addFiles(added)
+    }
   }
 
   function stripTs(el) {
@@ -207,16 +229,18 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus, onNot
         }
       }
 
-      const update = { elements: mergedElements }
-      // Merge remote files into our local files (defensively — see helper)
-      currentFiles = mergeFilesDefensively(msg.files)
-      update.files = currentFiles
-      api.updateScene(update)
+      const { merged, added } = mergeFilesDefensively(msg.files)
+      currentFiles = merged
+      // Apply elements first, then register files (see registerFiles) so the
+      // image cache loads the binaries for the freshly applied image elements.
+      api.updateScene({ elements: mergedElements })
+      registerFiles(added)
     } else if (msg.files) {
       // Files changed but no element-level diff was accepted — still apply files
       applyingRemote = true
-      currentFiles = mergeFilesDefensively(msg.files)
-      api.updateScene({ files: currentFiles })
+      const { merged, added } = mergeFilesDefensively(msg.files)
+      currentFiles = merged
+      registerFiles(added)
       applyingRemote = false
     }
 
@@ -233,12 +257,14 @@ export function createCollabManager({ noteId, generateThumbnail, onStatus, onNot
     const cleanElements = msg.elements.map(stripTs)
     currentElements = cleanElements
     updateLastCommitted(cleanElements)
-    const update = { elements: cleanElements }
+    let added = []
     if (msg.files) {
-      currentFiles = mergeFilesDefensively(msg.files)
-      update.files = currentFiles
+      const result = mergeFilesDefensively(msg.files)
+      currentFiles = result.merged
+      added = result.added
     }
-    api.updateScene(update)
+    api.updateScene({ elements: cleanElements })
+    registerFiles(added)
     if (typeof msg.title === 'string') onTitle?.(msg.title)
     onStatus?.('loaded')
 

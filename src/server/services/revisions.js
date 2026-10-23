@@ -463,6 +463,16 @@ export function createRevisionService({ db, imageStore, imageRefs, bus, tags, li
       headRevisionId: head.head_revision_id,
       headRevisionNo: head.revision_no,
       revisions: flat,
+      // Automatic old→new version-chain links, derived from parent_revision_id.
+      // Each link connects a revision to the newer revision that superseded it.
+      versionLinks: flat
+        .filter(r => r.parentId)
+        .map(r => ({
+          fromRevisionId: r.parentId,
+          toRevisionId: r.id,
+          fromRevisionNo: flat.find(p => p.id === r.parentId)?.revisionNo ?? null,
+          toRevisionNo: r.revisionNo
+        })),
       tree: buildTree(flat)
     }
   }

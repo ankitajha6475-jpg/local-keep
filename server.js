@@ -56,6 +56,7 @@ import { migration010TokenAdmin } from './src/server/migrations/010-token-admin.
 import { migration011McpSessionLimits } from './src/server/migrations/011-mcp-session-limits.js'
 import { migration012AppSettings } from './src/server/migrations/012-app-settings.js'
 import { migration013NoteColor } from './src/server/migrations/013-note-color.js'
+import { migration014VersionPinnedLinks } from './src/server/migrations/014-version-pinned-links.js'
 
 import debugLib from 'debug'
 const log = debugLib('local-keep:server')
@@ -342,7 +343,7 @@ try {
 try {
   const migration = runMigrations({
     db,
-    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits, migration012AppSettings, migration013NoteColor],
+    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits, migration012AppSettings, migration013NoteColor, migration014VersionPinnedLinks],
     backupDir: BACKUPS_DIR,
     context: { imageStore }
   })

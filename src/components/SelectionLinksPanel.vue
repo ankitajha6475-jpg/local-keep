@@ -124,11 +124,6 @@ export default {
     modKey: { type: String, default: 'Ctrl' }
   },
   emits: ['close', 'open', 'update:mode'],
-  methods: {
-    shortcut(id) {
-      return shortcutLabel(SHORTCUTS[id], this.modKey)
-    }
-  },
   computed: {
     emptyOutgoing() {
       return this.mode === 'both'
@@ -179,6 +174,9 @@ export default {
     return { noteTitle, outgoingKey, viaLabel, firstContext, isInSelection, formatDate }
   },
   methods: {
+    shortcut(id) {
+      return shortcutLabel(SHORTCUTS[id], this.modKey)
+    },
     openOutgoing(entry) {
       if (!entry.targetNoteId || entry.archived) return
       this.$emit('open', entry.targetNoteId)

@@ -50,7 +50,10 @@ function renderWikiLinks(markdown, resolveLink) {
       let resolved = null
       try { resolved = resolveLink(target, label) } catch (_) { resolved = null }
       if (resolved && resolved.noteId) {
-        const html = `<a class="note-link" data-note-id="${escapeAttr(resolved.noteId)}" data-note-target="${escapeAttr(target)}" data-note-label="${escapeAttr(label)}" href="#">${escapeHtml(label)}</a>`
+        const pin = resolved.revisionNo != null
+          ? ` data-note-revision="${escapeAttr(resolved.revisionNo)}" title="Pinned to v${escapeAttr(resolved.revisionNo)}"`
+          : ''
+        const html = `<a class="note-link" data-note-id="${escapeAttr(resolved.noteId)}" data-note-target="${escapeAttr(target)}" data-note-label="${escapeAttr(label)}"${pin} href="#">${escapeHtml(label)}</a>`
         const key = `@@LK_WIKI_${replacements.length}@@`
         replacements.push(html)
         return key

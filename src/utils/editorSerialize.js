@@ -3,6 +3,18 @@
 
 import { normalizeMarkdown } from './markdown.js'
 
+// Block-level elements in rendered markdown. Whitespace-only text nodes that sit
+// between these are insignificant in HTML but would become real blank lines in
+// the serialised markdown, so they must be dropped for a faithful round-trip.
+const BLOCK_TAGS = new Set([
+  'P', 'DIV', 'UL', 'OL', 'LI', 'BLOCKQUOTE', 'PRE', 'HR',
+  'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'TABLE', 'THEAD', 'TBODY', 'TR'
+])
+
+function isBlockNode(node) {
+  return !!node && node.nodeType === 1 && BLOCK_TAGS.has(node.tagName)
+}
+
 export function serializeEditorToMarkdown(root) {
   if (!root) return ''
 
@@ -13,7 +25,15 @@ export function serializeEditorToMarkdown(root) {
   }
 
   function serialize(node) {
-    if (node.nodeType === 3) return node.textContent
+    if (node.nodeType === 3) {
+      const text = node.textContent
+      // Drop whitespace-only text nodes that lie between block-level elements:
+      // marked emits "\n" separators there which must not become blank lines.
+      if (/^\s*$/.test(text) && (isBlockNode(node.previousSibling) || isBlockNode(node.nextSibling))) {
+        return ''
+      }
+      return text
+    }
     if (node.nodeType !== 1) return ''
     const tag = node.tagName
 
@@ -44,7 +64,12 @@ export function serializeEditorToMarkdown(root) {
         ? Array.prototype.indexOf.call(parent.children, node) + 1
         : 1
       const prefix = ordered ? `${index}. ` : '- '
-      return prefix + serializeChildren(node).trimEnd() + '\n'
+      const content = serializeChildren(node).trimEnd()
+      // Loose-list items (marked wraps them in <p>) are separated by a blank
+      // line; tight items sit on consecutive lines. Preserving this keeps the
+      // markdown byte-identical across Visual↔Source round-trips.
+      const loose = Array.prototype.some.call(node.children, child => child.tagName === 'P')
+      return prefix + content + (loose ? '\n\n' : '\n')
     }
     if (tag === 'BLOCKQUOTE') {
       const inner = serializeChildren(node).trimEnd()

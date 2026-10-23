@@ -15,13 +15,13 @@ export function createLinkService({ db }) {
   const insertLink = db.prepare(`
     INSERT INTO note_links
       (source_note_id, source_revision_id, target_note_id, target_label,
-       label, target_kind, raw, status, source, created_at)
-    VALUES (?, ?, NULL, ?, ?, ?, ?, 'unresolved', 'inline', ?)
+       label, target_kind, raw, status, source, created_at, target_revision_id)
+    VALUES (?, ?, NULL, ?, ?, ?, ?, 'unresolved', 'inline', ?, ?)
   `)
 
   function titleIndex() {
     const notes = db.prepare(
-      'SELECT id, title, display_title, archived_at FROM notes'
+      'SELECT id, title, display_title, archived_at, head_revision_id FROM notes'
     ).all()
     const byId = new Map(notes.map(n => [n.id, n]))
     const byTitle = new Map()
@@ -57,17 +57,64 @@ export function createLinkService({ db }) {
     const update = db.prepare(
       'UPDATE note_links SET target_note_id = ?, status = ? WHERE id = ?'
     )
+    const revNote = db.prepare('SELECT note_id FROM note_revisions WHERE id = ?')
     for (const row of rows) {
-      const resolved = resolveRow(row, index)
-      update.run(resolved.targetNoteId, resolved.status, row.id)
+      if (row.target_revision_id) {
+        // Frozen reference: the pin decides the resolved note, so renames and
+        // newly-created same-title notes never change what a pinned link points
+        // at. Unpinned links (target unresolved at pin time) fall back to the
+        // normal title/id resolution below.
+        const rev = revNote.get(row.target_revision_id)
+        const note = rev ? index.byId.get(rev.note_id) : null
+        update.run(
+          note ? note.id : null,
+          note ? (note.archived_at ? 'archived' : 'ok') : 'unresolved',
+          row.id
+        )
+      } else {
+        const resolved = resolveRow(row, index)
+        update.run(resolved.targetNoteId, resolved.status, row.id)
+      }
     }
   }
 
+  // Resolve the immutable revision a link pins to. An explicit [[note:<id>@<rev>]]
+  // pins that revision; a bare link auto-pins the target's head revision at
+  // link-creation time (frozen). Returns a note_revisions.id or null.
+  function pinRevision(link, index) {
+    let note = null
+    if (link.kind === 'id') {
+      note = index.byId.get(link.target) || null
+    } else {
+      const matches = index.byTitle.get(normalizeLinkTitle(link.target)) || []
+      if (matches.length === 1) note = matches[0]
+    }
+    if (!note) return null
+    if (link.revision != null) {
+      const rev = db.prepare(
+        'SELECT id FROM note_revisions WHERE note_id = ? AND revision_no = ?'
+      ).get(note.id, link.revision)
+      return rev?.id || null
+    }
+    return note.head_revision_id || null
+  }
+
   function syncNote(noteId, revisionId, content, canvasData) {
+    // Carry over existing version pins for unchanged links so a reference stays
+    // frozen across edits to the source note; only genuinely new/changed links
+    // pin to the target's current version.
+    const carried = new Map()
+    for (const row of db.prepare(
+      'SELECT raw, target_revision_id FROM note_links WHERE source_note_id = ?'
+    ).all(noteId)) {
+      if (row.target_revision_id) carried.set(row.raw, row.target_revision_id)
+    }
     db.prepare('DELETE FROM note_links WHERE source_note_id = ?').run(noteId)
     const text = `${content || ''}\n${extractCanvasText(canvasData)}`
     const now = new Date().toISOString()
+    const index = titleIndex()
     for (const link of parseWikiLinks(text)) {
+      const pin = carried.get(link.raw) ?? pinRevision(link, index)
       insertLink.run(
         noteId,
         revisionId || '',
@@ -75,7 +122,8 @@ export function createLinkService({ db }) {
         link.label,
         link.kind,
         link.raw,
-        now
+        now,
+        pin
       )
     }
     resolveAll()
@@ -88,10 +136,12 @@ export function createLinkService({ db }) {
 
   function outgoing(noteId, { includeArchived = false } = {}) {
     const rows = db.prepare(`
-      SELECT l.*, n.title AS target_title, n.type AS target_type,
-             n.archived_at AS target_archived
+      SELECT l.*, n.title AS head_title, n.type AS target_type,
+             n.archived_at AS target_archived,
+             r.title AS pinned_title, r.revision_no AS pinned_revision_no
       FROM note_links l
       LEFT JOIN notes n ON n.id = l.target_note_id
+      LEFT JOIN note_revisions r ON r.id = l.target_revision_id
       WHERE l.source_note_id = ?
       ORDER BY l.id ASC
     `).all(noteId)
@@ -99,12 +149,16 @@ export function createLinkService({ db }) {
       id: row.id,
       sourceNoteId: row.source_note_id,
       targetNoteId: row.target_note_id,
+      targetRevisionId: row.target_revision_id || null,
+      targetRevisionNo: row.pinned_revision_no || null,
       targetLabel: row.target_label,
       label: row.label,
       targetKind: row.target_kind,
       raw: row.raw,
       status: row.status,
-      targetTitle: row.target_title || null,
+      // Frozen rendering: the pinned (immutable) revision's title, falling back
+      // to the head title when the link is unpinned.
+      targetTitle: row.pinned_title || row.head_title || null,
       targetType: row.target_type || null,
       context: contextForRow(row)
     }))

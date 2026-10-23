@@ -67,9 +67,23 @@ test('parseWikiLinks handles labels, explicit ids, and code', () => {
     '```'
   ].join('\n'))
   assert.equal(links.length, 3)
-  assert.deepEqual(links[0], { raw: '[[Another note]]', target: 'Another note', label: 'Another note', kind: 'title' })
+  assert.deepEqual(links[0], { raw: '[[Another note]]', target: 'Another note', label: 'Another note', kind: 'title', revision: null })
   assert.equal(links[1].label, 'details')
   assert.equal(links[2].kind, 'id')
   assert.equal(links[2].target, 'n1')
   assert.equal(normalizeLinkTitle('  A   Note '), 'a note')
+})
+
+test('parseWikiLinks reads explicit version pins', () => {
+  const links = parseWikiLinks([
+    'See [[note:n1@2]] and [[note:n1@2|pinned]] plus [[note:n1]].',
+    '`[[note:n1@9]]`'
+  ].join('\n'))
+  assert.equal(links.length, 3)
+  assert.equal(links[0].target, 'n1')
+  assert.equal(links[0].revision, 2)
+  assert.equal(links[1].label, 'pinned')
+  assert.equal(links[1].revision, 2)
+  assert.equal(links[2].target, 'n1')
+  assert.equal(links[2].revision, null)
 })

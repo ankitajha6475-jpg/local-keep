@@ -14,7 +14,7 @@ export function normalizeLinkTitle(value) {
 /**
  * Parse wiki links outside fenced/inline code.
  * @param {string} text
- * @returns {{raw:string,target:string,label:string,kind:'title'|'id'}[]}
+ * @returns {{raw:string,target:string,label:string,kind:'title'|'id',revision:number|null}[]}
  */
 export function parseWikiLinks(text) {
   const links = []
@@ -31,13 +31,26 @@ export function parseWikiLinks(text) {
       const label = (pipe === -1 ? inner : inner.slice(pipe + 1)).trim() || targetRaw
       if (!targetRaw || targetRaw.length > MAX_LINK_LENGTH) continue
       const explicit = targetRaw.startsWith('note:')
-      const target = explicit ? targetRaw.slice(5).trim() : targetRaw
+      let target = explicit ? targetRaw.slice(5).trim() : targetRaw
+      // Explicit version pin: [[note:<id>@<rev>]] pins a specific revision.
+      let revision = null
+      if (explicit) {
+        const at = target.lastIndexOf('@')
+        if (at > 0) {
+          const revStr = target.slice(at + 1).trim()
+          if (/^\d+$/.test(revStr)) {
+            revision = Number(revStr)
+            target = target.slice(0, at).trim()
+          }
+        }
+      }
       if (!target) continue
       links.push({
         raw: match[0],
         target,
         label,
-        kind: explicit ? 'id' : 'title'
+        kind: explicit ? 'id' : 'title',
+        revision
       })
       if (links.length >= MAX_LINKS_PER_NOTE) break
     }

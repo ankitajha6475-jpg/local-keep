@@ -954,7 +954,7 @@
                 class="history-btn"
                 :data-shortcut="shortcut('noteHistory')"
                 title="View revision history"
-              >🕘 History</button>
+              >🕘 History<span class="history-version-badge" title="Current version">v{{ editingRevisionNo }}</span></button>
               <button @click="closeModal" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')">×</button>
             </div>
           </div>
@@ -1060,6 +1060,13 @@
               </div>
               <p v-if="historyLoading" class="history-loading">Loading history…</p>
               <p v-if="historyError" class="error">{{ historyError }}</p>
+              <div v-if="versionChain.length" class="version-chain">
+                <span class="version-chain-label">Version chain</span>
+                <template v-for="(n, i) in versionChain" :key="n">
+                  <span v-if="i > 0" class="version-chain-arrow">→</span>
+                  <span class="version-chain-node">v{{ n }}</span>
+                </template>
+              </div>
               <div v-if="historyData" class="history-list">
                 <div
                   v-for="rev in historyRevisionsNewest"
@@ -1165,8 +1172,8 @@
         </div>
       </div>
 
-      <!-- Floating Action Button -->
-      <div v-if="isAuthenticated" class="fab-container" :class="{ 'shortcuts-visible': shortcutsVisible }">
+      <!-- Floating Action Button (dashboard only — not over the whiteboard view) -->
+      <div v-if="isAuthenticated && currentView !== 'canvas'" class="fab-container" :class="{ 'shortcuts-visible': shortcutsVisible }">
         <div v-if="fabMenuOpen" class="fab-menu">
           <button @click="fabNewTextNote" class="fab-menu-item" :data-shortcut="shortcut('fabTextNote')">
             <span class="fab-menu-icon"><AppIcon name="note" :size="18" /></span>
@@ -1185,7 +1192,7 @@
           :data-shortcut="shortcut('fabMenu')"
           :aria-label="`Create new (${shortcut('fabMenu')})`"
         >
-          <AppIcon name="plus" :size="26" :stroke-width="2.1" />
+          <AppIcon name="plus" :size="22" :stroke-width="2.1" />
         </button>
       </div>
 
@@ -4388,6 +4395,17 @@ export default {
       return [...historyData.value.revisions].sort((a, b) => b.revisionNo - a.revisionNo)
     })
 
+    // Old→new version chain (e.g. [1, 2, 3]) derived from the automatic
+    // version links, for surfacing the note↔history link progression.
+    const versionChain = computed(() => {
+      const links = historyData.value?.versionLinks || []
+      if (!links.length) return []
+      const sorted = [...links].sort((a, b) => a.toRevisionNo - b.toRevisionNo)
+      const chain = [sorted[0].fromRevisionNo]
+      for (const l of sorted) chain.push(l.toRevisionNo)
+      return chain
+    })
+
     // ── Markdown / internal-link helpers ──
     function normalizeWikiTitle(value) {
       return String(value || '')
@@ -4400,8 +4418,15 @@ export default {
     function resolveWikiLink(target, label) {
       if (!target) return { noteId: null, status: 'broken', label }
       let note = null
+      let revisionNo = null
       if (target.startsWith('note:')) {
-        const id = target.slice(5).trim()
+        let id = target.slice(5).trim()
+        // Explicit version pin [[note:<id>@<rev>]] — resolve the pinned revision.
+        const at = id.lastIndexOf('@')
+        if (at > 0 && /^\d+$/.test(id.slice(at + 1).trim())) {
+          revisionNo = Number(id.slice(at + 1).trim())
+          id = id.slice(0, at).trim()
+        }
         note = noteIndex.value.find(n => n.id === id) || null
       } else {
         const wanted = normalizeWikiTitle(target)
@@ -4416,7 +4441,8 @@ export default {
       return {
         noteId: note.id,
         status: note.archivedAt ? 'archived' : 'ok',
-        label: label || target
+        label: label || target,
+        revisionNo
       }
     }
 
@@ -4560,6 +4586,7 @@ export default {
       historyData,
       historyPreview,
       historyRevisionsNewest,
+      versionChain,
       openHistory,
       closeHistory,
       viewRevision,
@@ -4858,6 +4885,20 @@ export default {
       }
       if (e.isComposing || compositionActive) return
 
+      // Live markdown block shortcuts in Visual mode: typing the space after a
+      // block trigger ("- ", "1. ", "# ", "> ") converts the line.
+      if (
+        e.key === ' ' &&
+        editorMode.value === 'write' &&
+        !e.ctrlKey && !e.metaKey && !e.altKey
+      ) {
+        if (applyMarkdownBlockShortcut()) {
+          e.preventDefault()
+          e.stopPropagation()
+          return
+        }
+      }
+
       // Markdown toolbar shortcuts in both Visual and Source modes.
       const command = matchEditorShortcut(e)
       if (command) {
@@ -5034,6 +5075,64 @@ export default {
         node = node.parentNode
       }
       return null
+    }
+
+    /**
+     * Live markdown block shortcuts for the Visual editor. When the caret sits at
+     * the end of a markdown block trigger typed at the very start of a line
+     * ("- ", "1. ", "# ", "> ", …), convert that line into the matching rich
+     * element. The trigger text before the caret is removed first so only the
+     * content remains. Returns true when a conversion was applied.
+     */
+    function applyMarkdownBlockShortcut() {
+      const el = imageEditor.value
+      if (!el) return false
+      const sel = window.getSelection()
+      if (!sel || !sel.rangeCount) return false
+      const range = sel.getRangeAt(0)
+      if (!range.collapsed) return false
+      const node = range.startContainer
+      if (!node || !el.contains(node)) return false
+
+      // The current line: a plain text block, or the editor root when the first
+      // line is still unwrapped inline content. Leave already-formatted blocks
+      // (LI, headings, quotes) alone so we never nest unintentionally.
+      let line = currentEditorBlock()
+      if (!line) {
+        if (node.nodeType === 3 && node.parentNode === el) line = el
+        else return false
+      }
+      if (line !== el && !/^(P|DIV)$/.test(line.tagName)) return false
+
+      // Text from the start of the line up to the caret is exactly the trigger
+      // when the marker was just typed at the line start (also covers inserting
+      // the marker in front of existing content).
+      const before = document.createRange()
+      before.selectNodeContents(line)
+      before.setEnd(range.startContainer, range.startOffset)
+      const trigger = before.toString()
+
+      let exec = null
+      let formatTag = null
+      if (/^[-*+]$/.test(trigger)) exec = 'insertUnorderedList'
+      else if (/^\d+[.)]$/.test(trigger)) exec = 'insertOrderedList'
+      else if (/^#{1,6}$/.test(trigger)) formatTag = 'H' + trigger.length
+      else if (/^>$/.test(trigger)) formatTag = 'BLOCKQUOTE'
+      else return false
+
+      // Strip the typed marker (line start → caret), then let the browser build
+      // the rich structure (it merges with an adjacent list when appropriate).
+      before.deleteContents()
+      const caret = document.createRange()
+      caret.selectNodeContents(line)
+      caret.collapse(true)
+      sel.removeAllRanges()
+      sel.addRange(caret)
+
+      if (exec) document.execCommand(exec, false, null)
+      else document.execCommand('formatBlock', false, formatTag)
+      syncVisualEditor()
+      return true
     }
 
     function formatBold() {
@@ -6682,6 +6781,9 @@ main {
   display: inline-flex;
   align-items: center;
   gap: 0.15rem;
+  /* min-content safety: wrap rather than force horizontal overflow on
+     very narrow viewports (stays one line whenever there is room). */
+  flex-wrap: wrap;
   padding: 0.18rem;
   background: #eef2f7;
   border-radius: 10px;
@@ -7018,13 +7120,17 @@ main {
 .markdown-preview h5,
 .markdown-preview h6 { font-size: 0.95rem; margin: 0.45rem 0 0.25rem; }
 .note-preview p,
-.markdown-preview p { margin: 0.35rem 0; }
+.markdown-preview p,
+.note-editor p { margin: 0.35rem 0; }
 .note-preview ul,
 .note-preview ol,
 .markdown-preview ul,
-.markdown-preview ol { padding-left: 1.25rem; margin: 0.35rem 0; }
+.markdown-preview ol,
+.note-editor ul,
+.note-editor ol { padding-left: 1.4rem; margin: 0.35rem 0; }
 .note-preview li,
-.markdown-preview li { margin: 0.1rem 0; }
+.markdown-preview li,
+.note-editor li { margin: 0.1rem 0; }
 .note-preview blockquote,
 .markdown-preview blockquote {
   margin: 0.4rem 0;
@@ -7386,6 +7492,38 @@ main {
   background: #f8f9fa;
 }
 
+.history-version-badge {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0 0.4rem;
+  min-width: 1.15rem;
+  border-radius: 999px;
+  background: #e8f0fe;
+  color: #1a73e8;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.45;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.version-chain {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.45rem 0.65rem;
+  margin-bottom: 0.65rem;
+  background: #f8f9fa;
+  border: 1px solid #ededed;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  color: #5f6368;
+}
+.version-chain-label { font-weight: 600; }
+.version-chain-arrow { color: #80868b; }
+.version-chain-node { color: #1a73e8; font-weight: 600; }
+
 .revision-toast {
   position: fixed;
   right: 1.5rem;
@@ -7577,11 +7715,14 @@ main {
 }
 
 .note-form-modal textarea.markdown-source {
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', ui-monospace, monospace;
-  font-size: 0.875rem;
+  /* Same font as the Visual editor so both modes look alike. */
+  font-family: inherit;
+  font-size: 1rem;
   line-height: 1.5;
   resize: none;
-  white-space: pre;
+  /* Soft-wrap long source lines; preserves newlines/indent but avoids horizontal scroll. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .note-form-modal .markdown-preview {
@@ -7594,11 +7735,18 @@ main {
 }
 
 .note-form-modal .note-editor {
-  white-space: pre-wrap;
+  /* Rendered markdown is real block HTML (soft breaks are <br>), so normal
+     whitespace collapses marked's "\n" separators instead of showing them as
+     blank lines. Source editing keeps pre-wrap on .markdown-source. */
+  white-space: normal;
   word-wrap: break-word;
   outline: none;
   cursor: text;
   line-height: 1.5;
+}
+.note-form-modal .note-editor pre {
+  white-space: pre;
+  overflow-x: auto;
 }
 
 .note-form-modal .note-editor:empty::before {
@@ -8183,9 +8331,9 @@ main {
   position: fixed;
   bottom: 2rem;
   right: 2rem;
-  width: 56px;
-  height: 56px;
-  border-radius: 17px;
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
   background: linear-gradient(135deg, #2563eb 0%, #0ea5e9 100%);
   color: white;
   border: none;
@@ -8254,7 +8402,7 @@ main {
 
 .fab-menu {
   position: absolute;
-  bottom: 68px;
+  bottom: 58px;
   right: 0;
   display: flex;
   flex-direction: column;
@@ -8966,6 +9114,9 @@ main {
   }
 }
 
+/* Stacked-layout breakpoint: MUST match the `@media (max-width: 600px)` query
+   in TagSidebar.vue (sidebar collapse). If these drift apart, a width:100%
+   sidebar lands inside a row .workspace and crushes the notes area. */
 @media (max-width: 600px) {
   :root {
     --app-header-height: 63px;
@@ -8981,6 +9132,9 @@ main {
 
   .workspace {
     flex-direction: column;
+    /* Stacked children must fill the row width (default flex-start shrinks
+       them to min-content and misaligns/overflows at very narrow widths). */
+    align-items: stretch;
   }
 
   .notes-grid {
@@ -8990,8 +9144,8 @@ main {
   .fab-btn {
     bottom: 1.5rem;
     right: 1.5rem;
-    width: 48px;
-    height: 48px;
+    width: 42px;
+    height: 42px;
   }
 }
 </style>

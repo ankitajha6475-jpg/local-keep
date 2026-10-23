@@ -110,9 +110,11 @@ export default {
   padding: 0.75rem 0.5rem;
   overflow-y: auto;
   overflow-x: hidden;
-  max-height: calc(100vh - 90px);
+  /* Track the measured sticky header height (--app-header-height is set at
+     runtime; keep the fallback in sync with App.vue's :root value). */
+  max-height: calc(100vh - var(--app-header-height, 66px) - 1.5rem);
   position: sticky;
-  top: 80px;
+  top: calc(var(--app-header-height, 66px) + 0.5rem);
   align-self: flex-start;
   border-radius: 8px;
   margin-right: 1rem;
@@ -219,13 +221,19 @@ export default {
   padding: 0.5rem 0.4rem;
 }
 
-@media (max-width: 720px) {
+/* Stacked layout: this breakpoint MUST match App.vue's
+   `@media (max-width: 600px)` block where .workspace becomes a column.
+   If these two drift apart, a width:100% sidebar lands inside a row flex
+   container and crushes/overflows the notes area. */
+@media (max-width: 600px) {
   .tag-sidebar {
     width: 100%;
     position: static;
     max-height: none;
     margin-right: 0;
     margin-bottom: 0.75rem;
+    border-right: none;
+    border-bottom: 1px solid #e8eaed;
   }
 }
 </style>

@@ -13,7 +13,7 @@ test('migration 4 creates an admin from the legacy password and maps sessions', 
     ).run('legacy-session', oldHash, Date.now() + 60_000)
 
     const migrated = ctx.migrate()
-    assert.deepEqual(migrated.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13])
+    assert.deepEqual(migrated.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
 
     const admin = ctx.db.prepare('SELECT * FROM users').get()
     assert.equal(admin.username, 'admin')
