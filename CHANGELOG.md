@@ -6,10 +6,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- The History button now shows the current version number as a bubble (e.g. `v2`) beside its label, reflecting the note's revision number
+- Wiki links are now version-pinned (frozen references): a link records and keeps a reference to the immutable revision it targets, resolving to that frozen version's title/revision even after the target note is edited. Explicit `[[note:<id>@<rev>]]` pins a named revision; bare links auto-pin the target's version at link time
+- Notes expose automatic old→new version-chain links between each revision and its predecessor, surfaced as a version chain (e.g. `v1 → v2 → v3`) in the History panel
+
 ### Changed
+- Dev ports are no longer published on `0.0.0.0` (the host has a public IPv6 prefix): `5173` publishes on `127.0.0.1` for host MCP/API clients and `5174` on `${LOCAL_KEEP_BIND:-192.168.3.222}` for the LAN UI, with LAN clients reaching the API/MCP through the Vite proxy on `:5174`
+- The Create-new floating button is now smaller (46px desktop / 42px mobile with a 22px icon) and no longer appears over the whiteboard view; it is dashboard-only and returns when leaving the canvas
 - The note editor header now reads simply **Editor** (no revision badge or Ctrl+Enter hint); the Visual/Source mode switch and the Paste plain/rich select moved to the bottom-left of the editor, and the content toolbar holds only the markdown tools with the image button flowing inline after them
 - Shortcut hints now reveal on **Alt/Option only** (Ctrl/Cmd alone no longer reveals them) and bare Alt keydown/keyup is intercepted so Chrome does not focus its menu bar; `Ctrl/Cmd+Alt+…` combos keep working
 - The editor toolbar image button now uses the same tooltip and Alt-reveal behavior as the markdown tool buttons
+- The markdown Source view now uses the same font and size as the Visual editor instead of a monospace stack
+- The Visual editor now applies live markdown block shortcuts: typing `- `, `* `, `+ `, `1. `, `# `…`###### `, or `> ` at the start of a line converts it into a bulleted/numbered list, heading, or blockquote instead of showing the literal marker
 
 ### Fixed
 - The tag sidebar no longer shows a horizontal scrollbar; long tag names truncate with an ellipsis inside the fixed 230px column
@@ -24,6 +33,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - The dashboard header and the sort/selection action bar now stay pinned while the note list scrolls, with the bar offset following the measured header height
 - Header branding and controls now use the same centered 1200px container as the workspace, aligning the Local Keep logo with the tags sidebar and note grid
 - Long note titles now wrap to two lines and truncate with an ellipsis instead of overflowing the card
+- Bullet and numbered lists in the Visual editor no longer overspill past the editor's left edge; the global `* { padding: 0 }` reset was zeroing the default list indent, so the editor now gets the same list padding as the rendered preview
+- The markdown Source view now soft-wraps long lines instead of overflowing horizontally
+- Visual↔Source round-trips no longer introduce or lose newlines: insignificant whitespace `marked` emits between blocks is dropped and CommonMark tight/loose list separation is preserved, so switching views keeps the markdown byte-identical
+- The Visual editor no longer shows phantom blank lines between list items (rendered markdown uses `white-space: normal` so block separators collapse instead of rendering as gaps)
+- The Visual editor now renders markdown faithfully like the preview: loose lists (blank line between items) show paragraph spacing and tight lists stay compact, so the visual matches the source
+- Clicking the Link or Wiki link toolbar button no longer crashes the app: `LinkDialog.vue` (and `SelectionLinksPanel.vue`, which would have crashed the gallery's 🔗 Links panel) had two `methods` blocks in their options objects, so the second silently dropped the `shortcut()` method used by shortcut labels and the render threw `shortcut is not a function`
+- Whiteboard images pasted or cropped from another client now appear live on other open clients instead of showing a placeholder until refresh: remote image binaries are registered with Excalidraw's `addFiles()` API, because `updateScene()` silently ignores the `files` field and an image element rendered before its file arrives gets a permanent error placeholder
+- Responsive breakpoints are now coordinated: the tag sidebar collapsed to full width at 720px while the workspace only stacked at 600px, so between 601–720px a full-width sidebar landed in a row layout and crushed/overflowed the notes area. Both now share the 600px stacked-layout breakpoint (cross-referenced in comments), the stacked workspace stretches its children to full width, the tab strip wraps instead of forcing horizontal overflow on very narrow viewports, and the sidebar's sticky offset tracks the measured `--app-header-height` instead of a hardcoded 80px
 
 ### Changed
 - Shortcut hints now reveal while holding Ctrl/Cmd as well as Alt/Option, and every unique workspace action button has a shortcut; a central shortcut map and topmost-overlay dispatcher handle tabs, filters, selection, dialogs, editor modes, and admin actions

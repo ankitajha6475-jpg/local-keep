@@ -9,7 +9,8 @@ the existing WebSocket events.
 
 ## Endpoint
 
-- Streamable HTTP: `http://localhost:5173/mcp` (direct backend)
+- Streamable HTTP: `http://localhost:5173/mcp` (direct backend, published on
+  `127.0.0.1` only — host-local clients)
 - Browser MCP hosts can use the HTTPS Vite origin: `https://192.168.3.222:5174/mcp`
 - Transport: MCP SDK v2, Streamable HTTP (`POST`, `Accept: application/json, text/event-stream`)
 - Auth: `Authorization: Bearer lk_mcp_...` or a valid browser session cookie

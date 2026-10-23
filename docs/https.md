@@ -61,5 +61,11 @@ docker compose restart app
 - Login cookies are marked `Secure` via `COOKIE_SECURE=1`, so use the HTTPS URL.
 - If you use a different hostname/IP, issue a certificate whose SAN matches it
   (or add it to the mkcert cert) and update `LOCAL_KEEP_PUBLIC_URL`.
-- Direct backend port 5173 is HTTP and should stay on the local network. Expose
-  only the HTTPS frontend through your firewall/reverse proxy.
+- Dev ports are pinned per address in `docker-compose.yml`, never `0.0.0.0`:
+  `5173` publishes on `127.0.0.1` only (host MCP/API clients), `5174` on
+  `${LOCAL_KEEP_BIND:-192.168.3.222}` (LAN browsers). The host has a public IPv6
+  prefix, so a wildcard publish would expose the dev server to the internet.
+- One bind per port: rootlesskit's port driver rejects the same host port bound
+  to two addresses ("address already in use"), so LAN machines cannot reach the
+  raw backend on 5173. They use the Vite origin on 5174, which proxies `/api`,
+  `/mcp`, and `/ws`.

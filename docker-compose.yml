@@ -12,9 +12,16 @@ services:
       - VITE_HTTPS_KEY=/app/certs/server-key.pem
       - COOKIE_SECURE=1
       - LOCAL_KEEP_PUBLIC_URL=${LOCAL_KEEP_PUBLIC_URL:-https://192.168.3.222:5174}
+    # Dev ports are pinned to specific addresses, never 0.0.0.0: this host has
+    # a public IPv6 prefix, and a wildcard publish exposes the dev server to it.
+    # One bind per port: rootlesskit's port driver cannot bind the same host port
+    # on two addresses ("address already in use"). 5173 therefore stays loopback
+    # (host MCP clients use http://localhost:5173/mcp) and 5174 is the LAN entry
+    # point; LAN clients reach the API and /mcp through the Vite proxy on 5174.
+    # Override the LAN address with LOCAL_KEEP_BIND (e.g. 127.0.0.1).
     ports:
-      - "5173:5173"
-      - "5174:5174"
+      - "127.0.0.1:5173:5173"
+      - "${LOCAL_KEEP_BIND:-192.168.3.222}:5174:5174"
     volumes:
       - .:/app
       - /app/node_modules
