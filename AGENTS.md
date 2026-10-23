@@ -15,6 +15,9 @@ Docker "local-keep" (node:22-slim)
 - Host files live-mounted (`.:/app`), `node_modules` is a named volume
 - Vite serves HTTPS (shared mkcert cert) and proxies `/api/*`, `/mcp`, and `/ws` → `:5173`
 - Browser connects to **https://192.168.3.222:5174** (cert SAN is the LAN IP, not localhost)
+- Host publishes are pinned per address (never `0.0.0.0`, the host has a public
+  IPv6): `127.0.0.1:5173` for host MCP/API clients, `${LOCAL_KEEP_BIND:-192.168.3.222}:5174`
+  for the LAN UI. LAN clients use the Vite proxy on `:5174`, not the raw backend
 - Port 5173 serves only API/WebSocket in development (`NODE_ENV !== 'production'`)
 - Port 5173 serves static frontend only in production mode (`NODE_ENV=production`)
 - `node --watch` auto-restarts on `server.js` changes (no manual restart needed)
@@ -284,8 +287,9 @@ corresponding card while any session has that note open.
 - Express remains HTTP on 5173 inside the container; Vite proxies REST/WS/MCP.
   `COOKIE_SECURE=1` is set because the browser origin is HTTPS.
 - If cert files are absent, Vite falls back to HTTP. Restart after rotating certs.
-- Direct MCP clients can keep using `http://localhost:5173/mcp`; browser MCP
-  clients can use `https://192.168.3.222:5174/mcp`.
+- Direct MCP clients can keep using `http://localhost:5173/mcp` (the port is
+  published on `127.0.0.1` only); browser MCP clients can use
+  `https://192.168.3.222:5174/mcp`, which is also how LAN machines reach the API.
 
 ### Interface Configuration
 
@@ -455,6 +459,10 @@ corresponding card while any session has that note open.
 
 - The tag sidebar is a fixed 230px column with `overflow-x: hidden`; long tag
   names truncate with an ellipsis so a horizontal scrollbar can never appear.
+- The sidebar collapse query in `TagSidebar.vue` and `.workspace
+  { flex-direction: column }` in `App.vue` must share the same 600px breakpoint
+  (comments cross-reference them). If they drift, a `width: 100%` sidebar lands
+  inside a row flex container and crushes/overflows the notes area.
 
 ### Relationships and Tags
 
@@ -750,3 +758,5 @@ All notable changes must be recorded in `CHANGELOG.md`. When making changes:
 49. **Search order is the ranking**: dashboard search must call `/api/search/hybrid` when hybrid is enabled and must render ids in returned order (default **Relevance**). Never re-sort search results by `updatedAt`; that silently discards BM25, cosine similarity, and RRF. The hybrid toggle defaults on when `/api/config.search.semanticEnabled`, is opt-out per browser, and falls back to keyword with the server `notice`. Search requests carry a sequence guard so stale responses cannot overwrite newer rankings.
 50. **Qwen3 queries need the instruction, documents do not**: `embeddingQueryInput()` adds the Qwen3-Embedding retrieval instruction only at query time. Do not add it to indexed chunks and do not send it to the reranker. Without it, short queries compress to ~0.5 similarity and rank unrelated notes first; no reindex is needed after adding it.
 51. **Keyboard shortcuts are declarative but handled**: every `data-shortcut` must have a visible button and a unique combo within its overlay context. The dispatcher only clicks the topmost visible layer; do not add hints for unhandled or background actions. Keep plain keys blocked in text entry, keep the focused form preference for `Mod+Enter`, and keep `Esc` on the topmost overlay close button.
+52. **Excalidraw `updateScene` ignores `files`**: `SceneData` in @excalidraw/excalidraw 0.18 has no `files` field — `updateScene({ elements, files })` silently drops the files. Register remote image binaries with `api.addFiles(array)` AFTER the image elements are applied and in the same tick; an image element rendered before its file entry exists gets a permanent error placeholder (the "needs a refresh" bug). Never route collab files through `updateScene`.
+53. **One bind per host port (rootless Docker)**: rootlesskit's port driver fails with "address already in use" when the same host port is published on two addresses. Keep `5173` on `127.0.0.1` and `5174` on `${LOCAL_KEEP_BIND:-192.168.3.222}`, and never go back to `0.0.0.0` — the host has a public IPv6 prefix.

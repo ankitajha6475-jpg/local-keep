@@ -94,6 +94,12 @@ Docker "local-keep" (node:22-slim)
 Vite serves HTTPS on `:5174` and proxies `/api`, `/mcp`, and `/ws` to the HTTP
 Express backend on `:5173`. Browser connects to the HTTPS origin.
 
+Host publishes are pinned per address in `docker-compose.yml`, never `0.0.0.0`:
+`127.0.0.1:5173` (backend/MCP for host-local clients) and
+`${LOCAL_KEEP_BIND:-192.168.3.222}:5174` (HTTPS UI for the LAN). The machine has
+a public IPv6 prefix, and rootlesskit's port driver allows only one bind per
+host port, so LAN machines reach the API/MCP through the Vite origin on `:5174`.
+
 The image is Debian slim (not Alpine) because `sqlite-vec` ships a glibc loadable
 extension; `node:sqlite` loads it with `allowExtension: true`.
 
