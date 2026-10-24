@@ -28,7 +28,7 @@ The note create and edit flows SHALL NOT require a non-empty body. Saving a note
 
 ### Requirement: Display title derivation rule
 
-The list, gallery cards, and editor header SHALL display a note's title using a derivation rule: (1) the stored `title` if it is non-empty after trimming; (2) otherwise the leading characters of the cleaned content; (3) otherwise a localized fallback string.
+The display title SHALL be the note's `aliases` property first entry when present, otherwise derived from the note title, otherwise from the first meaningful line of the body. `display_title` SHALL remain a shadow projection for listing and search and MUST NOT be written into the fence as its own key.
 
 #### Scenario: Note has an explicit title
 
@@ -44,6 +44,17 @@ The list, gallery cards, and editor header SHALL display a note's title using a 
 
 - **WHEN** a note has `title: ""` and `content: ""`
 - **THEN** the display title returned is the fallback `"Untitled"`
+
+#### Scenario: Alias drives the display title
+
+- **WHEN** a note's fence declares `aliases: [Quarterly Plan, Q3]`
+- **THEN** the display title is `Quarterly Plan`
+- **AND** the fence retains both aliases
+
+#### Scenario: No aliases falls back to the title
+
+- **WHEN** a note has a title and no `aliases` property
+- **THEN** the display title matches the title
 
 ### Requirement: Leading content is cleaned before becoming the display title
 
@@ -91,3 +102,13 @@ The title derivation rule SHALL be used in every UI surface that displays a note
 
 - **WHEN** the user opens a note for editing whose stored title is empty
 - **THEN** the title input field is empty (the user can fill it in), even though the gallery showed a derived title
+
+### Requirement: Aliases participate in link resolution
+
+Wiki-link title resolution SHALL match a note by its title or by any entry in its `aliases` list. Ambiguity rules are unchanged: multiple matches remain ambiguous.
+
+#### Scenario: Resolve by alias
+
+- **WHEN** a note titled `Q3 Plan` declares `aliases: [Quarterly Plan]`
+- **THEN** `[[Quarterly Plan]]` resolves to that note
+- **AND** `[[Q3 Plan]]` resolves to the same note

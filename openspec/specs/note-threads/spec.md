@@ -24,7 +24,7 @@ A note SHALL have a stable `id` that identifies the document for its entire life
 
 ### Requirement: Immutable revision creation
 
-The system SHALL create an immutable revision whenever a note is created or a text note commit is saved. A revision MUST record at least the note id, revision id, parent revision id, monotonically increasing revision number, title, content, type, actor, source, and creation timestamp. The head note row SHALL continue to hold the latest committed state for fast listing and search.
+The system SHALL create an immutable revision whenever a note is created or a text note commit is saved. A revision MUST record at least the note id, revision id, parent revision id, monotonically increasing revision number, title, content, type, actor, source, and creation timestamp. The stored content SHALL be the complete file — properties section plus body — so every revision is a whole-file snapshot. The head note row SHALL continue to hold the latest committed state for fast listing and search. Every change to the file's bytes, including property-only changes, SHALL create a revision; property edits use `source: property`.
 
 #### Scenario: Create a note
 
@@ -45,6 +45,12 @@ The system SHALL create an immutable revision whenever a note is created or a te
 - **WHEN** a commit has the same title, content, and canvas snapshot as the current head
 - **THEN** no new revision is created
 - **AND** the response reports that no changes were saved
+
+#### Scenario: Property-only change is a revision
+
+- **WHEN** a commit changes only the fence
+- **THEN** a new revision is appended
+- **AND** its source is `property`
 
 ### Requirement: Session-stable editing
 
@@ -100,7 +106,7 @@ The system SHALL expose a note's revision history as both a flat ordered list an
 
 ### Requirement: Restore and promote revisions
 
-The system SHALL allow restoring an old revision into the head and promoting a branch into the head. Both operations MUST append a new revision; they MUST NOT rewrite or delete existing history.
+The system SHALL allow restoring an old revision into the head and promoting a branch into the head. Both operations MUST append a new revision; they MUST NOT rewrite or delete existing history. Both operations SHALL copy the revision's file snapshot (properties and body) but MUST NOT move the note's title, which is head metadata outside the file. The revision row's recorded title SHALL continue to describe the name in force at that revision.
 
 #### Scenario: Restore an old version
 
@@ -109,12 +115,44 @@ The system SHALL allow restoring an old revision into the head and promoting a b
 - **AND** the head moves to `R5`
 - **AND** `R1` through `R4` remain unchanged
 
+#### Scenario: Restore does not change the title
+
+- **WHEN** a note was renamed after `R1` was created and the user restores `R1`
+- **THEN** the restored content and properties are `R1`'s
+- **AND** the note keeps its current title
+
 #### Scenario: Promote a branch
 
 - **WHEN** a user promotes branch revision `B` while the head is `R4`
 - **THEN** a new revision is appended with content copied from `B` and parent `R4`
 - **AND** the head moves to the new revision
 - **AND** `B` remains in the tree
+
+### Requirement: Title is head metadata
+
+The note title SHALL live outside the file snapshot. Renaming a note MUST NOT create a revision and MUST NOT modify any revision row. Renaming SHALL update the head title and its updated timestamp. Version-pinned references SHALL keep rendering the title recorded on the pinned revision.
+
+#### Scenario: Rename creates no revision
+
+- **WHEN** a user renames a note at revision 4
+- **THEN** the revision count stays at 4
+- **AND** the note's title is the new name
+
+#### Scenario: Pinned reference keeps its frozen title
+
+- **WHEN** a note is pinned at revision 2 with title `Beta` and later renamed `Gamma`
+- **THEN** the pinned reference still renders `Beta`
+- **AND** an unpinned reference renders `Gamma`
+
+### Requirement: Property revision provenance
+
+Revisions created by property edits SHALL record `source: property` and a message identifying the edit, and batch property operations (such as a tag rename) SHALL record the same message on every affected note so the history can present them as one grouped entry.
+
+#### Scenario: Batch rename provenance
+
+- **WHEN** a tag rename rewrites ten notes
+- **THEN** each note's new revision has `source: property`
+- **AND** all ten share the operation message
 
 ### Requirement: Archive retention and explicit purge
 
@@ -186,3 +224,46 @@ Existing note consumers SHALL continue to receive `id`, `title`, `content`, `typ
 
 - **WHEN** a text save creates revision 3
 - **THEN** the response includes a notice stating that revision 3 was saved and the previous version was kept
+
+### Requirement: Version display on the History button
+
+The editor's History button SHALL display the current note's revision number as a visible version badge/bubble. The badge MUST update when the head revision changes (save, restore, promote, or a remote revision) and MUST reflect the note's `revision_no`, not a client-side counter.
+
+#### Scenario: Show current version
+
+- **WHEN** a note whose head is revision number 3 is opened in the editor
+- **THEN** the History button shows a version badge reading `3`
+
+#### Scenario: Badge advances on save
+
+- **WHEN** the user saves an edit that creates revision 4
+- **THEN** the History button badge reads `4`
+
+#### Scenario: Badge reflects restore
+
+- **WHEN** the user restores an old revision and the head becomes a new revision number
+- **THEN** the badge shows the new head revision number
+
+### Requirement: Automatic version-chain links
+
+When a revision is appended, the system SHALL automatically create a link between the new revision and its parent revision (the old→new version chain). Version-chain links MUST be derived from `parent_revision_id`, MUST NOT be written into note content, and MUST be surfaced in the note's history/backlinks views. Restores and promotes, which append revisions, MUST also produce these links.
+
+#### Scenario: Save creates a version link
+
+- **WHEN** a save appends revision `R3` with parent `R2`
+- **THEN** a version link from `R2` to `R3` exists and is visible in the note's history
+- **AND** no text is added to the note body
+
+#### Scenario: Restore creates a version link
+
+- **WHEN** restoring revision `R1` appends revision `R5`
+- **THEN** a version link connects the prior head to `R5` in the version chain
+
+### Requirement: Permanent addressable versions
+
+Every revision SHALL be permanently addressable by its revision id for the lifetime of the note. A version referenced by a link MUST remain readable and unchanged even after later revisions are created. Purging a note is the only operation that removes its revisions.
+
+#### Scenario: Referenced version survives new edits
+
+- **WHEN** note A references revision `R2` of note B and B is later edited to revision `R3`
+- **THEN** revision `R2` is still readable and its content is unchanged

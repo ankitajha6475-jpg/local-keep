@@ -8,7 +8,12 @@ Makes markdown the explicit, sanitised, round-trippable format for text notes, w
 
 ### Requirement: Sanitised markdown rendering
 
-The system SHALL render note markdown through a single renderer used by the gallery, preview mode, and the rich editor. Rendered HTML MUST be sanitised: scripts, styles, iframes, embedded objects, event-handler attributes, and unsafe URL schemes MUST be removed. GFM tables, task lists, strikethrough, fenced code, and line breaks SHALL be supported.
+The system SHALL render note markdown through a single renderer used by the gallery, preview mode, and the rich editor. Rendering SHALL sanitise markdown and MUST strip exactly one leading properties fence before parsing. The renderer MUST NOT parse metadata from body text: `#` in the body is always a heading character or literal text, never a tag marker. Raw HTML in note markdown SHALL be escaped, not interpreted. Rendered HTML MUST be sanitised: scripts, styles, iframes, embedded objects, event-handler attributes, and unsafe URL schemes MUST be removed. GFM tables, task lists, strikethrough, fenced code, and line breaks SHALL be supported.
+
+#### Scenario: Fence stripped before render
+
+- **WHEN** content begins with a fence followed by `# Heading`
+- **THEN** the output contains the heading markup and no fence text
 
 #### Scenario: Render common markdown
 
@@ -21,6 +26,12 @@ The system SHALL render note markdown through a single renderer used by the gall
 - **WHEN** markdown contains a `<script>`, an inline `style`, an `onerror` handler, or an `iframe`
 - **THEN** the rendered output contains none of them
 - **AND** the note content itself is unchanged until the user edits it
+
+#### Scenario: Body hash text renders literally
+
+- **WHEN** a body contains `#project/alpha`
+- **THEN** it renders as literal text or a heading per markdown rules
+- **AND** no tag is created from it
 
 ### Requirement: Markdown source editing
 
@@ -57,7 +68,13 @@ Text-note content MUST store images as markdown references, never as base64 data
 
 ### Requirement: Serializer fidelity
 
-Serialising the rich editor SHALL preserve headings, paragraphs, ordered and unordered lists, blockquotes, fenced code, inline code, horizontal rules, links, images, bold/italic text, and line breaks in canonical markdown.
+Serialising the rich editor SHALL preserve headings, paragraphs, ordered and unordered lists, blockquotes, fenced code, inline code, horizontal rules, links, images, bold/italic text, and line breaks in canonical markdown. Serialising SHALL produce body-only markdown; the properties fence SHALL be written by a separate serializer and re-attached on save. The body editor MUST NEVER contain the fence. Switching between Visual and Source MUST NOT rewrite the fence or the body when the DOM is clean.
+
+#### Scenario: Body editor excludes the fence
+
+- **WHEN** a note with properties is opened
+- **THEN** the contentEditable or textarea holds only the body
+- **AND** the properties panel holds the fence values
 
 #### Scenario: Serialize headings and lists
 
@@ -68,6 +85,12 @@ Serialising the rich editor SHALL preserve headings, paragraphs, ordered and uno
 
 - **WHEN** the rich editor contains a fenced code block and inline code
 - **THEN** the saved markdown contains a fenced block and backtick-delimited inline code
+
+#### Scenario: Save reassembles the file
+
+- **WHEN** the user saves after editing body and tags
+- **THEN** the stored content is fence plus body
+- **AND** the fence reflects the panel's current values
 
 ### Requirement: Renderer compatibility
 
@@ -347,6 +370,22 @@ The editor toolbar SHALL expose a **Paste: plain / rich** switch, persisted per 
 - **WHEN** HTML contains `<pre>` without `<code>`
 - **THEN** the converted markdown is a fenced code block
 - **AND** indentation is preserved
+
+### Requirement: Paste handling of whole files
+
+When content pasted into the body editor begins with a valid properties fence, the system SHALL offer to split it into properties and body. Accepting SHALL populate the properties panel and keep only the body in the editor; declining SHALL paste the text literally into the body.
+
+#### Scenario: Paste an Obsidian file
+
+- **WHEN** a pasted payload starts with `---`, property lines, and `---`
+- **THEN** the system offers to split the fence
+- **AND** accepting moves the properties into the panel and the body into the editor
+
+#### Scenario: Decline the split
+
+- **WHEN** the user declines the split offer
+- **THEN** the whole pasted text lands in the body
+- **AND** no properties change
 
 ### Requirement: Literal single tildes
 

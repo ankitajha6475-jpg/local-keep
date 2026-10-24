@@ -1,7 +1,7 @@
 # Session Log: Note metadata as properties, and the fence-duplication incident
 
 - **Date**: 2026-10-24 17:51
-- **Commit**: _pending_
+- **Commit**: `de3557cb2bd724e65d4151e7245810091909242f` — `feat(notes): note metadata as a typed properties fence`
 - **Change**: `openspec/changes/note-metadata-properties/` (proposal → design → specs → tasks → implemented)
 
 ## Summary
