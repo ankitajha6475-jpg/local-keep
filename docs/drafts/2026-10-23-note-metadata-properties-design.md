@@ -6,6 +6,10 @@ Context: started as "tags are hard to add/change", evolved into "make a general
 metadata section that can represent the whole history of the file, content is a
 bit like properties of Obsidian".
 
+> **Superseded for decisions**: §12's open questions are all answered in
+> `2026-10-24-note-metadata-properties-resolution.md`. This draft stays as the
+> problem statement and option analysis; do not re-open Q1–Q9 here.
+
 ---
 
 ## 1. Problem statement
@@ -318,6 +322,56 @@ This is where the `#tag` conflict dies completely.
   `set_properties` (or `edit_note` gaining a `meta` map) edits properties.
 - The tag filter tree (`GET /api/tags`) is unchanged (it reads `note_tags`).
 
+### 8.1 Tag tree operations — operable hierarchy (decided 2026-10-24)
+
+**Decision**: nested tags (slash paths `a/b/c`) remain the *only* hierarchy
+mechanism — no separate folder entity, no folder ids. Hierarchy is encoded in
+the tag string itself. What changes is that the **view side becomes operable**:
+`TagSidebar` grows tree operations so the hierarchy can be reorganized instead
+of just browsed.
+
+```
+TagSidebar (today)                TagSidebar (operable)
+─────────────────────             ─────────────────────────
+▾ area/                     ▸     ▾ area/
+  ▾ project/                      ├─ ✏️ rename ──▶ rewrites `area/project/*`
+    • alpha        (3)            │              across every note's tags
+    • beta         (1)            ├─ 📁 move alpha under ops/
+  • ops              (5)          └─ 🗑 delete subtree (with confirm)
+```
+
+Operations (all exact-path semantics via `src/shared/tags.js` helpers, never
+raw string regex):
+
+- **Rename** node `area/project` → `area/proj`: prefix rewrite on
+  `area/project` and `area/project/*` in each affected note's `tags` property +
+  `note_tags`.
+- **Move** node under a new parent (drag or "move to…"): same prefix rewrite
+  under the new path.
+- **Delete** subtree (confirm first): removes the tag paths from notes' `tags`
+  properties; notes themselves are untouched.
+
+Constraints:
+
+- Rename/move/delete are **property mutations across N notes**. Under the
+  "every file change is a revision" rule each affected note gains one revision
+  with `source: 'property'` and a shared `message` (e.g. `tag rename:
+  area/project → area/proj`) so the history UI can collapse the batch. This is
+  the concrete stress test for revision noise (§12 Q9).
+- Client-side tag filtering and descendant inclusion (`GET /api/tags` tree,
+  `exactTag` semantics) are unchanged; operations rewrite the tags property,
+  the tree re-derives from `note_tags`.
+- Round-trip: since the hierarchy lives in the tag string, an export stays
+  literally Obsidian-compatible — nested tags are just nested names.
+- Works pre-migration too (content-rewrite via `addTagsToContent` /
+  `removeTagsFromContent`), so it can ship with the chip editor early.
+
+API/MCP surface: `PATCH /api/tags` (rename/move) and
+`DELETE /api/tags?path=…&recursive=1`; MCP gains `rename_tag` / `move_tag`
+(`remove_tags` already covers delete). The deletion mask and archived-note
+rules follow the existing tag-edit semantics (`note_archived` for archived
+notes).
+
 ---
 
 ## 9. Migration (the delicate part)
@@ -366,9 +420,12 @@ per revision, matching whichever storage option wins in §4.
 - `src/utils/editorSerialize.js` — body-only serialization + meta writer.
 - `src/server/services/notes.js`, `revisions.js` — file snapshots, meta sync on
   head-move (like `links.syncNote`).
-- `src/server/services/tags.js`, `links.js`, `fts.js` — index rebuild hooks.
+- `src/server/services/tags.js`, `links.js`, `fts.js` — index rebuild hooks;
+  `tags.js` also gains subtree rename/move/delete (§8.1).
 - `src/server/migrations/` — `note_meta` table + backfill + normalization pass.
 - `src/App.vue` — Properties panel (chips, typed fields) above the editor.
+- `src/components/TagSidebar.vue` — operable tree: rename/move/delete subtree
+  controls on nodes (§8.1).
 - `src/mcp/createServer.js` — `add_tags`/`remove_tags` semantics, `set_properties`,
   `get_note` shape.
 - `openspec/specs/` — `note-tags`, `note-threads`, `markdown-editor`, `mcp-server`
@@ -391,8 +448,9 @@ per revision, matching whichever storage option wins in §4.
    property (body keeps the text)? — **lean strictly chips-only** for a clean
    separation; easy to add later.
 7. **Global tag rename/delete** from `TagSidebar` (rename `proj/alpha` →
-   `project/alpha` across all notes) — in scope? — **lean yes**, it's cheap under
-   this model (one property key rewrite).
+   `project/alpha` across all notes) — in scope? — **decided yes** (2026-10-24):
+   hierarchy stays slash-path-only (no folder entity), and the view side gets
+   operable rename/move/delete — see §8.1.
 8. **MCP `add_tags`/`remove_tags` stop creating revisions** — acceptable
    behavior change?
 9. **When does a property edit get a revision?** Every edit (file changed) vs.

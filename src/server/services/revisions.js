@@ -29,7 +29,7 @@ function parseCanvas(canvasData) {
   }
 }
 
-export function createRevisionService({ db, imageStore, imageRefs, bus, tags, links, embeddings }) {
+export function createRevisionService({ db, imageStore, imageRefs, bus, tags, links, embeddings, noteMeta }) {
   const insertRevisionStmt = db.prepare(`
     INSERT INTO note_revisions
       (id, note_id, parent_revision_id, revision_no, title, content, display_title,
@@ -273,6 +273,7 @@ export function createRevisionService({ db, imageStore, imageRefs, bus, tags, li
       finalHead = getHead(noteId)
       indexHead(finalHead, revision)
       tags?.syncNote(noteId, effectiveContent, lean)
+      noteMeta?.syncNote(noteId, effectiveContent)
       links?.syncNote(noteId, revision.id, effectiveContent, lean)
       embeddings?.enqueueNote(noteId)
     }
@@ -494,7 +495,9 @@ export function createRevisionService({ db, imageStore, imageRefs, bus, tags, li
       : null
     return commitText({
       noteId,
-      title: revision.title || '',
+      // The title is head metadata outside the file: restore/promote copy the
+      // revision's content and properties but leave the note's name alone.
+      title: head.title || '',
       content: revision.content || '',
       type: revision.type || 'text',
       canvasData,

@@ -7,6 +7,7 @@ import DOMPurify from 'dompurify'
 import TurndownService from 'turndown'
 import { gfm } from 'turndown-plugin-gfm'
 import { transformOutsideCode } from '../shared/markdownCode.js'
+import { splitFence } from '../shared/noteMeta.js'
 
 export { transformOutsideCode }
 
@@ -135,11 +136,17 @@ const PURIFY_OPTIONS = {
 
 /**
  * Render markdown to sanitised HTML.
+ *
+ * Exactly one leading properties fence is stripped first: the fence is
+ * metadata, never prose. `#` in the body is therefore always a heading
+ * character or literal text — never a tag marker.
+ *
  * @param {string} markdown
  * @param {{ resolveLink?: (target:string,label:string)=>({noteId?:string,status?:string}|null) }} [opts]
  */
 export function renderMarkdown(markdown, opts = {}) {
-  let source = preprocessWidthExtension(markdown || '')
+  const { body } = splitFence(markdown || '')
+  let source = preprocessWidthExtension(body)
   const wiki = renderWikiLinks(source, opts.resolveLink)
   source = wiki.markdown
   let html = marked.parse(source)

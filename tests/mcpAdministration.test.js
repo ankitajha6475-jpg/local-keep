@@ -123,7 +123,9 @@ test('MCP administration: archived flags, tag tools, compact responses, and purg
       }
     }))
     assert.equal(edited.note.content, undefined, 'edit result should be compact by default')
-    assert.equal(edited.note.contentLength, 'Fresh body\n\n#edited'.length)
+    // Tags live in the fence, so the body is untouched and the file is longer
+    // than the old inline-tag form ("Fresh body\n\n#edited").
+    assert.ok(edited.note.contentLength > 'Fresh body\n\n#edited'.length)
     assert.ok(edited.note.tags.includes('edited'))
     assert.equal(edited.revision.message, 'Rewrite with tag')
 
@@ -144,7 +146,15 @@ test('MCP administration: archived flags, tag tools, compact responses, and purg
       name: 'get_note',
       arguments: { note_id: two.id }
     }))
-    assert.match(twoAfter.note.content, /^Fresh body\n\n#edited\n\ntail\n\n#tail$/)
+    // get_note returns body-only content plus structured meta by default.
+    assert.equal(twoAfter.note.content, 'Fresh body\n\ntail')
+    assert.deepEqual(twoAfter.note.meta.tags, ['edited', 'tail'])
+
+    const twoRaw = jsonResult(await client.callTool({
+      name: 'get_note',
+      arguments: { note_id: two.id, include_frontmatter: true }
+    }))
+    assert.equal(twoRaw.note.content, '---\ntags: [edited, tail]\n---\nFresh body\n\ntail')
 
     const opened = jsonResult(await client.callTool({
       name: 'note_session',

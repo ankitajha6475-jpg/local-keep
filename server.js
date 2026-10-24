@@ -24,6 +24,7 @@ import { createRevisionService } from './src/server/services/revisions.js'
 import { createNoteService } from './src/server/services/notes.js'
 import { createRenderService } from './src/server/services/renders.js'
 import { createTagService } from './src/server/services/tags.js'
+import { createNoteMetaService } from './src/server/services/noteMeta.js'
 import { createLinkService } from './src/server/services/links.js'
 import { createSearchService } from './src/server/services/search.js'
 import { createEmbeddingService } from './src/server/services/embeddings.js'
@@ -57,6 +58,7 @@ import { migration011McpSessionLimits } from './src/server/migrations/011-mcp-se
 import { migration012AppSettings } from './src/server/migrations/012-app-settings.js'
 import { migration013NoteColor } from './src/server/migrations/013-note-color.js'
 import { migration014VersionPinnedLinks } from './src/server/migrations/014-version-pinned-links.js'
+import { migration015NoteMetadata } from './src/server/migrations/015-note-metadata.js'
 
 import debugLib from 'debug'
 const log = debugLib('local-keep:server')
@@ -343,7 +345,7 @@ try {
 try {
   const migration = runMigrations({
     db,
-    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits, migration012AppSettings, migration013NoteColor, migration014VersionPinnedLinks],
+    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits, migration012AppSettings, migration013NoteColor, migration014VersionPinnedLinks, migration015NoteMetadata],
     backupDir: BACKUPS_DIR,
     context: { imageStore }
   })
@@ -380,9 +382,19 @@ const uiSettings = createUiSettingsService({
   fileError: appConfig.fileError
 })
 const embeddings = createEmbeddingService({ db, dataDir: DATA_DIR, tags })
-const revisions = createRevisionService({ db, imageStore, imageRefs, bus, tags, links, embeddings })
+const noteMeta = createNoteMetaService({ db })
+const revisions = createRevisionService({ db, imageStore, imageRefs, bus, tags, links, embeddings, noteMeta })
 const textCollab = createTextCollabService({ db })
-const notesService = createNoteService({ db, revisions, imageRefs, bus, tags, links, embeddings })
+const notesService = createNoteService({ db, revisions, imageRefs, bus, tags, links, embeddings, noteMeta })
+// Tag tree operations (rename/move/delete subtree) are property mutations that
+// need the revision service, which depends on tags — so wire it after both exist.
+tags.setApplyNoteTags((noteId, nextTags, opts) =>
+  notesService.setProperties(noteId, {
+    set: { tags: nextTags },
+    actor: opts?.actor || 'ui',
+    message: opts?.message || 'tag edit'
+  })
+)
 const renderService = createRenderService({ db, imageRefs, bus })
 const mcpEditing = createMcpEditingService({
   db,
@@ -1535,6 +1547,32 @@ app.post('/api/notes/batch-delete', checkAuth, (req, res) => {
 app.get('/api/tags', checkAuth, (req, res) => {
   try {
     res.json(tags.tree({ prefix: req.query.prefix || '' }))
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+// Operable tag tree: rename/move a subtree (`from` -> `to`) or delete one
+// (`to: null`). Exact-path semantics; archived notes are skipped and reported.
+app.patch('/api/tags', checkAuth, requireAdmin, (req, res) => {
+  try {
+    const { from, to } = req.body || {}
+    if (!from) {
+      return res.status(400).json({ error: 'from is required', code: 'invalid_tag_path' })
+    }
+    res.json(tags.rewritePath({ from, to, actor: 'ui' }))
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.delete('/api/tags', checkAuth, requireAdmin, (req, res) => {
+  try {
+    const from = req.query.path || req.query.from
+    if (!from) {
+      return res.status(400).json({ error: 'path is required', code: 'invalid_tag_path' })
+    }
+    res.json(tags.rewritePath({ from, to: null, actor: 'ui' }))
   } catch (error) {
     sendServiceError(res, error)
   }

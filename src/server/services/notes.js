@@ -1,7 +1,19 @@
 import { getDisplayTitle } from '../../shared/notesText.js'
 import { normalizeNoteColor } from '../../shared/noteColors.js'
-import { removeNoteFromIndex } from '../fts.js'
+import {
+  parseNoteContent,
+  buildNoteContent,
+  setProp,
+  removeProp,
+  isValidPropKey
+} from '../../shared/noteMeta.js'
+import { removeNoteFromIndex, indexNote, extractCanvasText } from '../fts.js'
 import { EVENTS } from '../events.js'
+
+// Keys the app owns outside the fence: the title and color are head metadata
+// (folder name / folder icon), and the note type is structural. None of them may
+// appear as fence properties. `tags` and `aliases` are ordinary fence keys.
+const RESERVED_PROP_KEYS = new Set(['title', 'color', 'type'])
 
 function fail(status, message, code = 'note_error') {
   const error = new Error(message)
@@ -10,7 +22,7 @@ function fail(status, message, code = 'note_error') {
   return error
 }
 
-export function createNoteService({ db, revisions, imageRefs, bus, tags, links, embeddings }) {
+export function createNoteService({ db, revisions, imageRefs, bus, tags, links, embeddings, noteMeta }) {
   function revisionDto(revision) {
     if (!revision) return null
     return {
@@ -283,6 +295,75 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     return getNote(id)
   }
 
+  /**
+   * Rename a note. The title is head metadata outside the file snapshot: a
+   * rename never creates a revision and never touches `note_revisions`, so
+   * pinned references keep rendering the title recorded on their revision.
+   */
+  function renameNote(id, title) {
+    const row = db.prepare('SELECT * FROM notes WHERE id = ?').get(id)
+    if (!row) throw fail(404, 'Note not found', 'note_not_found')
+    const next = String(title ?? '')
+    if (next === (row.title || '')) return getNote(id)
+    const now = new Date().toISOString()
+    const displayTitle = getDisplayTitle({ title: next, content: row.content })
+    db.prepare('UPDATE notes SET title = ?, display_title = ?, updatedAt = ? WHERE id = ?')
+      .run(next, displayTitle, now, id)
+    // Renames change how the note is found and how [[Title]] resolves.
+    links?.resolveAll()
+    links?.syncNote(id, row.head_revision_id, row.content, row.canvasData)
+    const updated = db.prepare('SELECT * FROM notes WHERE id = ?').get(id)
+    indexNote(db, {
+      noteId: id,
+      title: updated.title,
+      content: updated.content,
+      canvasText: updated.canvasData ? extractCanvasText(updated.canvasData) : ''
+    })
+    embeddings?.enqueueNote(id)
+    bus?.emit(EVENTS.NOTE_REVISED, {
+      noteId: id,
+      revisionId: row.head_revision_id,
+      revisionNo: row.revision_no,
+      renamed: true
+    })
+    return getNote(id)
+  }
+
+  /**
+   * Edit the properties fence. Every change to the file's bytes is a revision,
+   * so this commits normally with `source: 'property'`.
+   */
+  function setProperties(id, { set, remove, baseRevisionId = null, actor = 'ui', message = null } = {}) {
+    const row = db.prepare('SELECT * FROM notes WHERE id = ?').get(id)
+    if (!row) throw fail(404, 'Note not found', 'note_not_found')
+    const parsed = parseNoteContent(row.content)
+    let entries = parsed.entries
+    for (const [key, value] of Object.entries(set || {})) {
+      if (!isValidPropKey(key)) {
+        throw fail(400, `Invalid property key: ${key}`, 'invalid_property_key')
+      }
+      if (RESERVED_PROP_KEYS.has(key)) {
+        throw fail(400, `Property "${key}" is managed by the app`, 'reserved_property_key')
+      }
+      entries = setProp(entries, key, value)
+    }
+    for (const key of remove || []) {
+      if (RESERVED_PROP_KEYS.has(key)) {
+        throw fail(400, `Property "${key}" is managed by the app`, 'reserved_property_key')
+      }
+      entries = removeProp(entries, key)
+    }
+    const content = buildNoteContent(entries, parsed.body)
+    return updateNote({
+      id,
+      content,
+      baseRevisionId: baseRevisionId ?? row.head_revision_id,
+      actor,
+      source: 'property',
+      message: message || 'property edit'
+    })
+  }
+
   function archiveNote(id, actor = 'ui', source = 'ui') {
     const row = db.prepare('SELECT * FROM notes WHERE id = ?').get(id)
     if (!row) throw fail(404, 'Note not found', 'note_not_found')
@@ -346,6 +427,7 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     imageRefs.releaseNoteRefs(id)
     removeNoteFromIndex(db, id)
     tags?.deleteNote(id)
+    noteMeta?.removeNote(id)
     links?.deleteNote(id)
     embeddings?.deleteNoteEverywhere(id)
     db.prepare('DELETE FROM note_events WHERE note_id = ?').run(id)
@@ -397,6 +479,8 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     getNote,
     createNote,
     updateNote,
+    renameNote,
+    setProperties,
     setNoteColor,
     archiveNote,
     archiveNotes,

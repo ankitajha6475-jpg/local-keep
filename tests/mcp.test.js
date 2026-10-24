@@ -34,13 +34,13 @@ test('embedded MCP: tools, search timestamps, thread, links, whiteboard images',
 
     const beta = jsonResult(await client.callTool({
       name: 'create_note',
-      arguments: { title: 'Beta', content: 'Beta body #project/local' }
+      arguments: { title: 'Beta', content: '---\ntags: [project/local]\n---\nBeta body' }
     }))
     const alpha = jsonResult(await client.callTool({
       name: 'create_note',
       arguments: {
         title: 'Alpha',
-        content: 'Hello #project/local [[Beta]]',
+        content: '---\ntags: [project/local]\n---\nHello [[Beta]]',
         related_note_ids: [beta.note.id]
       }
     }))
@@ -63,7 +63,7 @@ test('embedded MCP: tools, search timestamps, thread, links, whiteboard images',
       name: 'edit_note',
       arguments: {
         note_id: alpha.note.id,
-        content: 'Hello again #project/local [[Beta]]',
+        content: '---\ntags: [project/local]\n---\nHello again [[Beta]]',
         base_revision_id: alpha.note.revisionId
       }
     }))

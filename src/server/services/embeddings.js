@@ -8,6 +8,7 @@ import { createRerankClient } from '../embeddings/rerankClient.js'
 import { chunkText } from '../embeddings/chunk.js'
 import { extractCanvasText } from '../fts.js'
 import { markdownToText } from '../../shared/notesText.js'
+import { parseNoteContent } from '../../shared/noteMeta.js'
 
 function hash(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex')
@@ -62,13 +63,24 @@ function safeKey(value) {
 }
 
 function noteText(row) {
-  const markdown = markdownToText(row.content || '')
+  // The properties fence is metadata, never retrieval prose.
+  const { body } = parseNoteContent(row.content || '')
+  const markdown = markdownToText(body)
   const canvas = extractCanvasText(row.canvas_data || row.canvasData)
   return `${markdown}\n\n${canvas}`.trim()
 }
 
+function noteTags(row) {
+  const { props } = parseNoteContent(row.content || '')
+  return Array.isArray(props.tags) ? props.tags : []
+}
+
 function noteHash(row, text, chunkSize, chunkOverlap) {
-  return hash(`${row.title || ''}\n${text}\n${chunkSize}\n${chunkOverlap}`)
+  // Tags prefix the embedding input, so they must also drive re-indexing:
+  // without them a tag-only edit produces an unchanged hash and the note is
+  // never re-indexed, leaving stale vectors behind.
+  const tags = noteTags(row).join('\n')
+  return hash(`${row.title || ''}\n${tags}\n${text}\n${chunkSize}\n${chunkOverlap}`)
 }
 
 function normalizeBaseUrl(value) {
@@ -572,7 +584,9 @@ export function createEmbeddingService({
     }
 
     const title = note.title || note.display_title || ''
-    const inputs = chunks.map(chunk => `${title}\n\n${chunk.content}`.trim())
+    const tags = noteTags(note).map(tag => `#${tag}`).join(' ')
+    const prefix = tags ? `${title}\n\n${tags}` : title
+    const inputs = chunks.map(chunk => `${prefix}\n\n${chunk.content}`.trim())
     const client = makeClient({
       baseUrl: settings.base_url,
       apiKey: key,
@@ -808,7 +822,8 @@ export function createEmbeddingService({
         similarity: Math.max(0, 1 - row.distance),
         chunkIndex: chunk.chunk_index,
         snippet: chunk.content.slice(0, 400),
-        document: chunk.content
+        document: chunk.content,
+        tags: noteTags(note)
       })
     }
 
@@ -831,7 +846,10 @@ export function createEmbeddingService({
           })
           const scores = await rerankClient.rerank(
             text,
-            candidates.map(candidate => `${candidate.title}\n\n${candidate.document}`),
+            candidates.map(candidate => {
+              const tags = (candidate.tags || []).map(tag => `#${tag}`).join(' ')
+              return [candidate.title, tags, candidate.document].filter(Boolean).join('\n\n')
+            }),
             { topN: candidates.length }
           )
           const scoreMap = new Map(scores.map(item => [item.index, item.score]))

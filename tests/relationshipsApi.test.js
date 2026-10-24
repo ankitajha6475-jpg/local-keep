@@ -10,7 +10,7 @@ test('relationships/tags API: links, backlinks, filters, graph', async () => {
 
     const a = await request('POST', '/api/notes', {
       title: 'Alpha',
-      content: '#project/local See [[Beta]]'
+      content: '---\ntags: [project/local]\n---\nSee [[Beta]]'
     })
     const b = await request('POST', '/api/notes', {
       title: 'Beta',

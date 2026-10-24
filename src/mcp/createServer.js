@@ -1,11 +1,21 @@
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/server'
 import * as z from 'zod/v4'
 import {
-  addTagsToContent,
-  removeTagsFromContent,
   isValidTag,
   normalizeTag
 } from '../shared/tags.js'
+import { parseNoteContent, buildNoteContent, setProp } from '../shared/noteMeta.js'
+
+/**
+ * Merge tag paths into a note's canonical content by rewriting the `tags`
+ * property in the fence. The body is never touched.
+ */
+function withTags(content, tags) {
+  const parsed = parseNoteContent(content)
+  const existing = Array.isArray(parsed.props.tags) ? parsed.props.tags : []
+  const merged = [...new Set([...existing, ...tags.map(normalizeTag).filter(Boolean)])]
+  return buildNoteContent(setProp(parsed.entries, 'tags', merged), parsed.body)
+}
 
 function actorFor(authInfo) {
   if (authInfo?.actor) return authInfo.actor
@@ -291,6 +301,24 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     }
   }
 
+  /**
+   * Tag edits are property mutations: they rewrite the `tags` list in the
+   * fence, never the body. Hierarchical matching is exact-path, so adding
+   * `area` does not touch `area/project`.
+   */
+  function computeTagChange(note, tags, mode) {
+    const current = Array.isArray(note.tags) ? [...note.tags] : []
+    const wanted = tags.map(tag => normalizeTag(tag)).filter(Boolean)
+    const existing = new Set(current)
+    const affected = wanted.filter(tag =>
+      mode === 'add' ? !existing.has(tag) : existing.has(tag)
+    )
+    const nextTags = mode === 'add'
+      ? [...new Set([...current, ...wanted])]
+      : current.filter(tag => !wanted.includes(tag))
+    return { affected, nextTags }
+  }
+
   function runTagOperation({ noteIds, tagInput, mode, dryRun = false, commitMode = 'append', message = null }) {
     requireWrite(authInfo)
     assertNoWriteSession()
@@ -317,10 +345,8 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
           continue
         }
 
-        const change = mode === 'add'
-          ? addTagsToContent(note.content, tags)
-          : removeTagsFromContent(note.content, tags)
-        const affected = mode === 'add' ? change.added : change.removed
+        const change = computeTagChange(note, tags, mode)
+        const affected = change.affected
         if (affected.length === 0) {
           results.push({
             ...noteSummary(note),
@@ -343,14 +369,10 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
           continue
         }
 
-        const updated = notes.updateNote({
-          id: noteId,
-          title: note.title,
-          content: change.content,
+        const updated = notes.setProperties(noteId, {
+          set: { tags: change.nextTags },
           baseRevisionId: note.revisionId,
-          mode: commitMode,
           actor,
-          source: 'mcp',
           message: message || (mode === 'add'
             ? `Add tags: ${affected.map(tag => `#${tag}`).join(' ')}`
             : `Remove tags: ${affected.map(tag => `#${tag}`).join(' ')}`)
@@ -490,22 +512,30 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
   })
 
   server.registerTool('get_note', {
-    description: 'Read a note by id, or a historical revision. Optionally include history, links, backlinks, and whiteboard summary.',
+    description: 'Read a note by id, or a historical revision. Returns structured `meta` plus body-only `content`; pass include_frontmatter for the raw file. Optionally include history, links, backlinks, and whiteboard summary.',
     inputSchema: z.object({
       note_id: z.string(),
       revision_id: z.string().optional(),
       include_history: z.boolean().optional(),
       include_links: z.boolean().optional(),
       include_backlinks: z.boolean().optional(),
-      include_canvas: z.boolean().optional()
+      include_canvas: z.boolean().optional(),
+      include_frontmatter: z.boolean().optional()
     })
   }, async (args) => {
     try {
       let note = notes.getNote(args.note_id)
       const includeCanvas = args.include_canvas === true
+      const raw = note.content || ''
+      const parsed = parseNoteContent(raw)
       if (note.type === 'canvas' && !includeCanvas) {
         const { canvasData, thumbnail, ...rest } = note
         note = { ...rest, canvas_omitted: true }
+      }
+      note = {
+        ...note,
+        meta: parsed.props,
+        content: args.include_frontmatter === true ? raw : parsed.body
       }
       const result = { note }
       if (args.revision_id) {
@@ -547,7 +577,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
       let content = `${args.content || ''}${relatedAppendix(args.related_note_ids)}`
       if (Array.isArray(args.tags) && args.tags.length) {
         const normalizedTags = normalizeTagInput(args.tags)
-        content = addTagsToContent(content, normalizedTags).content
+        content = withTags(content, normalizedTags)
       }
       const note = notes.createNote({
         title: args.title || '',
@@ -590,9 +620,10 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
       let addedTags = []
       if (Array.isArray(args.tags) && args.tags.length) {
         const normalizedTags = normalizeTagInput(args.tags)
-        const change = addTagsToContent(content !== undefined ? content : note.content, normalizedTags)
-        content = change.content
-        addedTags = change.added
+        const current = parseNoteContent(content !== undefined ? content : note.content)
+        const existing = Array.isArray(current.props.tags) ? current.props.tags : []
+        addedTags = normalizedTags.filter(tag => !existing.includes(tag))
+        content = withTags(content !== undefined ? content : note.content, normalizedTags)
       }
       if (content === undefined && args.title === undefined) {
         throw new Error('edit_note requires title, content, or tags')
@@ -632,13 +663,19 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
       assertNoWriteSession()
       const note = notes.getNote(args.note_id)
       assertActiveNote(note)
-      let content = appendMarkdown(note.content || '', args.content)
+      // Append to the body only: the fence is metadata, not prose.
+      const current = parseNoteContent(note.content || '')
+      let content = buildNoteContent(
+        current.entries,
+        appendMarkdown(current.body, args.content)
+      )
       let addedTags = []
       if (Array.isArray(args.tags) && args.tags.length) {
         const normalizedTags = normalizeTagInput(args.tags)
-        const change = addTagsToContent(content, normalizedTags)
-        content = change.content
-        addedTags = change.added
+        const before = parseNoteContent(content)
+        const existing = Array.isArray(before.props.tags) ? before.props.tags : []
+        addedTags = normalizedTags.filter(tag => !existing.includes(tag))
+        content = withTags(content, normalizedTags)
       }
       const result = notes.updateNote({
         id: args.note_id,
@@ -660,7 +697,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
   })
 
   server.registerTool('add_tags', {
-    description: 'Add inline tags to one or more notes as new revisions. Supports dry_run. Archived notes must be restored first.',
+    description: 'Add tags to one or more notes as property edits (the tags list in the properties section). Supports dry_run. Archived notes must be restored first.',
     inputSchema: z.object({
       note_ids: z.array(z.string().min(1)).min(1).max(100),
       tags: z.array(z.string().min(1)).min(1).max(100),
@@ -682,7 +719,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
   })
 
   server.registerTool('remove_tags', {
-    description: 'Remove exact inline tags from one or more notes as new revisions. Supports dry_run. Archived notes must be restored first.',
+    description: 'Remove exact tag paths from one or more notes as property edits (the tags list in the properties section). Supports dry_run. Archived notes must be restored first.',
     inputSchema: z.object({
       note_ids: z.array(z.string().min(1)).min(1).max(100),
       tags: z.array(z.string().min(1)).min(1).max(100),
@@ -700,6 +737,39 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
         commitMode: args.commit_mode || 'append',
         message: args.message || null
       }))
+    } catch (e) { return failError(e) }
+  })
+
+  server.registerTool('set_properties', {
+    description: 'Set or remove keys in a note properties section as a revision (source: property). The title and color are head metadata and cannot be set here — use edit_note for the title. Archived notes must be restored first.',
+    inputSchema: z.object({
+      note_id: z.string(),
+      set: z.record(z.string(), z.unknown()).optional(),
+      remove: z.array(z.string()).optional(),
+      base_revision_id: z.string().optional(),
+      message: z.string().optional(),
+      include_content: z.boolean().optional()
+    })
+  }, async (args) => {
+    try {
+      requireWrite(authInfo)
+      assertNoWriteSession()
+      const note = notes.getNote(args.note_id)
+      assertActiveNote(note)
+      if (!args.set && !args.remove) {
+        throw new Error('set_properties requires set or remove')
+      }
+      const result = notes.setProperties(args.note_id, {
+        set: args.set || {},
+        remove: args.remove || [],
+        baseRevisionId: args.base_revision_id || note.revisionId,
+        actor,
+        message: args.message || 'property edit'
+      })
+      return text({
+        ...mutationResponse(result, `${baseUrl}/#/note/${encodeURIComponent(args.note_id)}/history`, args.include_content === true),
+        meta: parseNoteContent(result.note?.content || '').props
+      })
     } catch (e) { return failError(e) }
   })
 

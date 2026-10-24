@@ -322,6 +322,7 @@
             :mod-key="modKey"
             @select="selectTag"
             @close="tagSidebarOpen = false"
+            @tag-op="runTagOp"
           />
           <div class="workspace-content">
         <!-- Selection Action Bar -->
@@ -918,7 +919,10 @@
       <div v-if="isModalOpen" class="modal-overlay" @mousedown.self="closeModal">
         <div
           class="modal-content note-form-modal"
-          :class="{ 'editing-form': editingId !== null }"
+          :class="[
+            { 'editing-form': editingId !== null, 'is-tinted': !!editingColor },
+            editingColor ? `note-color-${editingColor}` : ''
+          ]"
           :style="modalSize.width ? { width: modalSize.width + 'px', height: modalSize.height + 'px', maxWidth: 'none', maxHeight: 'none' } : {}"
         >
           <div class="modal-header">
@@ -959,16 +963,147 @@
             </div>
           </div>
           <form @submit.prevent="editingId ? saveEdit() : addNote()">
-            <input
-              ref="modalTitleInput"
-              v-model="newNoteTitle"
-              type="text"
-              placeholder="Title"
-              class="note-title-input"
-              @keydown.ctrl.enter.stop.prevent="editingId ? saveEdit() : addNote()"
-              @keydown.meta.enter.stop.prevent="editingId ? saveEdit() : addNote()"
-              @blur="applyPendingRemoteTitle"
-            >
+            <!-- Head metadata: the folder name and its icon. Both live outside
+                 the fence, so they sit together above the properties panel. -->
+            <div class="note-title-row">
+              <input
+                ref="modalTitleInput"
+                v-model="newNoteTitle"
+                type="text"
+                placeholder="Title"
+                class="note-title-input"
+                @keydown.ctrl.enter.stop.prevent="editingId ? saveEdit() : addNote()"
+                @keydown.meta.enter.stop.prevent="editingId ? saveEdit() : addNote()"
+                @blur="applyPendingRemoteTitle"
+              >
+              <div class="card-color-picker" @click.stop>
+                <button
+                  type="button"
+                  class="card-color-btn"
+                  :class="`card-color-btn--${editingColor || 'default'}`"
+                  :aria-label="`Note color: ${noteColorLabel(editingColor)}`"
+                  :title="`Note color: ${noteColorLabel(editingColor)}`"
+                  @click="toggleEditingColorMenu"
+                >
+                  <AppIcon name="palette" :size="15" />
+                </button>
+                <div
+                  v-if="editingColorMenuOpen"
+                  class="note-color-menu"
+                  role="menu"
+                  aria-label="Choose note color"
+                >
+                  <button
+                    v-for="opt in NOTE_COLOR_OPTIONS"
+                    :key="opt.id || 'default'"
+                    type="button"
+                    role="menuitemradio"
+                    class="note-color-option"
+                    :class="[
+                      `note-color-option--${opt.id || 'default'}`,
+                      { selected: (editingColor || null) === (opt.id || null) }
+                    ]"
+                    :title="opt.label"
+                    :aria-label="opt.label"
+                    :aria-checked="(editingColor || null) === (opt.id || null)"
+                    @click="setEditingColor(opt.id); editingColorMenuOpen = false"
+                  >
+                    <AppIcon
+                      v-if="(editingColor || null) === (opt.id || null)"
+                      name="check"
+                      :size="13"
+                      :stroke-width="2.4"
+                    />
+                  </button>
+                </div>
+              </div>
+            </div>
+            <!-- Properties section (the fence): tags, aliases, typed user fields.
+                 The title row and the Presentation heading are head metadata. -->
+            <div class="note-properties" :class="{ 'props-collapsed': !propsOpen }" data-label="Properties">
+              <button
+                type="button"
+                class="props-toggle"
+                :aria-expanded="propsOpen"
+                @click="propsOpen = !propsOpen"
+              >
+                <span class="props-caret">{{ propsOpen ? '▾' : '▸' }}</span>
+                <span class="props-toggle-label">Properties</span>
+                <span v-if="!propsOpen" class="props-summary">{{ propsSummary }}</span>
+              </button>
+              <div class="prop-row">
+                <label class="prop-key">tags</label>
+                <div class="prop-chips">
+                  <span
+                    v-for="tag in noteTagList"
+                    :key="tag"
+                    class="prop-chip"
+                  >#{{ tag }}<button
+                      type="button"
+                      class="prop-chip-remove"
+                      :aria-label="`Remove tag ${tag}`"
+                      @click="removeTagProp(tag)"
+                    >×</button></span>
+                  <input
+                    type="text"
+                    class="prop-chip-input"
+                    placeholder="Add tag…"
+                    v-model="tagDraft"
+                    @keydown.enter.prevent="addTagProp(tagDraft)"
+                    @keydown.,.prevent="addTagProp(tagDraft)"
+                    @blur="addTagProp(tagDraft)"
+                  >
+                </div>
+              </div>
+              <div class="prop-row">
+                <label class="prop-key">aliases</label>
+                <input
+                  type="text"
+                  class="prop-value"
+                  :value="aliasDraft"
+                  placeholder="Comma-separated aliases"
+                  @change="setAliasProp($event.target.value)"
+                >
+              </div>
+              <div
+                v-for="entry in userPropEntries"
+                :key="entry.key"
+                class="prop-row"
+              >
+                <label class="prop-key">{{ entry.key }}</label>
+                <input
+                  v-if="entry.type !== 'checkbox'"
+                  type="text"
+                  class="prop-value"
+                  :value="entry.value"
+                  @change="setUserProp(entry.key, $event.target.value)"
+                >
+                <input
+                  v-else
+                  type="checkbox"
+                  class="prop-checkbox"
+                  :checked="entry.value"
+                  @change="setUserProp(entry.key, $event.target.checked)"
+                >
+                <button
+                  type="button"
+                  class="prop-remove"
+                  :aria-label="`Remove property ${entry.key}`"
+                  @click="removePropKey(entry.key)"
+                >×</button>
+              </div>
+              <div class="prop-row">
+                <label class="prop-key">add</label>
+                <input
+                  type="text"
+                  class="prop-value"
+                  placeholder="New property name…"
+                  v-model="propKeyDraft"
+                  @keydown.enter.prevent="addPropKey"
+                >
+                <button type="button" class="prop-add" @click="addPropKey">+</button>
+              </div>
+            </div>
             <div class="note-editor-toolbar">
               <MarkdownToolbar
                 :mod-key="modKey"
@@ -1240,8 +1375,15 @@ import {
   normalizeMarkdown
 } from './utils/markdown.js'
 import { serializeEditorToMarkdown as serializeEditorRoot } from './utils/editorSerialize.js'
+import {
+  parseNoteContent,
+  buildNoteContent,
+  setProp,
+  removeProp
+} from './shared/noteMeta.js'
+import { normalizeTag, isValidTag, MAX_TAGS_PER_NOTE } from './shared/tags.js'
+import { NOTE_COLOR_OPTIONS, readNoteColorChange, noteColorLabel } from './shared/noteColors.js'
 import { createTextCollabManager } from './collab/textCollabManager.js'
-import { readNoteColorChange } from './shared/noteColors.js'
 
 const log = debug('local-keep:client')
 const API_BASE = window.location.origin
@@ -1367,6 +1509,147 @@ export default {
     const notePresence = ref({})
     const newNoteTitle = ref('')
     const newNoteContent = ref('')
+    // The properties section (the fence) is edited through the properties panel
+    // and never lives in the body editor's text.
+    const noteProps = ref([])
+    // Collapsed by default: the panel is metadata chrome, not the note itself.
+    const propsOpen = ref(false)
+    const tagDraft = ref('')
+    const propKeyDraft = ref('')
+
+    /** Tags as a plain list from the `tags` property. */
+    const noteTagList = computed(() => {
+      const value = noteProps.value.find(e => e && !e.blank && e.key === 'tags')?.value
+      return Array.isArray(value) ? value : []
+    })
+
+    /** Aliases joined for the single-line field. */
+    const aliasDraft = computed(() => {
+      const value = noteProps.value.find(e => e && !e.blank && e.key === 'aliases')?.value
+      return Array.isArray(value) ? value.join(', ') : ''
+    })
+
+    /** Free-form keys the app does not own. */
+    const userPropEntries = computed(() =>
+      noteProps.value.filter(e => e && !e.blank && !['tags', 'aliases'].includes(e.key))
+    )
+
+    /** One-line preview shown on the collapsed Properties header. */
+    const propsSummary = computed(() => {
+      const parts = []
+      if (noteTagList.value.length) {
+        parts.push(`#${noteTagList.value[0]}${noteTagList.value.length > 1 ? ` +${noteTagList.value.length - 1}` : ''}`)
+      }
+      const aliases = aliasDraft.value
+      if (aliases) parts.push(`alias ${aliases.split(',')[0].trim()}`)
+      if (userPropEntries.value.length) parts.push(`${userPropEntries.value.length} prop`)
+      return parts.join(' · ')
+    })
+
+    function addTagProp(raw) {
+      const tag = normalizeTag(raw)
+      tagDraft.value = ''
+      if (!tag || !isValidTag(tag)) return
+      const current = noteTagList.value
+      if (current.includes(tag) || current.length >= MAX_TAGS_PER_NOTE) return
+      noteProps.value = setProp(noteProps.value, 'tags', [...current, tag])
+    }
+
+    function removeTagProp(tag) {
+      noteProps.value = setProp(
+        noteProps.value,
+        'tags',
+        noteTagList.value.filter(item => item !== tag)
+      )
+    }
+
+    function setAliasProp(raw) {
+      const aliases = String(raw || '')
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean)
+      noteProps.value = aliases.length
+        ? setProp(noteProps.value, 'aliases', aliases)
+        : removeProp(noteProps.value, 'aliases')
+    }
+
+    function setUserProp(key, value) {
+      noteProps.value = setProp(noteProps.value, key, value)
+    }
+
+    function removePropKey(key) {
+      noteProps.value = removeProp(noteProps.value, key)
+      scheduleTagsRefresh()
+    }
+
+    function addPropKey() {
+      const key = propKeyDraft.value.trim()
+      propKeyDraft.value = ''
+      if (!key || /[\n\r:]/.test(key)) return
+      if (noteProps.value.some(e => e && !e.blank && e.key === key)) return
+      noteProps.value = setProp(noteProps.value, key, '')
+    }
+
+    /**
+     * Operable tag tree: rename/move/delete a subtree. Each is an exact-path
+     * rewrite across every affected note's tags property, so it creates one
+     * `source: 'property'` revision per note (batched in history by message).
+     */
+    async function runTagOp({ from, to }) {
+      try {
+        const result = to === null
+          ? await api(`/api/tags?path=${encodeURIComponent(from)}`, { method: 'DELETE' })
+          : await api('/api/tags', {
+              method: 'PATCH',
+              body: JSON.stringify({ from, to })
+            })
+        await loadNotes()
+        await loadTags()
+        const changed = result?.changed?.length ?? 0
+        const skipped = result?.skipped?.length ?? 0
+        showRevisionNotice(
+          `${to === null ? 'Deleted' : 'Rewrote'} #${from} on ${changed} note(s)` +
+          (skipped ? `; ${skipped} archived note(s) skipped.` : '.')
+        )
+      } catch (e) {
+        showRevisionNotice(e.message || 'Tag operation failed')
+        throw e
+      }
+    }
+
+    /** Tint is head metadata (the folder icon), never a fence property. */
+    const editingColorMenuOpen = ref(false)
+    // Local override so the tint applies the moment it is picked, before the
+    // round-trip resolves (and for notes that do not exist yet).
+    const pendingColor = ref(undefined)
+    const editingColor = computed(() => {
+      if (pendingColor.value !== undefined) return pendingColor.value
+      const note = editingId.value
+        ? noteIndex.value.find(item => item.id === editingId.value)
+        : null
+      return note?.color ?? null
+    })
+
+    function toggleEditingColorMenu() {
+      editingColorMenuOpen.value = !editingColorMenuOpen.value
+    }
+
+    async function setEditingColor(value) {
+      const next = value || null
+      pendingColor.value = next
+      if (!editingId.value) return
+      try {
+        const updated = await api(`/api/notes/${editingId.value}/color`, {
+          method: 'PUT',
+          body: JSON.stringify({ color: next })
+        })
+        patchNote(editingId.value, updated)
+        pendingColor.value = undefined
+      } catch (e) {
+        pendingColor.value = undefined
+        showRevisionNotice(e.message || 'Could not set the note colour')
+      }
+    }
     const editingId = ref(null)
     // Stable document identity: editingId never changes during an edit session.
     // The base revision is only used for optimistic concurrency.
@@ -2836,6 +3119,8 @@ export default {
     const openNewNoteModal = () => {
       teardownTextCollab()
       isModalOpen.value = true
+      propsOpen.value = false
+      pendingColor.value = undefined
       editingId.value = null
       editingBaseRevisionId.value = null
       editingRevisionNo.value = 1
@@ -2882,6 +3167,8 @@ export default {
       log('paste intercepted: mode=%s textLength=%d', pasteMode.value, content.length)
       teardownTextCollab()
       isModalOpen.value = true
+      propsOpen.value = false
+      pendingColor.value = undefined
       editingId.value = null
       editingBaseRevisionId.value = null
       editingRevisionNo.value = 1
@@ -3051,8 +3338,10 @@ export default {
           showRevisionNotice('One or more pasted images could not be uploaded. The note was not saved.')
           return
         }
-        const content = normalizeMarkdown(normalized.markdown)
-        newNoteContent.value = content
+        // Body only in the editor; the fence is re-attached from noteProps.
+        const body = normalizeMarkdown(normalized.markdown)
+        newNoteContent.value = body
+        const content = buildNoteContent(noteProps.value, body)
         const note = await api('/api/notes', {
           method: 'POST',
           body: JSON.stringify({
@@ -3061,6 +3350,17 @@ export default {
           })
         })
         upsertNote(note)
+        // A tint chosen before saving is applied now that the note exists.
+        if (pendingColor.value !== undefined && pendingColor.value !== null) {
+          try {
+            const updated = await api(`/api/notes/${note.id}/color`, {
+              method: 'PUT',
+              body: JSON.stringify({ color: pendingColor.value })
+            })
+            patchNote(note.id, updated)
+          } catch (_) { /* tint is cosmetic; never block the save */ }
+        }
+        pendingColor.value = undefined
         scheduleTagsRefresh()
         closeModal(true)
         if (dashboardTab.value === 'drafts') dashboardTab.value = 'notes'
@@ -3197,10 +3497,15 @@ export default {
       historyPreview.value = null
       historyError.value = ''
       newNoteTitle.value = note.title || ''
-      newNoteContent.value = note.content || ''
+      // Body only: the fence is edited through the properties panel.
+      const parsed = parseNoteContent(note.content || '')
+      noteProps.value = parsed.entries
+      newNoteContent.value = parsed.body
       editingOriginalTitle = newNoteTitle.value
       editingOriginalContent = newNoteContent.value
       isModalOpen.value = true
+      propsOpen.value = false
+      pendingColor.value = undefined
       modalSize.value = { width: null, height: null }
       nextTick(() => {
         renderEditorContent()
@@ -3456,8 +3761,10 @@ export default {
           showRevisionNotice('One or more pasted images could not be uploaded. The note was not saved.')
           return
         }
-        const content = normalizeMarkdown(normalized.markdown)
-        newNoteContent.value = content
+        // Body only in the editor; the fence is re-attached from noteProps.
+        const body = normalizeMarkdown(normalized.markdown)
+        newNoteContent.value = body
+        const content = buildNoteContent(noteProps.value, body)
         // Suppress the note-revised echo for this Save; the WS event can arrive
         // before the REST response resolves.
         recentLocalRevision = { id: editingId.value, at: Date.now() }
@@ -4542,6 +4849,27 @@ export default {
       presenceTitle,
       newNoteTitle,
       newNoteContent,
+      noteProps,
+      propsOpen,
+      propsSummary,
+      noteTagList,
+      aliasDraft,
+      userPropEntries,
+      tagDraft,
+      propKeyDraft,
+      addTagProp,
+      removeTagProp,
+      setAliasProp,
+      setUserProp,
+      removePropKey,
+      addPropKey,
+      runTagOp,
+      editingColor,
+      setEditingColor,
+      editingColorMenuOpen,
+      toggleEditingColorMenu,
+      noteColorLabel,
+      NOTE_COLOR_OPTIONS,
       editingId,
       editingBaseRevisionId,
       editingRevisionNo,
@@ -6421,6 +6749,179 @@ main {
   outline: none;
 }
 
+/* Head metadata row: the folder name and its icon share a line. */
+.note-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.note-title-row .note-title-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin-bottom: 0.5rem;
+}
+
+.note-title-row .card-color-picker {
+  margin-bottom: 0.5rem;
+}
+
+/* Properties section (the fence): one row per key, key on the left. */
+.note-properties {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.375rem 0 0.5rem;
+  border-bottom: 1px solid var(--border-color, rgba(0, 0, 0, 0.12));
+  margin-bottom: 0.5rem;
+}
+
+/* Folded by default: only the toggle header and a one-line summary show. */
+.note-properties.props-collapsed {
+  padding-bottom: 0.25rem;
+}
+
+.note-properties.props-collapsed .prop-row {
+  display: none;
+}
+
+.props-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 100%;
+  padding: 0.125rem 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 0.75rem;
+  color: var(--text-muted, rgba(0, 0, 0, 0.55));
+  text-align: left;
+}
+
+.props-toggle:hover {
+  color: var(--text-color, inherit);
+}
+
+.props-caret {
+  width: 0.75rem;
+  flex-shrink: 0;
+  font-size: 0.625rem;
+}
+
+.props-toggle-label {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  font-size: 0.6875rem;
+}
+
+.props-summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  font-size: 0.75rem;
+  opacity: 0.85;
+}
+
+.prop-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 1.75rem;
+}
+
+.prop-key {
+  flex: 0 0 5.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--text-muted, rgba(0, 0, 0, 0.55));
+}
+
+.prop-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.25rem 0.375rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 0.8125rem;
+  background: transparent;
+}
+
+.prop-value:hover,
+.prop-value:focus {
+  border-color: var(--border-color, rgba(0, 0, 0, 0.18));
+  outline: none;
+}
+
+.prop-checkbox {
+  flex: 0 0 auto;
+}
+
+.prop-chips {
+  flex: 1 1 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.prop-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.125rem;
+  padding: 0.0625rem 0.375rem;
+  border-radius: 999px;
+  background: var(--chip-bg, rgba(0, 0, 0, 0.06));
+  font-size: 0.75rem;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prop-chip-remove {
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0 0.125rem;
+  font-size: 0.75rem;
+  line-height: 1;
+  color: inherit;
+}
+
+.prop-chip-input {
+  flex: 1 1 6rem;
+  min-width: 5rem;
+  padding: 0.125rem 0.25rem;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  background: transparent;
+}
+
+.prop-chip-input:focus {
+  border-color: var(--border-color, rgba(0, 0, 0, 0.18));
+  outline: none;
+}
+
+.prop-remove,
+.prop-add {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0 0.25rem;
+  font-size: 0.875rem;
+  line-height: 1;
+  color: var(--text-muted, rgba(0, 0, 0, 0.55));
+}
+
 .note-form textarea {
   width: 100%;
   padding: 0.5rem;
@@ -6597,7 +7098,9 @@ main {
   100% { background-position: -200% 0; }
 }
 
-.note-card {
+/* Tint defaults live on any note surface (card, editor modal). `:where()`
+   keeps specificity low so per-tint overrides win regardless of source order. */
+:where(.note-card) {
   --card-surface-start: #ffffff;
   --card-surface-end: #f4f8ff;
   --card-border-color: #dbe7fb;
@@ -6633,7 +7136,7 @@ main {
   pointer-events: none;
 }
 
-.note-card.canvas-note {
+:where(.note-card).canvas-note {
   --card-surface-start: #fefcff;
   --card-surface-end: #f6f0ff;
   --card-border-color: #e4d7f7;
@@ -6641,8 +7144,9 @@ main {
   --card-accent-end: #7b4dd8;
 }
 
-/* Per-note tint overrides (notes.color). Default stays type-based. */
-.note-card.note-color-blue {
+/* Per-note tint overrides (notes.color). Default stays type-based.
+   Unprefixed so the editor modal tints from the same palette as its card. */
+.note-color-blue {
   --card-surface-start: #f8fbff;
   --card-surface-end: #e8f1ff;
   --card-border-color: #bfdbfe;
@@ -6650,7 +7154,7 @@ main {
   --card-accent-end: #2563eb;
 }
 
-.note-card.note-color-green {
+.note-color-green {
   --card-surface-start: #f7fdf9;
   --card-surface-end: #e6f8ee;
   --card-border-color: #bbe9cf;
@@ -6658,7 +7162,7 @@ main {
   --card-accent-end: #16a34a;
 }
 
-.note-card.note-color-amber {
+.note-color-amber {
   --card-surface-start: #fffdf5;
   --card-surface-end: #fdf3d7;
   --card-border-color: #f6dfa6;
@@ -6666,7 +7170,7 @@ main {
   --card-accent-end: #d97706;
 }
 
-.note-card.note-color-rose {
+.note-color-rose {
   --card-surface-start: #fff8f9;
   --card-surface-end: #ffe9ec;
   --card-border-color: #fecdd3;
@@ -6674,7 +7178,7 @@ main {
   --card-accent-end: #e11d48;
 }
 
-.note-card.note-color-violet {
+.note-color-violet {
   --card-surface-start: #fbf9ff;
   --card-surface-end: #f1ebff;
   --card-border-color: #ddd6fe;
@@ -6682,7 +7186,7 @@ main {
   --card-accent-end: #7c3aed;
 }
 
-.note-card.note-color-slate {
+.note-color-slate {
   --card-surface-start: #fbfcfd;
   --card-surface-end: #eef2f6;
   --card-border-color: #dbe3ec;
@@ -7373,8 +7877,22 @@ main {
   to { opacity: 1; }
 }
 
+/* Fallback tint variables for the editor surface. `:where()` gives this zero
+   specificity on purpose: the modal element also carries `note-color-*` when
+   tinted, and those must win. Without this the fallback would override the tint
+   simply by coming later in the sheet. */
+:where(.note-form-modal) {
+  --card-surface-start: #ffffff;
+  --card-surface-end: #ffffff;
+  --card-border-color: transparent;
+  --card-accent-start: #8ab4f8;
+  --card-accent-end: #1a73e8;
+}
+
 .note-form-modal {
-  background: white;
+  /* Consumes the same tint variables as the note card, so the editor shows the
+     note's colour while editing. */
+  background: linear-gradient(180deg, var(--card-surface-start) 0%, var(--card-surface-end) 100%);
   border-radius: 12px;
   padding: 1.5rem;
   width: min(var(--note-modal-width, 960px), 94vw);
@@ -7393,8 +7911,27 @@ main {
 }
 
 .note-form-modal.editing-form {
-  border: 2px solid #1a73e8;
+  border: 2px solid var(--card-accent-end);
   box-shadow: 0 10px 25px rgba(26, 115, 232, 0.2);
+}
+
+/* Tinted editor: the accent bar mirrors the card's top stripe. */
+.note-form-modal.is-tinted {
+  border: 1px solid var(--card-border-color);
+  box-shadow: 0 10px 25px rgba(15, 23, 42, 0.18);
+}
+
+.note-form-modal.is-tinted::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  border-radius: 12px 12px 0 0;
+  background: linear-gradient(90deg, var(--card-accent-start) 0%, var(--card-accent-end) 100%);
+  opacity: 0.9;
+  pointer-events: none;
 }
 
 .modal-header {

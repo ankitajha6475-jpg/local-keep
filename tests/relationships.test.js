@@ -7,11 +7,11 @@ test('tags and wiki links are indexed, resolved, and filterable', () => {
   try {
     const a = ctx.notes.createNote({
       title: 'Alpha',
-      content: 'Planning #project/local #project/other\n\nSee [[Beta]] and [[note:missing|Missing]].'
+      content: '---\ntags: [project/local, project/other]\n---\nPlanning\n\nSee [[Beta]] and [[note:missing|Missing]].'
     })
     const b = ctx.notes.createNote({
       title: 'Beta',
-      content: 'Beta note #project/local'
+      content: '---\ntags: [project/local]\n---\nBeta note'
     })
 
     const aFresh = ctx.notes.getNote(a.id)
@@ -143,18 +143,21 @@ test('archive changes link status and graph excludes archived targets', () => {
 test('branches do not change head tags or links', () => {
   const ctx = createFreshContext()
   try {
-    const a = ctx.notes.createNote({ title: 'Branchy', content: '#head-tag [[B]]' })
+    const a = ctx.notes.createNote({
+      title: 'Branchy',
+      content: '---\ntags: [head-tag]\n---\n[[B]]'
+    })
     const b = ctx.notes.createNote({ title: 'B', content: 'b' })
     const base = a.revisionId
 
     ctx.notes.updateNote({
       id: a.id,
-      content: '#head-tag [[B]] plus [[C]]',
+      content: '---\ntags: [head-tag]\n---\n[[B]] plus [[C]]',
       baseRevisionId: base
     })
     const branch = ctx.notes.updateNote({
       id: a.id,
-      content: '#branch-tag [[D]]',
+      content: '---\ntags: [branch-tag]\n---\n[[D]]',
       baseRevisionId: base
     })
     assert.equal(branch.conflict, true)
@@ -164,7 +167,7 @@ test('branches do not change head tags or links', () => {
     assert.equal(ctx.links.outgoing(a.id).some(l => l.label === 'D'), false)
 
     const branchRev = ctx.revisions.getRevision(branch.createdRevisionId)
-    assert.match(branchRev.content, /#branch-tag/)
+    assert.match(branchRev.content, /branch-tag/)
     assert.equal(ctx.tags.tagsForNote(a.id).includes('branch-tag'), false)
   } finally {
     ctx.cleanup()
@@ -174,7 +177,7 @@ test('branches do not change head tags or links', () => {
 test('tag tree includes untagged count and prefix filtering', () => {
   const ctx = createFreshContext()
   try {
-    ctx.notes.createNote({ title: 'Tagged', content: '#area/work' })
+    ctx.notes.createNote({ title: 'Tagged', content: '---\ntags: [area/work]\n---\ntagged body' })
     ctx.notes.createNote({ title: 'Untagged', content: 'plain' })
     const tree = ctx.tags.tree()
     assert.equal(tree.untaggedCount, 1)

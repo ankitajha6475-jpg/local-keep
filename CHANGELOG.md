@@ -7,11 +7,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Notes now have an Obsidian-style **properties section**: a typed metadata block at the top of the canonical file (title, tags, aliases, and free-form keys) with a properties panel in the editor. The body is pure markdown again — `#` always means a heading, never a tag
+- The tag tree is now operable: rename, move, or delete a tag subtree from the sidebar, rewriting that path across every affected note in one batch (archived notes are skipped and reported)
+- Tags are edited through chips in the note's properties panel instead of typed into the body
+- A `note_meta` shadow index supports filtering notes by property key and value (equality and numeric/date comparison)
+- MCP gains `set_properties`, and `get_note` returns structured `meta` plus body-only content (`include_frontmatter: true` returns the raw file)
 - The History button now shows the current version number as a bubble (e.g. `v2`) beside its label, reflecting the note's revision number
 - Wiki links are now version-pinned (frozen references): a link records and keeps a reference to the immutable revision it targets, resolving to that frozen version's title/revision even after the target note is edited. Explicit `[[note:<id>@<rev>]]` pins a named revision; bare links auto-pin the target's version at link time
 - Notes expose automatic old→new version-chain links between each revision and its predecessor, surfaced as a version chain (e.g. `v1 → v2 → v3`) in the History panel
 
 ### Changed
+- Tags moved out of the note body into the properties section; inline `#tag` markers are stripped once by migration 015 and no longer parse from body text
+- Every change to the file (body **or** properties) now creates a revision; metadata edits record `source: property`, and batch tag operations share one message so the history can group them
+- `add_tags` / `remove_tags` / the `tags` argument on MCP note tools are now property mutations that rewrite the tags list instead of appending `#tag` text to the body
+- The note title is head metadata outside the file: renaming creates no revision, and restore/promote no longer move the title (they copy content and properties only)
+- Semantic search indexes title + tags + body with the fence stripped from retrieval text, and the index identity hash now covers tags so tag-only edits re-index
 - Dev ports are no longer published on `0.0.0.0` (the host has a public IPv6 prefix): `5173` publishes on `127.0.0.1` for host MCP/API clients and `5174` on `${LOCAL_KEEP_BIND:-192.168.3.222}` for the LAN UI, with LAN clients reaching the API/MCP through the Vite proxy on `:5174`
 - The Create-new floating button is now smaller (46px desktop / 42px mobile with a 22px icon) and no longer appears over the whiteboard view; it is dashboard-only and returns when leaving the canvas
 - The note editor header now reads simply **Editor** (no revision badge or Ctrl+Enter hint); the Visual/Source mode switch and the Paste plain/rich select moved to the bottom-left of the editor, and the content toolbar holds only the markdown tools with the image button flowing inline after them
@@ -21,6 +31,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - The Visual editor now applies live markdown block shortcuts: typing `- `, `* `, `+ `, `1. `, `# `…`###### `, or `> ` at the start of a line converts it into a bulleted/numbered list, heading, or blockquote instead of showing the literal marker
 
 ### Fixed
+- **Data corruption — duplicated properties fences**: the shared live draft held the whole file (fence + body) while the editor held body-only, so every save through the draft path prepended a second fence. Notes that went through several saves accumulated stacked fences (one note reached four). The draft now holds the body only with properties riding `meta.props`, and the fence is reassembled at commit. Affected notes are repaired by `scripts/repair-fences.js`, which appends a repair revision rather than rewriting history
+- The phantom "save draft?" prompt: opening a note with a shared draft compared fence-inclusive draft text against body-only editor text, so untouched notes looked modified and prompted on close
+- MCP sessions no longer report permanently dirty: the draft-versus-base comparison is body-only on both sides and includes property changes
+- Repair/migration scripts are now import-safe — `scripts/repair-fences.js` wrapped its database writes in a guarded `main()` so importing it can never mutate data (it had bypassed its own `--dry-run` gate)
+- The editor modal now tints with the note's colour: the modal's fallback `--card-surface-*` defaults were declared at the same specificity as `.note-color-*` and won by source order, silently keeping the surface white
 - The tag sidebar no longer shows a horizontal scrollbar; long tag names truncate with an ellipsis inside the fixed 230px column
 - Dashboard hybrid search now calls `/api/search/hybrid`, defaults on when embeddings are configured, and preserves RRF/vector/keyword result order via a **Relevance** sort instead of re-sorting every result by last-modified time
 - Qwen3-Embedding queries now include the model's retrieval instruction, fixing compressed/irrelevant rankings for short Chinese queries such as `云存储` without reindexing

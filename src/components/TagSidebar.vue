@@ -45,9 +45,72 @@
         <span v-else class="tag-leaf-icon"><AppIcon name="tag" :size="12" /></span>
         <span class="tag-name">{{ node.name }}</span>
         <span class="tag-count" :title="node.direct + ' direct / ' + node.total + ' including children'">{{ node.total }}</span>
+        <span class="tag-actions" v-if="editable">
+          <button
+            type="button"
+            class="tag-action"
+            title="Rename this tag path"
+            @click.stop="startRename(node)"
+          >✏️</button>
+          <button
+            type="button"
+            class="tag-action"
+            title="Move under another tag"
+            @click.stop="startMove(node)"
+          >📁</button>
+          <button
+            type="button"
+            class="tag-action"
+            title="Delete this tag path"
+            @click.stop="startDelete(node)"
+          >🗑</button>
+        </span>
       </div>
     </div>
-    <p v-else class="tag-empty">No tags yet. Type #tag in a note.</p>
+    <p v-else class="tag-empty">No tags yet. Add tags from a note's properties panel.</p>
+
+    <!-- Operable tree: rename / move / delete subtree. All are exact-path
+         rewrites across every affected note's tags property. -->
+    <div v-if="pending" class="tag-op">
+      <div class="tag-op-title">
+        {{ pending.kind === 'rename' ? 'Rename' : pending.kind === 'move' ? 'Move' : 'Delete' }}
+        <code>{{ pending.node.tag }}</code>
+      </div>
+
+      <template v-if="pending.kind === 'delete'">
+        <p class="tag-op-help">
+          Removes this tag path and all <code>{{ pending.node.tag }}/*</code> from
+          {{ pending.node.total }} note(s). Notes themselves are not deleted.
+        </p>
+      </template>
+
+      <template v-else>
+        <input
+          ref="opInput"
+          v-model="pending.value"
+          class="tag-op-input"
+          :placeholder="pending.kind === 'rename' ? 'New path (e.g. area/proj)' : 'New parent path (e.g. ops)'"
+          @keydown.enter.prevent="confirmOp"
+        >
+        <p class="tag-op-help">
+          <template v-if="pending.kind === 'rename'">
+            Rewrites <code>{{ pending.node.tag }}</code> and
+            <code>{{ pending.node.tag }}/*</code>.
+          </template>
+          <template v-else>
+            Re-roots <code>{{ pending.node.tag }}</code> under the given parent.
+          </template>
+        </p>
+      </template>
+
+      <div class="tag-op-actions">
+        <button type="button" class="tag-op-confirm" @click="confirmOp">
+          {{ pending.kind === 'delete' ? 'Delete' : 'Apply' }}
+        </button>
+        <button type="button" class="tag-op-cancel" @click="pending = null">Cancel</button>
+      </div>
+      <p v-if="pending.error" class="tag-op-error">{{ pending.error }}</p>
+    </div>
   </aside>
 </template>
 
@@ -63,12 +126,16 @@ export default {
     tree: { type: Object, default: () => ({ tags: [], totalNotes: 0, untaggedCount: 0 }) },
     activeTag: { type: String, default: null },
     untaggedOnly: { type: Boolean, default: false },
+    editable: { type: Boolean, default: true },
     modKey: { type: String, default: 'Ctrl' }
   },
-  emits: ['select', 'close'],
-  setup(props) {
+  emits: ['select', 'close', 'changed', 'tag-op'],
+  setup(props, { emit }) {
     const collapsed = ref(new Set())
+    const pending = ref(null)
+    const opInput = ref(null)
     const shortcut = (id) => shortcutLabel(SHORTCUTS[id], props.modKey)
+    const editable = computed(() => props.editable !== false)
 
     function walk(nodes, depth, out) {
       for (const node of nodes) {
@@ -96,7 +163,68 @@ export default {
       collapsed.value = next
     }
 
-    return { collapsed, flatTags, toggle, shortcut }
+    function startRename(node) {
+      pending.value = { kind: 'rename', node, value: node.tag, error: '' }
+    }
+
+    function startMove(node) {
+      const parent = node.tag.includes('/')
+        ? node.tag.slice(0, node.tag.lastIndexOf('/'))
+        : ''
+      pending.value = { kind: 'move', node, value: parent, error: '' }
+    }
+
+    function startDelete(node) {
+      pending.value = { kind: 'delete', node, value: '', error: '' }
+    }
+
+    async function confirmOp() {
+      const op = pending.value
+      if (!op) return
+      try {
+        if (op.kind === 'delete') {
+          await emit('tag-op', {
+            kind: 'delete',
+            from: op.node.tag,
+            to: null
+          })
+        } else if (op.kind === 'rename') {
+          const target = String(op.value || '').trim().replace(/^#+/, '')
+          if (!target || target === op.node.tag) {
+            op.error = 'Enter a different tag path.'
+            return
+          }
+          await emit('tag-op', { kind: 'rename', from: op.node.tag, to: target })
+        } else {
+          const parent = String(op.value || '').trim().replace(/^#+/, '').replace(/\/+$/, '')
+          const leaf = op.node.tag.slice(op.node.tag.lastIndexOf('/') + 1)
+          const target = parent ? `${parent}/${leaf}` : leaf
+          if (target === op.node.tag) {
+            op.error = 'Already at that location.'
+            return
+          }
+          await emit('tag-op', { kind: 'move', from: op.node.tag, to: target })
+        }
+        pending.value = null
+        emit('changed')
+      } catch (error) {
+        op.error = error?.message || String(error)
+      }
+    }
+
+    return {
+      collapsed,
+      flatTags,
+      toggle,
+      shortcut,
+      editable,
+      pending,
+      opInput,
+      startRename,
+      startMove,
+      startDelete,
+      confirmOp
+    }
   }
 }
 </script>
@@ -219,6 +347,104 @@ export default {
   color: #80868b;
   font-size: 0.75rem;
   padding: 0.5rem 0.4rem;
+}
+
+/* Per-row operable controls: shown on hover, always keyboard reachable. */
+.tag-actions {
+  display: inline-flex;
+  gap: 0.125rem;
+  margin-left: auto;
+  opacity: 0;
+  transition: opacity 0.12s ease-in-out;
+}
+
+.tag-row:hover .tag-actions,
+.tag-row:focus-within .tag-actions {
+  opacity: 1;
+}
+
+.tag-action {
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0 0.125rem;
+  font-size: 0.6875rem;
+  line-height: 1;
+  border-radius: 3px;
+}
+
+.tag-action:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.tag-op {
+  margin-top: 0.5rem;
+  padding: 0.5rem;
+  border: 1px solid #e8eaed;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.tag-op-title {
+  font-size: 0.75rem;
+  margin-bottom: 0.375rem;
+}
+
+.tag-op-title code {
+  font-size: 0.6875rem;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0 0.25rem;
+  border-radius: 3px;
+}
+
+.tag-op-input {
+  width: 100%;
+  padding: 0.25rem 0.375rem;
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  margin-bottom: 0.375rem;
+}
+
+.tag-op-help {
+  color: #80868b;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  margin-bottom: 0.375rem;
+}
+
+.tag-op-help code {
+  font-size: 0.625rem;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0 0.25rem;
+  border-radius: 3px;
+}
+
+.tag-op-actions {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.tag-op-confirm,
+.tag-op-cancel {
+  border: 1px solid #dadce0;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+.tag-op-confirm {
+  background: #1a73e8;
+  border-color: #1a73e8;
+  color: #fff;
+}
+
+.tag-op-error {
+  color: #d93025;
+  font-size: 0.6875rem;
+  margin-top: 0.375rem;
 }
 
 /* Stacked layout: this breakpoint MUST match App.vue's

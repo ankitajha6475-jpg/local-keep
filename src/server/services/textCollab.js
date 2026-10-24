@@ -1,4 +1,5 @@
 import * as Y from 'yjs'
+import { parseNoteContent, serializeMeta } from '../../shared/noteMeta.js'
 
 const DEFAULT_PERSIST_MS = 400
 
@@ -36,10 +37,15 @@ export function createTextCollabService({ db, persistDelay = DEFAULT_PERSIST_MS 
   function createDocFromHead(head) {
     const doc = new Y.Doc()
     doc.transact(() => {
-      doc.getText('content').insert(0, head.content || '')
+      // The shared text holds the BODY ONLY. The properties fence is metadata
+      // and rides `meta.props`; if it ever leaked into the Y.Text, concurrent
+      // edits and every save would duplicate or corrupt it (design review §3).
+      const parsed = parseNoteContent(head.content || '')
+      doc.getText('content').insert(0, parsed.body)
       const meta = doc.getMap('meta')
       meta.set('title', head.title || '')
       meta.set('noteId', head.id)
+      meta.set('props', serializeMeta(parsed.entries))
     }, 'init')
     return doc
   }
@@ -87,8 +93,11 @@ export function createTextCollabService({ db, persistDelay = DEFAULT_PERSIST_MS 
 
   function isCleanEntry(entry, head) {
     if (!entry || !head) return false
-    return entry.doc.getText('content').toString() === (head.content || '') &&
-      (entry.doc.getMap('meta').get('title') || '') === (head.title || '')
+    const parsed = parseNoteContent(head.content || '')
+    const meta = entry.doc.getMap('meta')
+    return entry.doc.getText('content').toString() === parsed.body &&
+      (meta.get('title') || '') === (head.title || '') &&
+      (meta.get('props') || '') === serializeMeta(parsed.entries)
   }
 
   function discardIfClean(noteId) {
@@ -109,6 +118,7 @@ export function createTextCollabService({ db, persistDelay = DEFAULT_PERSIST_MS 
       stateVector: Y.encodeStateVector(entry.doc),
       text: entry.doc.getText('content').toString(),
       title: entry.doc.getMap('meta').get('title') || '',
+      props: entry.doc.getMap('meta').get('props') || '',
       baseRevisionId: entry.baseRevisionId,
       revisionNo: entry.revisionNo
     }
@@ -138,11 +148,13 @@ export function createTextCollabService({ db, persistDelay = DEFAULT_PERSIST_MS 
     if (!entry) return null
     const currentText = entry.doc.getText('content').toString()
     const next = String(nextText ?? '')
+    const props = entry.doc.getMap('meta').get('props') || ''
     if (next === currentText) {
       return {
         update: null,
         text: currentText,
-        title: entry.doc.getMap('meta').get('title') || ''
+        title: entry.doc.getMap('meta').get('title') || '',
+        props
       }
     }
     const change = textChange(currentText, next)
@@ -158,7 +170,8 @@ export function createTextCollabService({ db, persistDelay = DEFAULT_PERSIST_MS 
     return {
       update,
       text: entry.doc.getText('content').toString(),
-      title: entry.doc.getMap('meta').get('title') || ''
+      title: entry.doc.getMap('meta').get('title') || '',
+      props
     }
   }
 
@@ -168,13 +181,15 @@ export function createTextCollabService({ db, persistDelay = DEFAULT_PERSIST_MS 
     const meta = entry.doc.getMap('meta')
     const current = meta.get('title') || ''
     const next = String(nextTitle ?? '')
-    if (current === next) return { update: null, text: entry.doc.getText('content').toString(), title: current }
+    const props = meta.get('props') || ''
+    const text = entry.doc.getText('content').toString()
+    if (current === next) return { update: null, text, title: current, props }
     const stateVector = Y.encodeStateVector(entry.doc)
     entry.doc.transact(() => meta.set('title', next), 'mcp')
     const update = Y.encodeStateAsUpdate(entry.doc, stateVector)
     entry.dirty = true
     schedulePersist(noteId)
-    return { update, text: entry.doc.getText('content').toString(), title: next }
+    return { update, text: entry.doc.getText('content').toString(), title: next, props }
   }
 
   function applyUpdate(noteId, update) {

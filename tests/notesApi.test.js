@@ -137,7 +137,7 @@ test('notes API: dashboard index and ordered card window omit heavy payloads', a
 
     const alpha = await request('POST', '/api/notes', {
       title: 'Alpha',
-      content: '#tag alpha body'
+      content: '---\ntags: [tag]\n---\nalpha body #notatag'
     })
     const beta = await request('POST', '/api/notes', {
       title: 'Beta',
@@ -159,6 +159,7 @@ test('notes API: dashboard index and ordered card window omit heavy payloads', a
     assert.equal(index.length, 4)
     const alphaIndex = index.find(note => note.id === alpha.id)
     assert.equal(alphaIndex.title, 'Alpha')
+    // Tags come from the properties section; body text is never parsed for tags.
     assert.deepEqual(alphaIndex.tags, ['tag'])
     assert.equal(Object.prototype.hasOwnProperty.call(alphaIndex, 'content'), false)
     assert.equal(Object.prototype.hasOwnProperty.call(alphaIndex, 'canvasData'), false)
@@ -170,7 +171,7 @@ test('notes API: dashboard index and ordered card window omit heavy payloads', a
     assert.deepEqual(windowed.map(note => note.id), [canvas.id, alpha.id, longNote.id])
     assert.equal(windowed[0].thumbnail, 'data:image/png;base64,AAAA')
     assert.equal(Object.prototype.hasOwnProperty.call(windowed[0], 'canvasData'), false)
-    assert.equal(windowed[1].content, '#tag alpha body')
+    assert.equal(windowed[1].content, '---\ntags: [tag]\n---\nalpha body #notatag')
     assert.equal(windowed[2].content.length, 12000)
     assert.equal(windowed[2].contentTruncated, true)
 

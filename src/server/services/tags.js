@@ -1,4 +1,5 @@
 import { parseTags, normalizeTag, tagAncestors, tagMatchesPrefix } from '../../shared/tags.js'
+import { parseNoteContent } from '../../shared/noteMeta.js'
 import { extractCanvasText } from '../fts.js'
 
 export function createTagService({ db }) {
@@ -7,11 +8,24 @@ export function createTagService({ db }) {
     VALUES (?, ?, 'inline', ?)
   `)
 
+  /**
+   * Rebuild a note's tags from its head content. Tags live in the properties
+   * fence; canvas notes may also carry tags in their canvas text.
+   */
   function syncNote(noteId, content, canvasData) {
     db.prepare("DELETE FROM note_tags WHERE note_id = ? AND source = 'inline'").run(noteId)
-    const text = `${content || ''}\n${extractCanvasText(canvasData)}`
+    const { props } = parseNoteContent(content || '')
+    const fromFence = Array.isArray(props.tags) ? props.tags : []
+    const fromCanvas = parseTags(extractCanvasText(canvasData))
     const now = new Date().toISOString()
-    for (const tag of parseTags(text)) insertTag.run(noteId, tag, now)
+    const seen = new Set()
+    for (const raw of [...fromFence, ...fromCanvas]) {
+      const tag = normalizeTag(raw)
+      if (!tag || seen.has(tag)) continue
+      seen.add(tag)
+      insertTag.run(noteId, tag, now)
+    }
+    return seen.size
   }
 
   function tagsForNote(noteId) {
@@ -129,12 +143,84 @@ export function createTagService({ db }) {
     db.prepare('DELETE FROM note_tags WHERE note_id = ?').run(noteId)
   }
 
+  /**
+   * Rewrite one tag path to another across the `tags` property of every
+   * affected note. Exact-path semantics: renaming `area/project` touches
+   * `area/project` and `area/project/*`, never `area/projector`.
+   *
+   * Returns the ids of the notes changed. Archived notes are skipped and
+   * reported so callers can surface them.
+   */
+  function rewritePath({ from, to, actor = 'ui', message = null }) {
+    const source = normalizeTag(from)
+    if (!source) throw new Error('A source tag path is required')
+    const target = to === null || to === undefined ? null : normalizeTag(to)
+    if (target !== null && !target) throw new Error('A target tag path is required')
+
+    const rows = db.prepare(`
+      SELECT t.note_id AS noteId, n.archived_at AS archivedAt
+      FROM note_tags t
+      JOIN notes n ON n.id = t.note_id
+      WHERE t.tag = ? OR t.tag LIKE ?
+    `).all(source, `${source}/%`)
+
+    const byNote = new Map()
+    for (const row of rows) {
+      if (!byNote.has(row.noteId)) byNote.set(row.noteId, row.archivedAt || null)
+    }
+
+    const changed = []
+    const skipped = []
+    for (const [noteId, archivedAt] of byNote) {
+      if (archivedAt) {
+        skipped.push({ noteId, reason: 'note_archived' })
+        continue
+      }
+      const current = tagsForNote(noteId)
+      const next = current.map(tag => {
+        if (tag === source) return target
+        if (tag.startsWith(`${source}/`)) {
+          return target === null ? null : `${target}${tag.slice(source.length)}`
+        }
+        return tag
+      }).filter(Boolean)
+
+      // Write through the same property path the editor uses.
+      setNoteTags(noteId, next, {
+        actor,
+        message: message || (target === null
+          ? `tag delete: ${source}`
+          : `tag rename: ${source} → ${target}`)
+      })
+      changed.push(noteId)
+    }
+
+    return { from: source, to: target, changed, skipped }
+  }
+
+  /**
+   * Apply a tag list to a note's `tags` property via the revision service, so
+   * the change is a `source: 'property'` revision like any other metadata edit.
+   * Wired at construction to avoid a service cycle.
+   */
+  let applyNoteTags = null
+  function setApplyNoteTags(fn) {
+    applyNoteTags = fn
+  }
+
+  function setNoteTags(noteId, nextTags, { actor = 'ui', message = null } = {}) {
+    if (!applyNoteTags) throw new Error('Tag rewriting is not wired to the revision service')
+    return applyNoteTags(noteId, nextTags, { actor, message })
+  }
+
   return {
     syncNote,
     tagsForNote,
     tagsByNote,
     tree,
     noteIdsForTag,
-    deleteNote
+    deleteNote,
+    rewritePath,
+    setApplyNoteTags
   }
 }

@@ -175,3 +175,23 @@ test('transformOutsideCode leaves fenced and inline code untouched', () => {
 test('normalizeMarkdown collapses blank runs and trims edges', () => {
   assert.equal(normalizeMarkdown('\r\n\r\na\r\n\r\n\r\nb\r\n'), 'a\n\nb')
 })
+
+test('renderMarkdown strips exactly one leading properties fence', () => {
+  const html = renderMarkdown('---\ntags: [project/alpha]\nstatus: active\n---\n# Heading\n\nbody')
+  assert.match(html, /<h1[^>]*>Heading<\/h1>/)
+  assert.match(html, /<p[^>]*>body<\/p>/)
+  assert.equal(html.includes('tags:'), false, 'fence text never renders')
+  assert.equal(html.includes('status:'), false, 'fence keys never render')
+})
+
+test('body hash text is a heading or literal text, never a tag', () => {
+  const html = renderMarkdown('#project/alpha\n\n# Heading')
+  assert.equal(html.includes('note-tag'), false)
+  assert.match(html, /<h1[^>]*>Heading<\/h1>/)
+})
+
+test('a note without a fence renders entirely as body', () => {
+  const html = renderMarkdown('# Heading\n\ntext')
+  assert.match(html, /<h1[^>]*>Heading<\/h1>/)
+  assert.match(html, /<p[^>]*>text<\/p>/)
+})

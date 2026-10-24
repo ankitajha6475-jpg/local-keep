@@ -48,7 +48,7 @@ test('legacy notes become revision 1 with stable ids and a backup', () => {
     })
 
     const migrated = ctx.migrate()
-    assert.deepEqual(migrated.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14])
+    assert.deepEqual(migrated.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
     assert.ok(migrated.backupPath, 'a backup is created when notes exist')
     const tokenColumns = ctx.db.prepare("PRAGMA table_info('api_tokens')").all().map(column => column.name)
     assert.ok(tokenColumns.includes('expires_at'))
@@ -62,23 +62,40 @@ test('legacy notes become revision 1 with stable ids and a backup', () => {
 
     const noteCount = ctx.db.prepare('SELECT COUNT(*) AS count FROM notes').get().count
     assert.equal(noteCount, 2)
+    // The text note had an inline `#project/x` marker, so normalization appended
+    // exactly one revision; the canvas note needed none.
     const revisionCount = ctx.db.prepare('SELECT COUNT(*) AS count FROM note_revisions').get().count
-    assert.equal(revisionCount, 2)
+    assert.equal(revisionCount, 3)
 
     const text = ctx.db.prepare('SELECT * FROM notes WHERE id = ?').get('note-text')
     assert.equal(text.title, 'Legacy text')
-    assert.equal(text.content, 'old content #project/x [[note:note-canvas|Board]] ![x](/api/images/abcdef0123456789.png)')
+    // Head content is normalized: the fence carries the tag, the body does not.
+    assert.equal(
+      text.content,
+      '---\ntags: [project/x]\n---\nold content [[note:note-canvas|Board]] ![x](/api/images/abcdef0123456789.png)'
+    )
     assert.ok(text.head_revision_id)
-    assert.equal(text.revision_no, 1)
+    assert.equal(text.revision_no, 2)
     assert.equal(text.display_title, 'Legacy text')
 
+    // Revision 1 is the immutable pre-normalization snapshot.
     const textRev = ctx.db.prepare(
-      'SELECT * FROM note_revisions WHERE note_id = ?'
+      'SELECT * FROM note_revisions WHERE note_id = ? AND revision_no = 1'
     ).get('note-text')
     assert.equal(textRev.parent_revision_id, null)
     assert.equal(textRev.revision_no, 1)
-    assert.equal(textRev.content, text.content)
+    assert.equal(textRev.content, 'old content #project/x [[note:note-canvas|Board]] ![x](/api/images/abcdef0123456789.png)')
     assert.equal(textRev.source, 'import')
+
+    // Revision 2 is the single normalization revision.
+    const normRev = ctx.db.prepare(
+      'SELECT * FROM note_revisions WHERE note_id = ? AND revision_no = 2'
+    ).get('note-text')
+    assert.equal(normRev.parent_revision_id, textRev.id)
+    assert.equal(normRev.source, 'property')
+    assert.equal(normRev.message, 'metadata normalization')
+    assert.equal(normRev.content, text.content)
+    assert.ok(normRev.snapshot_hash, 'the normalization revision has a snapshot hash')
 
     const tags = ctx.db.prepare('SELECT tag FROM note_tags WHERE note_id = ?').all('note-text')
     assert.deepEqual(tags.map(t => t.tag), ['project/x'])
@@ -137,7 +154,7 @@ test('migration is idempotent', () => {
       'SELECT COUNT(*) AS count FROM note_revisions'
     ).get().count
 
-    assert.equal(first.applied.length, 14)
+    assert.equal(first.applied.length, 15)
     assert.equal(revisionsAfterFirst, 1)
     assert.equal(revisionsAfterSecond, 1)
     assert.equal(ctx.db.prepare('SELECT COUNT(*) AS count FROM notes').get().count, 1)

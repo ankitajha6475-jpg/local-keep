@@ -35,6 +35,7 @@ import { migration011McpSessionLimits } from './src/server/migrations/011-mcp-se
 import { migration012AppSettings } from './src/server/migrations/012-app-settings.js'
 import { migration013NoteColor } from './src/server/migrations/013-note-color.js'
 import { migration014VersionPinnedLinks } from './src/server/migrations/014-version-pinned-links.js'
+import { migration015NoteMetadata } from './src/server/migrations/015-note-metadata.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const dataDir = process.env.LOCAL_KEEP_DATA_DIR
@@ -46,7 +47,7 @@ createBaseSchema(db)
 const imageStore = createImageStore({ imagesDir: path.join(dataDir, 'images') })
 runMigrations({
   db,
-  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits, migration012AppSettings, migration013NoteColor, migration014VersionPinnedLinks],
+  migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits, migration012AppSettings, migration013NoteColor, migration014VersionPinnedLinks, migration015NoteMetadata],
   backupDir: path.join(dataDir, 'backups'),
   context: { imageStore }
 })

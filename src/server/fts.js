@@ -1,4 +1,5 @@
 import { markdownToText } from '../shared/notesText.js'
+import { parseNoteContent } from '../shared/noteMeta.js'
 
 /** Extract text from canvasData JSON for FTS indexing. */
 export function extractCanvasText(canvasData) {
@@ -15,11 +16,22 @@ export function extractCanvasText(canvasData) {
   }
 }
 
+/**
+ * Indexable text for a note: the body with the properties fence stripped, plus
+ * the tag paths (which no longer live in the body, so they would otherwise drop
+ * out of keyword search). Fence keys and values are never searchable prose.
+ */
+export function noteIndexText(content) {
+  const { body, props } = parseNoteContent(content)
+  const tags = Array.isArray(props.tags) ? props.tags : []
+  return `${markdownToText(body)}\n${tags.join('\n')}`.trim()
+}
+
 export function indexNote(db, { noteId, title, content, canvasText }) {
   db.prepare('DELETE FROM notes_fts WHERE note_id = ?').run(noteId)
   db.prepare(
     'INSERT INTO notes_fts(note_id, title, content, canvas_text) VALUES (?, ?, ?, ?)'
-  ).run(noteId, title || '', markdownToText(content || ''), canvasText || '')
+  ).run(noteId, title || '', noteIndexText(content || ''), canvasText || '')
 }
 
 export function removeNoteFromIndex(db, noteId) {
@@ -36,7 +48,7 @@ export function rebuildFts(db) {
     insert.run(
       note.id,
       note.title || '',
-      markdownToText(note.content || ''),
+      noteIndexText(note.content || ''),
       extractCanvasText(note.canvasData)
     )
   }

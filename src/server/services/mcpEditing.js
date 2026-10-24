@@ -1,4 +1,5 @@
 import crypto from 'node:crypto'
+import { joinFence, parseNoteContent, serializeMeta } from '../../shared/noteMeta.js'
 
 const DEFAULT_TTL_MS = 30 * 60 * 1000
 const DEFAULT_MAX_WRITES = 5
@@ -133,12 +134,21 @@ export function createMcpEditingService({
     }
   }
 
+  /**
+   * The committed baseline a draft is compared against. Returns body-only text
+   * plus the fence separately, matching what the shared draft holds — comparing
+   * a body-only draft to whole-file content would report every session dirty.
+   */
   function baseContent(session) {
     const revision = session.baseRevisionId ? revisions?.getRevision(session.baseRevisionId) : null
-    if (revision) return { title: revision.title || '', text: revision.content || '' }
+    if (revision) {
+      const parsed = parseNoteContent(revision.content || '')
+      return { title: revision.title || '', text: parsed.body, props: serializeMeta(parsed.entries) }
+    }
     try {
       const note = notes.getNote(session.noteId)
-      return { title: note.title || '', text: note.content || '' }
+      const parsed = parseNoteContent(note.content || '')
+      return { title: note.title || '', text: parsed.body, props: serializeMeta(parsed.entries) }
     } catch (_) {
       return null
     }
@@ -150,7 +160,8 @@ export function createMcpEditingService({
     session.version = versionOf(snapshot.title, snapshot.text)
     const base = baseContent(session)
     session.dirty = base
-      ? (snapshot.title || '') !== base.title || (snapshot.text || '') !== base.text
+      ? (snapshot.title || '') !== base.title || (snapshot.text || '') !== base.text ||
+        (snapshot.props || '') !== (base.props || '')
       : false
     return true
   }
@@ -160,7 +171,9 @@ export function createMcpEditingService({
     const text = snapshot.text || ''
     session.version = versionOf(title, text)
     const base = baseContent(session)
-    session.dirty = base ? title !== base.title || text !== base.text : false
+    session.dirty = base
+      ? title !== base.title || text !== base.text || (snapshot.props || '') !== (base.props || '')
+      : false
     return {
       ...publicSession(session),
       title,
@@ -606,7 +619,8 @@ export function createMcpEditingService({
     const result = notes.updateNote({
       id: session.noteId,
       title: snapshot.title || '',
-      content: snapshot.text || '',
+      // The draft holds the body only; the fence rides `props`.
+      content: joinFence(snapshot.props || '', snapshot.text || ''),
       baseRevisionId: session.baseRevisionId,
       mode: commitMode,
       actor: session.actor || 'mcp',
