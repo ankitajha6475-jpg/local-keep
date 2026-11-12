@@ -69,9 +69,14 @@ export default {
   border: none;
   padding: 1rem;
   background: transparent;
-  width: auto;
-  max-width: none;
-  max-height: none;
+  /* `fit-content` shrink-wraps the dialog box around the panel inside it;
+     the UA's automatic margin (restored in base.css) then centres it in the
+     viewport. `width: auto` would stretch the box to the full viewport
+     width and leave the panel pinned to the top-left corner. */
+  width: fit-content;
+  height: fit-content;
+  max-width: 100%;
+  max-height: 100%;
   overflow: visible;
 }
 
@@ -80,8 +85,10 @@ export default {
 }
 
 .backlinks-panel {
-  width: 100%;
-  max-height: 100%;
+  /* A definite width: the overlay is now `fit-content`, so a `width: 100%`
+     child would have no width to resolve against and would collapse. */
+  width: min(720px, 94vw);
+  max-height: 88vh;
   overflow-y: auto;
   background: #fff;
   border-radius: 10px;

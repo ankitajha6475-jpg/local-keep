@@ -155,6 +155,161 @@ test('the overlay styles do not hand-roll a backdrop', () => {
   assert.deepEqual(problems, [], `\n${problems.join('\n')}`)
 })
 
+// ── Centring ────────────────────────────────────────────────────────────────
+
+/**
+ * The CSS rules of a single-file component's `<style>` block, or of a plain
+ * CSS file.
+ *
+ * A naive `/{([^{}]*)}/` scan is not enough: a rule body may contain nested
+ * braces (media queries, keyframes), so the scan can pair the wrong closing
+ * brace with the wrong selector. This walks the block and tracks brace depth
+ * so each rule keeps its own body.
+ */
+function styleRules(source) {
+  const styleStart = source.indexOf('<style')
+  let block = source
+  if (styleStart !== -1) {
+    const open = source.indexOf('>', styleStart)
+    const close = source.indexOf('</style>', open)
+    block = source.slice(open + 1, close === -1 ? source.length : close)
+  }
+  const rules = []
+  let i = 0
+  while (i < block.length) {
+    const brace = block.indexOf('{', i)
+    if (brace === -1) break
+    // The selector text may carry the comment that precedes it, so strip
+    // comments before comparing it.
+    const selector = block
+      .slice(i, brace)
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .trim()
+    // Walk to the matching close brace, tracking nesting.
+    let depth = 1
+    let j = brace + 1
+    while (j < block.length && depth > 0) {
+      if (block[j] === '{') depth++
+      else if (block[j] === '}') depth--
+      j++
+    }
+    const body = block.slice(brace + 1, j - 1)
+    if (selector && !selector.startsWith('@')) rules.push({ selector, body })
+    i = j
+  }
+  return rules
+}
+
+/** The declarations of a rule body, with comments removed. */
+function declarations(body) {
+  return body.replace(/\/\*[\s\S]*?\*\//g, '')
+}
+
+test('the platform centring margin for dialogs survives the global reset', () => {
+  // The UA centres a modal <dialog> with `margin: auto` on the dialog box
+  // itself. The global reset in index.html zeroes `margin` on every element,
+  // which removes that, so it has to be put back for dialogs.
+  //
+  // The reset must keep the selector `*`: that is specificity 0,0,0, so a
+  // plain `dialog { margin: auto }` (0,0,1) always wins over it. If the
+  // reset were given a more specific selector it would beat the restore
+  // and every modal would land in the top-left corner again.
+  const index = read(path.join(repoRoot, 'index.html'))
+  const styleBlock = /<style>([\s\S]*?)<\/style>/.exec(index)
+  assert.ok(styleBlock, 'expected a <style> block in index.html')
+  const reset = /([^{}]*)\{([^}]*)\}/.exec(styleBlock[1])
+  assert.ok(reset, 'expected a global reset in index.html')
+  const selector = reset[1].trim()
+  assert.equal(
+    selector,
+    '*',
+    `the global reset selector is "${selector}"; it must stay "*" (specificity ` +
+    '0,0,0) so that a `dialog { margin: auto }` rule can restore the platform ' +
+    'centring margin'
+  )
+  assert.match(reset[2], /margin\s*:\s*0/, 'expected the reset to zero margin')
+})
+
+test('the base stylesheet restores the platform centring margin for dialogs', () => {
+  // The counterpart to the reset: base.css is unscoped and global, so it is
+  // where the platform default has to be put back.
+  const base = read(path.join(srcDir, 'styles', 'base.css'))
+  const rule = styleRules(base).find(r => r.selector === 'dialog')
+  assert.ok(rule, 'expected a `dialog { ... }` rule in base.css')
+  assert.match(
+    declarations(rule.body),
+    /(^|;)\s*margin\s*:\s*auto/,
+    'base.css must set `margin: auto` on dialog so the platform can centre them'
+  )
+})
+
+test('every overlay dialog shrink-wraps its panel instead of stretching', () => {
+  // `width: auto` on a modal dialog stretches the dialog box across the
+  // viewport, so the panel inside it sits at the top-left. The box must
+  // shrink-wrap its content for the centring margin to place it correctly.
+  const overlays = [
+    'modal-overlay',
+    'history-overlay',
+    'graph-overlay',
+    'backlinks-overlay',
+    'links-overlay',
+    'link-dialog-overlay'
+  ]
+  const problems = []
+  for (const file of walk(srcDir, f => f.endsWith('.vue') || f.endsWith('.css'))) {
+    for (const rule of styleRules(read(file))) {
+      const name = overlays.find(o => rule.selector === '.' + o)
+      if (!name) continue
+      const decls = declarations(rule.body)
+      if (!/(^|;)\s*width\s*:/.test(decls)) continue
+      assert.match(
+        decls,
+        /(^|;)\s*width\s*:\s*fit-content/,
+        `${rel(file)}: .${name} must use ` +
+        '`width: fit-content` so the dialog box shrink-wraps its panel; ' +
+        '`width: auto` stretches the box across the viewport and leaves the ' +
+        'panel in the top-left corner'
+      )
+    }
+  }
+  assert.deepEqual(problems, [], `\n${problems.join('\n')}`)
+})
+
+test('no overlay panel relies on a percentage width inside a fit-content dialog', () => {
+  // A `width: 100%` child of a `fit-content` parent has no width to resolve
+  // against and collapses to zero, so the panel needs a definite width.
+  const panels = [
+    'backlinks-panel',
+    'history-panel',
+    'graph-panel',
+    'links-panel',
+    'link-dialog'
+  ]
+  const problems = []
+  for (const file of walk(srcDir, f => f.endsWith('.vue') || f.endsWith('.css'))) {
+    for (const rule of styleRules(read(file))) {
+      const name = panels.find(p => rule.selector === '.' + p)
+      if (!name) continue
+      const decls = declarations(rule.body)
+      if (!/(^|;)\s*width\s*:\s*100%/.test(decls)) continue
+      problems.push(`${rel(file)}: .${name} uses width: 100% inside a fit-content dialog`)
+    }
+  }
+  assert.deepEqual(problems, [], `\n${problems.join('\n')}`)
+})
+
+test('the note editor resize clamps to the viewport', () => {
+  // The resize writes an inline width/height that also overrides
+  // `max-width`/`max-height`, so the clamp has to be applied in the handler
+  // or a dragged modal grows past the edge of the screen.
+  const source = read(path.join(srcDir, 'App.vue'))
+  const handler = source.slice(source.indexOf('const onResize'))
+  assert.match(handler, /window\.innerWidth/)
+  assert.match(handler, /window\.innerHeight/)
+  assert.match(handler, /Math\.min\(maxWidth/)
+  assert.match(handler, /Math\.min\(maxHeight/)
+})
+
 // ── ARIA patterns ───────────────────────────────────────────────────────────
 
 test('no menu claims menu semantics without the menu keyboard pattern', () => {

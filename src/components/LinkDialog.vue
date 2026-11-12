@@ -272,11 +272,18 @@ export default {
 /* Native dialog: the element is the box and `::backdrop` is the dim layer. */
 .link-dialog-overlay {
   border: none;
-  padding: min(14vh, 7rem) 1rem 1rem;
+  padding: 1rem;
   background: transparent;
-  width: auto;
-  max-width: none;
-  max-height: none;
+  /* `fit-content` shrink-wraps the dialog box around the panel inside it;
+     the UA's automatic margin (restored in base.css) then centres it in the
+     viewport. `width: auto` would stretch the box to the full viewport
+     width and leave the panel pinned to the top-left corner. The old
+     `padding: min(14vh, 7rem) 1rem 1rem` pushed the panel down from the
+     top; with real centring it would only offset it. */
+  width: fit-content;
+  height: fit-content;
+  max-width: 100%;
+  max-height: 100%;
   overflow: visible;
 }
 

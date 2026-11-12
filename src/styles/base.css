@@ -44,6 +44,16 @@
   outline-offset: var(--focus-ring-offset);
 }
 
+/* The global reset in index.html zeroes `margin` on every element, which
+   also removes the platform's own `margin: auto` on a dialog. That automatic
+   margin is *how* the UA centres a modal dialog: the UA gives a modal
+   `position: fixed; inset: 0` and lets the automatic margins push the box
+   into the middle. Without this rule every native modal sits in the
+   top-left corner instead of the middle of the screen. */
+dialog {
+  margin: auto;
+}
+
 /* Scroll containment for modal dialogs. Without it a scroll gesture over
    the backdrop, or one that runs past the end of the dialog's content,
    scrolls the page behind it. `overscroll-behavior` is limited availability,

@@ -200,9 +200,14 @@ export default {
   border: none;
   padding: 1.25rem;
   background: transparent;
-  width: auto;
-  max-width: none;
-  max-height: none;
+  /* `fit-content` shrink-wraps the dialog box around the panel inside it;
+     the UA's automatic margin (restored in base.css) then centres it in the
+     viewport. `width: auto` would stretch the box to the full viewport
+     width and leave the panel pinned to the top-left corner. */
+  width: fit-content;
+  height: fit-content;
+  max-width: 100%;
+  max-height: 100%;
   overflow: visible;
 }
 

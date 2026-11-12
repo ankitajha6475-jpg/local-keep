@@ -3550,9 +3550,14 @@ export default {
       if (!isResizing.value) return
       const dx = e.clientX - resizeStartX
       const dy = e.clientY - resizeStartY
+      // The inline size the resize writes also overrides `max-width`/`max-height`,
+      // so the clamp has to be applied here or a dragged modal can grow past
+      // the viewport and hang off the edge of the screen.
+      const maxWidth = Math.max(340, Math.round(window.innerWidth * 0.94))
+      const maxHeight = Math.max(280, Math.round(window.innerHeight * 0.92))
       modalSize.value = {
-        width: Math.max(340, resizeStartWidth + dx),
-        height: Math.max(280, resizeStartHeight + dy)
+        width: Math.min(maxWidth, Math.max(340, resizeStartWidth + dx)),
+        height: Math.min(maxHeight, Math.max(280, resizeStartHeight + dy))
       }
     }
 
@@ -8239,9 +8244,14 @@ main {
   border: none;
   padding: 0;
   background: transparent;
-  width: auto;
-  max-width: none;
-  max-height: none;
+  /* `fit-content` shrink-wraps the dialog box around the panel inside it;
+     the UA's automatic margin (restored in base.css) then centres it in the
+     viewport. `width: auto` would stretch the box to the full viewport
+     width and leave the panel pinned to the top-left corner. */
+  width: fit-content;
+  height: fit-content;
+  max-width: 100%;
+  max-height: 100%;
   overflow: visible;
 }
 
@@ -8467,9 +8477,14 @@ main {
   border: none;
   padding: 1rem;
   background: transparent;
-  width: auto;
-  max-width: none;
-  max-height: none;
+  /* `fit-content` shrink-wraps the dialog box around the panel inside it;
+     the UA's automatic margin (restored in base.css) then centres it in the
+     viewport. `width: auto` would stretch the box to the full viewport
+     width and leave the panel pinned to the top-left corner. */
+  width: fit-content;
+  height: fit-content;
+  max-width: 100%;
+  max-height: 100%;
   overflow: visible;
 }
 

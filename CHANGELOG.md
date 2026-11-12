@@ -49,6 +49,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 - The Visual editor now applies live markdown block shortcuts: typing `- `, `* `, `+ `, `1. `, `# `…`###### `, or `> ` at the start of a line converts it into a bulleted/numbered list, heading, or blockquote instead of showing the literal marker
 
 ### Fixed
+- Every modal now opens in the **middle of the screen** instead of the top-left corner: the global reset in `index.html` zeroed the `margin: auto` that the platform uses to centre a native `<dialog>`, and the overlay classes set `width: auto`, which stretched the dialog box across the viewport while the panel inside it stayed at `0,0`. The platform margin is restored in `src/styles/base.css` and the six overlay dialogs now shrink-wrap their panel; the note editor also renders at its configured size again instead of being squeezed by the dialog box
+- A dragged note editor can no longer grow past the edge of the screen: the resize writes an inline size that overrides the viewport clamp, so the clamp is now applied in the resize handler
 - The workspace layout no longer measures the viewport when it should measure the space it has: between a 600px and a 664px window the sidebar stayed beside the notes area even though the workspace was already narrower than the stacking breakpoint
 - The presence indicator on a dashboard card no longer moves when the card body skips rendering — it is anchored to the card, not to the card body
 - A modal can no longer be tabbed out of: the dashboard behind an open overlay was still in the accessibility tree and still keyboard-reachable, so Tab walked out of the note editor into the page behind it
