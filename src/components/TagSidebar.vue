@@ -2,7 +2,7 @@
   <aside class="tag-sidebar">
     <div class="tag-sidebar-header">
       <h3>🏷 Tags</h3>
-      <button type="button" class="tag-sidebar-close" :data-shortcut="shortcut('tagClose')" @click="$emit('close')" title="Close tags">×</button>
+      <button type="button" class="tag-sidebar-close" :data-shortcut="shortcut('tagClose')" @click="$emit('close')" title="Close tags" aria-label="Close tags">×</button>
     </div>
 
     <button
@@ -56,12 +56,14 @@
             type="button"
             class="tag-action"
             title="Move under another tag"
+            aria-label="Move under another tag"
             @click.stop="startMove(node)"
           >📁</button>
           <button
             type="button"
             class="tag-action"
             title="Delete this tag path"
+            aria-label="Delete this tag path"
             @click.stop="startDelete(node)"
           >🗑</button>
         </span>
@@ -90,7 +92,7 @@
           v-model="pending.value"
           class="tag-op-input"
           :placeholder="pending.kind === 'rename' ? 'New path (e.g. area/proj)' : 'New parent path (e.g. ops)'"
-          @keydown.enter.prevent="confirmOp"
+          @keydown.enter="onOpEnter"
         >
         <p class="tag-op-help">
           <template v-if="pending.kind === 'rename'">
@@ -118,6 +120,7 @@
 import { computed, ref } from 'vue'
 import AppIcon from './AppIcon.vue'
 import { SHORTCUTS, shortcutLabel } from '../shared/shortcuts.js'
+import { runUnlessIme } from '../shared/ime.js'
 
 export default {
   name: 'TagSidebar',
@@ -212,6 +215,12 @@ export default {
       }
     }
 
+    // Enter confirms the pending tag operation, but only when no IME owns the
+    // keystroke — while an IME is composing, Enter confirms the candidate.
+    function onOpEnter(event) {
+      runUnlessIme(event, () => confirmOp())
+    }
+
     return {
       collapsed,
       flatTags,
@@ -223,7 +232,8 @@ export default {
       startRename,
       startMove,
       startDelete,
-      confirmOp
+      confirmOp,
+      onOpEnter
     }
   }
 }
@@ -266,7 +276,7 @@ export default {
 .tag-sidebar-close {
   border: none;
   background: transparent;
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 1.1rem;
   cursor: pointer;
 }
@@ -308,7 +318,7 @@ export default {
 }
 
 .tag-count {
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 0.7rem;
   background: #f1f3f4;
   border-radius: 999px;
@@ -324,7 +334,7 @@ export default {
   width: 1rem;
   border: none;
   background: transparent;
-  color: #80868b;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 0;
   font-size: 0.7rem;
@@ -336,7 +346,7 @@ export default {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #80868b;
+  color: var(--text-muted);
 }
 
 .tag-tree {
@@ -344,7 +354,7 @@ export default {
 }
 
 .tag-empty {
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 0.75rem;
   padding: 0.5rem 0.4rem;
 }
@@ -407,7 +417,7 @@ export default {
 }
 
 .tag-op-help {
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 0.6875rem;
   line-height: 1.4;
   margin-bottom: 0.375rem;
@@ -447,11 +457,13 @@ export default {
   margin-top: 0.375rem;
 }
 
-/* Stacked layout: this breakpoint MUST match App.vue's
-   `@media (max-width: 600px)` block where .workspace becomes a column.
-   If these two drift apart, a width:100% sidebar lands inside a row flex
-   container and crushes/overflows the notes area. */
-@media (max-width: 600px) {
+/* Stacked layout: measured against the workspace's content box, not the
+   viewport. The matching rule for the workspace itself lives in App.vue and
+   uses the same container and the same threshold;
+   `tests/responsiveLayout.test.js` fails if the two ever drift apart. If
+   they do, a width:100% sidebar lands inside a row .workspace and crushes
+   the notes area. */
+@container workspace (max-width: 600px) {
   .tag-sidebar {
     width: 100%;
     position: static;

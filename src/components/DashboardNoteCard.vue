@@ -40,14 +40,13 @@
           <div
             v-if="colorMenuOpen"
             class="note-color-menu"
-            role="menu"
+            role="group"
             aria-label="Choose note color"
           >
             <button
               v-for="option in noteColorOptions"
               :key="option.id || 'default'"
               type="button"
-              role="menuitemradio"
               class="note-color-option"
               :class="[
                 `note-color-option--${option.id || 'default'}`,
@@ -55,7 +54,7 @@
               ]"
               :title="option.label"
               :aria-label="option.label"
-              :aria-checked="(note.color || null) === (option.id || null)"
+              :aria-pressed="(note.color || null) === (option.id || null)"
               @click="$emit('select-color', { note, color: option.id })"
             >
               <AppIcon
@@ -77,6 +76,7 @@
           class="copy-btn"
           :class="{ copied }"
           :title="copied ? 'Copied!' : 'Copy note'"
+          :aria-label="copied ? 'Copied' : 'Copy note'"
         >
           <svg v-if="copied" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-check"><polyline points="20 6 9 17 4 12"></polyline></svg>
           <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-copy"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
@@ -92,17 +92,23 @@
           @click.stop="$emit('archive', note.id)"
           class="delete-btn"
           title="Archive note"
+          aria-label="Archive note"
         >×</button>
       </template>
     </div>
 
+    <!-- The presence dot is a direct child of the card, not of `.note-content`:
+         the card body uses `content-visibility: auto`, and its paint and
+         layout containment would otherwise become the containing block for
+         this absolutely positioned element and move the dot. -->
+    <span
+      v-if="!note.isQuickShortcuts && !note.isDraft && presenceCount"
+      class="presence-dot"
+      :title="presenceTitle"
+      :aria-label="presenceTitle"
+    ></span>
+
     <div class="note-content">
-      <span
-        v-if="!note.isQuickShortcuts && !note.isDraft && presenceCount"
-        class="presence-dot"
-        :title="presenceTitle"
-        :aria-label="presenceTitle"
-      ></span>
       <template v-if="note.isQuickShortcuts || note.isDraft">
         <h3 :title="note.title">
           <span class="card-title-text">{{ note.title }}</span>
@@ -123,7 +129,9 @@
             v-if="note.thumbnail"
             :src="note.thumbnail"
             class="canvas-thumbnail"
-            alt="Canvas thumbnail"
+            :alt="`Canvas thumbnail of ${displayTitle}`"
+            loading="lazy"
+            decoding="async"
           />
           <div v-else class="canvas-thumbnail-placeholder">
             <span>✏️</span>

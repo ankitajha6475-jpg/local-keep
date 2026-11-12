@@ -134,9 +134,25 @@ plain/rich select on the left, with the Save/Draft/Discard buttons on the right.
 
 The text-note editor SHALL provide exactly two editable modes: **Visual**
 (rendered markdown in a contentEditable surface, with images displayed) and
-**Source** (the canonical markdown in a monospace textarea). The user SHALL
-switch modes from the bottom-left mode switch and with `Ctrl/Cmd+Shift+M`. Switching
-modes MUST preserve the canonical markdown without data loss. The editor SHALL serialise the Visual surface only when it is dirty; merely opening a note or toggling modes MUST NOT rewrite content or trigger the unsaved-changes prompt.
+**Source** (the canonical markdown in a textarea). The editor SHALL open every
+note in **Source** mode by default; Visual SHALL be one explicit switch away. The
+user SHALL switch modes from the bottom-left mode switch and with
+`Ctrl/Cmd+Shift+M`. Switching modes MUST preserve the canonical markdown without
+data loss. The editor SHALL serialise the Visual surface only when it is dirty;
+merely opening a note or toggling modes MUST NOT rewrite content or trigger the
+unsaved-changes prompt.
+
+#### Scenario: New note opens in Source
+
+- **WHEN** the user opens a new note editor
+- **THEN** the Source textarea is the active editing surface
+- **AND** the Source mode button is shown as active
+
+#### Scenario: Existing note opens in Source
+
+- **WHEN** the user opens an existing text note
+- **THEN** the canonical markdown is shown in the Source textarea
+- **AND** switching to Visual renders the same markdown
 
 #### Scenario: Round-trip through all modes
 
@@ -254,6 +270,8 @@ The editor SHALL use a modal dialog for both regular links and wiki links instea
 
 A regular link dialog SHALL provide Text and URL fields, prefilled from the current selection where available. Submitting SHALL insert `[text](url)`. Escape SHALL close the dialog without closing the note editor.
 
+No link SHALL be inserted and the dialog SHALL NOT close while an IME owns the keystroke. Enter and Escape SHALL stand down during a composition so the IME can confirm or cancel its candidate.
+
 #### Scenario: Add a regular link
 
 - **WHEN** the user selects text and chooses Link, edits the URL, and submits
@@ -266,11 +284,25 @@ A regular link dialog SHALL provide Text and URL fields, prefilled from the curr
 - **THEN** only the dialog closes
 - **AND** the note editor remains open with its content unchanged
 
+#### Scenario: Submit during IME composition
+
+- **WHEN** the user presses Enter while an IME is composing the URL
+- **THEN** the IME confirms the candidate
+- **AND** no link is inserted
+
+#### Scenario: Escape during IME composition
+
+- **WHEN** the user presses Escape while an IME is composing the URL
+- **THEN** the IME cancels the candidate
+- **AND** the link dialog stays open
+
 ### Requirement: Wiki-link note suggestions
 
 The wiki-link dialog SHALL search notes as the user types, using the same search endpoint as the gallery search bar, with debounced requests. It SHALL show matching note titles and types, support arrow-key navigation, and allow inserting a link to a typed title that does not match an existing note. Archived notes and the note currently being edited SHALL be excluded from suggestions.
 
 Choosing an existing note SHALL insert a stable `[[note:<id>|label]]` link. A typed unmatched title SHALL insert `[[title]]` or `[[title|label]]`. When no label is provided, the note title SHALL be used.
+
+No wiki link SHALL be inserted while an IME owns the keystroke. Enter and the arrow keys SHALL stand down during a composition so the IME can confirm or cancel its candidate and the suggestion highlight does not move on its own.
 
 #### Scenario: Link to an existing note
 
@@ -283,6 +315,12 @@ Choosing an existing note SHALL insert a stable `[[note:<id>|label]]` link. A ty
 - **WHEN** the user types a title that matches no note and chooses the new-title option
 - **THEN** a title-based wiki link is inserted
 - **AND** it can be resolved later when that note is created
+
+#### Scenario: Accept a suggestion during IME composition
+
+- **WHEN** the user presses Enter while an IME is composing a note title
+- **THEN** the IME confirms the candidate
+- **AND** no wiki link is inserted
 
 ### Requirement: Wiki-link alias round-trip
 

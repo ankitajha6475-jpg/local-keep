@@ -1,28 +1,22 @@
 <template>
-  <div
+  <dialog
     class="link-dialog-overlay"
-    @mousedown.self="$emit('close')"
-    @keydown.esc.stop.prevent="$emit('close')"
-  >
-    <div
-      class="link-dialog"
-      role="dialog"
-      aria-modal="true"
-      :aria-label="mode === 'wiki' ? 'Add wiki link' : 'Add link'"
-    >
+    @keydown.esc="onEscape"
+   ref="linkDialog" closedby="any" @close="onClosed" aria-labelledby="linkDialog-title">
+    <div class="link-dialog">
       <div class="link-dialog-header">
-        <h3>{{ mode === 'wiki' ? '🔗 Add wiki link' : '🔗 Add link' }}</h3>
-        <button type="button" class="link-dialog-close" title="Close (Esc)" :data-shortcut="shortcut('closeDialog')" @click="$emit('close')">×</button>
+        <h3 id="linkDialog-title">{{ mode === 'wiki' ? '🔗 Add wiki link' : '🔗 Add link' }}</h3>
+        <button type="button" class="link-dialog-close" title="Close (Esc)" aria-label="Close link dialog" :data-shortcut="shortcut('closeDialog')" @click="$emit('close')">×</button>
       </div>
 
       <div v-if="mode === 'link'" class="link-dialog-form">
         <label>
           Text
-          <input ref="textInput" v-model="text" type="text" placeholder="Link text" required @keydown.enter.prevent="submitLink">
+          <input ref="textInput" v-model="text" type="text" placeholder="Link text" required @keydown.enter="onEnterLink">
         </label>
         <label>
           URL
-          <input ref="urlInput" v-model="url" type="text" placeholder="https://example.com" required @keydown.enter.prevent="submitLink">
+          <input ref="urlInput" v-model="url" type="text" placeholder="https://example.com" required @keydown.enter="onEnterLink">
         </label>
         <p class="link-dialog-hint">Markdown: <code>[text](url)</code></p>
         <div class="link-dialog-actions">
@@ -43,9 +37,9 @@
             placeholder="Start typing a note title…"
             autocomplete="off"
             @input="onQueryInput"
-            @keydown.down.prevent="moveHighlight(1)"
-            @keydown.up.prevent="moveHighlight(-1)"
-            @keydown.enter.prevent="submitWiki"
+            @keydown.down="onHighlightArrow($event, 1)"
+            @keydown.up="onHighlightArrow($event, -1)"
+            @keydown.enter="onEnterWiki"
           >
         </label>
         <p class="link-dialog-hint">
@@ -90,11 +84,13 @@
         </div>
       </div>
     </div>
-  </div>
+  </dialog>
 </template>
 
 <script>
 import { SHORTCUTS, shortcutLabel } from '../shared/shortcuts.js'
+import { isImeComposing, runUnlessIme } from '../shared/ime.js'
+import { showModalDialog } from '../shared/dialog.js'
 
 export default {
   name: 'LinkDialog',
@@ -148,6 +144,9 @@ export default {
   },
   mounted() {
     this.$nextTick(() => {
+      // Native dialog: the platform provides the top layer, the focus
+      // containment and the Esc dismissal.
+      showModalDialog(this.$refs.linkDialog)
       if (this.mode === 'wiki') {
         this.focusAndSelect(this.$refs.queryInput)
         this.runSearch()
@@ -162,8 +161,29 @@ export default {
     if (this.searchTimer) clearTimeout(this.searchTimer)
   },
   methods: {
+    onClosed() {
+      this.$emit('close')
+    },
     shortcut(id) {
       return shortcutLabel(SHORTCUTS[id], this.modKey)
+    },
+    // Enter submits and Escape closes, but only when no IME owns the
+    // keystroke. While an IME is composing, Enter confirms the candidate and
+    // Escape cancels it, so the dialog must stay out of the way.
+    onEscape(event) {
+      if (isImeComposing(event)) return
+      event.preventDefault()
+      event.stopPropagation()
+      this.$emit('close')
+    },
+    onEnterLink(event) {
+      runUnlessIme(event, () => this.submitLink())
+    },
+    onEnterWiki(event) {
+      runUnlessIme(event, () => this.submitWiki())
+    },
+    onHighlightArrow(event, delta) {
+      runUnlessIme(event, () => this.moveHighlight(delta))
     },
     focusAndSelect(input) {
       if (!input) return
@@ -249,15 +269,19 @@ export default {
 </script>
 
 <style scoped>
+/* Native dialog: the element is the box and `::backdrop` is the dim layer. */
 .link-dialog-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 420;
-  background: rgba(32, 33, 36, 0.45);
-  display: flex;
-  align-items: flex-start;
-  justify-content: center;
+  border: none;
   padding: min(14vh, 7rem) 1rem 1rem;
+  background: transparent;
+  width: auto;
+  max-width: none;
+  max-height: none;
+  overflow: visible;
+}
+
+.link-dialog-overlay::backdrop {
+  background: rgba(32, 33, 36, 0.45);
 }
 
 .link-dialog {
@@ -290,7 +314,7 @@ export default {
 .link-dialog-close {
   border: none;
   background: transparent;
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 1.3rem;
   line-height: 1;
   cursor: pointer;
@@ -324,7 +348,6 @@ export default {
 }
 
 .link-dialog-form input:focus {
-  outline: none;
   border-color: #1a73e8;
   box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.14);
 }
@@ -332,7 +355,7 @@ export default {
 .link-dialog-hint {
   margin: 0;
   font-size: 0.7rem;
-  color: #80868b;
+  color: var(--text-muted);
 }
 
 .link-dialog-hint code {
@@ -347,7 +370,7 @@ export default {
   padding: 0.8rem;
   text-align: center;
   font-size: 0.8rem;
-  color: #80868b;
+  color: var(--text-muted);
 }
 
 .link-dialog-error {
@@ -404,7 +427,7 @@ export default {
 .link-result-meta {
   flex: 0 0 auto;
   font-size: 0.68rem;
-  color: #80868b;
+  color: var(--text-muted);
 }
 
 .link-dialog-actions {

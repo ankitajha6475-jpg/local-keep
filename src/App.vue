@@ -221,7 +221,7 @@
                   type="button"
                   class="account-btn"
                   :aria-expanded="accountMenuOpen"
-                  aria-haspopup="menu"
+                  aria-haspopup="true"
                   :data-shortcut="shortcut('accountMenu')"
                   @click="accountMenuOpen = !accountMenuOpen"
                 >
@@ -229,27 +229,27 @@
                   <span class="account-name">{{ currentUser?.displayName || currentUser?.username }}</span>
                   <span class="account-chevron"><AppIcon name="chevron-down" :size="14" /></span>
                 </button>
-                <div v-if="accountMenuOpen" class="account-menu" role="menu">
+                <div v-if="accountMenuOpen" class="account-menu">
                   <div class="account-menu-head">
                     <strong>{{ currentUser?.displayName || currentUser?.username }}</strong>
                     <small>@{{ currentUser?.username }} · {{ currentUser?.role }}</small>
                   </div>
-                  <button type="button" role="menuitem" :data-shortcut="shortcut('accountSettings')" @click="openAccountSettings()">
+                  <button type="button" :data-shortcut="shortcut('accountSettings')" @click="openAccountSettings()">
                     <AppIcon name="settings" :size="16" /> Account settings
                   </button>
-                  <button v-if="isAdmin" type="button" role="menuitem" :data-shortcut="shortcut('manageUsers')" @click="openUsers">
+                  <button v-if="isAdmin" type="button" :data-shortcut="shortcut('manageUsers')" @click="openUsers">
                     <AppIcon name="users" :size="16" /> Manage users
                   </button>
-                  <button v-if="isAdmin" type="button" role="menuitem" :data-shortcut="shortcut('interfaceSettings')" @click="openUiSettings">
+                  <button v-if="isAdmin" type="button" :data-shortcut="shortcut('interfaceSettings')" @click="openUiSettings">
                     <AppIcon name="sliders" :size="16" /> Interface
                   </button>
-                  <button v-if="isAdmin" type="button" role="menuitem" :data-shortcut="shortcut('mcpSettings')" @click="openMcpSettings">
+                  <button v-if="isAdmin" type="button" :data-shortcut="shortcut('mcpSettings')" @click="openMcpSettings">
                     <AppIcon name="plug" :size="16" /> MCP access
                   </button>
-                  <button v-if="isAdmin" type="button" role="menuitem" :data-shortcut="shortcut('hybridSettings')" @click="openEmbeddingSettings">
+                  <button v-if="isAdmin" type="button" :data-shortcut="shortcut('hybridSettings')" @click="openEmbeddingSettings">
                     <AppIcon name="sparkles" :size="16" /> Hybrid search
                   </button>
-                  <button type="button" role="menuitem" class="account-menu-danger" :data-shortcut="shortcut('logout')" @click="logout">
+                  <button type="button" class="account-menu-danger" :data-shortcut="shortcut('logout')" @click="logout">
                     <AppIcon name="lock" :size="16" /> Lock workspace
                   </button>
                 </div>
@@ -306,11 +306,17 @@
         </div>
       </header>
 
-      <!-- Revision / conflict notice -->
-      <div v-if="revisionNotice" class="revision-toast" role="status">
+      <!-- Revision / conflict notice. The announcement lives in the live
+           regions below, so this toast stays purely visual and there is
+           exactly one polite region in the document. -->
+      <div v-if="revisionNotice" class="revision-toast">
         <span>{{ revisionNotice }}</span>
-        <button type="button" :data-shortcut="shortcut('dismissNotice')" @click="dismissRevisionNotice" title="Dismiss">×</button>
+        <button type="button" :data-shortcut="shortcut('dismissNotice')" @click="dismissRevisionNotice" title="Dismiss" aria-label="Dismiss notice">×</button>
       </div>
+
+      <!-- Centralised live regions: one polite, one assertive. -->
+      <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{{ livePolite }}</div>
+      <div class="sr-only" role="alert" aria-live="assertive" aria-atomic="true">{{ liveAssertive }}</div>
 
       <main @click="fabMenuOpen = false">
         <div class="workspace">
@@ -355,33 +361,45 @@
               <button
                 type="button"
                 role="tab"
+                id="tab-notes"
                 class="dashboard-tab"
                 :class="{ active: dashboardTab === 'notes' }"
                 :aria-selected="dashboardTab === 'notes'"
+                aria-controls="notes-panel"
+                :tabindex="dashboardTab === 'notes' ? 0 : -1"
                 :data-shortcut="shortcut('tabNotes')"
                 @click="setDashboardTab('notes')"
+                @keydown="onTabKeydown($event, 'notes')"
               >
                 Notes <span class="tab-count">{{ notesTabCount }}</span>
               </button>
               <button
                 type="button"
                 role="tab"
+                id="tab-archived"
                 class="dashboard-tab"
                 :class="{ active: dashboardTab === 'archived' }"
                 :aria-selected="dashboardTab === 'archived'"
+                aria-controls="notes-panel"
+                :tabindex="dashboardTab === 'archived' ? 0 : -1"
                 :data-shortcut="shortcut('tabArchived')"
                 @click="setDashboardTab('archived')"
+                @keydown="onTabKeydown($event, 'archived')"
               >
                 Archived <span class="tab-count">{{ archivedTabCount }}</span>
               </button>
               <button
                 type="button"
                 role="tab"
+                id="tab-drafts"
                 class="dashboard-tab"
                 :class="{ active: dashboardTab === 'drafts' }"
                 :aria-selected="dashboardTab === 'drafts'"
+                aria-controls="notes-panel"
+                :tabindex="dashboardTab === 'drafts' ? 0 : -1"
                 :data-shortcut="shortcut('tabDrafts')"
                 @click="setDashboardTab('drafts')"
+                @keydown="onTabKeydown($event, 'drafts')"
               >
                 Drafts <span class="tab-count">{{ drafts.length }}</span>
               </button>
@@ -389,11 +407,11 @@
             <span class="notes-count">{{ visibleCountText }}</span>
             <span v-if="activeTag" class="tag-filter-chip">
               #{{ activeTag }}
-              <button type="button" :data-shortcut="shortcut('clearTagFilter')" @click="clearTag" title="Clear tag filter">×</button>
+              <button type="button" :data-shortcut="shortcut('clearTagFilter')" @click="clearTag" title="Clear tag filter" aria-label="Clear tag filter">×</button>
             </span>
             <span v-else-if="untaggedOnly" class="tag-filter-chip">
               Untagged
-              <button type="button" :data-shortcut="shortcut('clearTagFilter')" @click="clearTag" title="Clear tag filter">×</button>
+              <button type="button" :data-shortcut="shortcut('clearTagFilter')" @click="clearTag" title="Clear tag filter" aria-label="Clear tag filter">×</button>
             </span>
           </div>
           <div class="control-right">
@@ -429,6 +447,9 @@
 
         <div
           ref="notesGridRef"
+          id="notes-panel"
+          role="tabpanel"
+          :aria-labelledby="`tab-${dashboardTab}`"
           class="notes-grid notes-grid-virtual"
           :class="{ 'notes-grid-selection-active': selectedNoteIds.size > 0 }"
         >
@@ -527,11 +548,11 @@
       />
 
       <!-- MCP settings -->
-      <div v-if="mcpSettingsOpen" class="modal-overlay" @mousedown.self="mcpSettingsOpen = false">
+      <dialog v-if="mcpSettingsOpen" class="modal-overlay" ref="mcpSettingsDialog" closedby="any" @close="mcpSettingsController.onClosed" aria-labelledby="mcpSettingsDialog-title">
         <div class="modal-content mcp-settings-modal">
           <div class="modal-header">
-            <h2>🔌 MCP access</h2>
-            <button class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="mcpSettingsOpen = false">×</button>
+            <h2 id="mcpSettingsDialog-title">🔌 MCP access</h2>
+            <button class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="mcpSettingsOpen = false" title="Close" aria-label="Close MCP access settings">×</button>
           </div>
           <p class="mcp-hint">
             MCP clients use one token per client. Read/write tokens can search, read, and edit;
@@ -611,14 +632,14 @@
 }</pre>
           </details>
         </div>
-      </div>
+      </dialog>
 
       <!-- Account settings -->
-      <div v-if="accountSettingsOpen" class="modal-overlay" @mousedown.self="closeAccountSettings">
+      <dialog v-if="accountSettingsOpen" class="modal-overlay" ref="accountSettingsDialog" closedby="any" @close="accountSettingsController.onClosed" aria-labelledby="accountSettingsDialog-title">
         <div class="modal-content account-modal">
           <div class="modal-header">
-            <h2>{{ accountSettingsForced ? 'Set a new password' : 'Account settings' }}</h2>
-            <button v-if="!accountSettingsForced" type="button" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="closeAccountSettings">×</button>
+            <h2 id="accountSettingsDialog-title">{{ accountSettingsForced ? 'Set a new password' : 'Account settings' }}</h2>
+            <button v-if="!accountSettingsForced" type="button" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="closeAccountSettings" title="Close" aria-label="Close account settings">×</button>
           </div>
           <div class="account-summary">
             <span class="account-avatar large">{{ userInitials }}</span>
@@ -658,14 +679,14 @@
             <button type="button" class="cancel-btn" :data-shortcut="shortcut('logoutAll')" @click="logoutAll">Sign out all</button>
           </div>
         </div>
-      </div>
+      </dialog>
 
       <!-- Interface settings -->
-      <div v-if="uiSettingsOpen" class="modal-overlay" @mousedown.self="closeUiSettings">
+      <dialog v-if="uiSettingsOpen" class="modal-overlay" ref="uiSettingsDialog" closedby="any" @close="uiSettingsController.onClosed" aria-labelledby="uiSettingsDialog-title">
         <div class="modal-content ui-settings-modal">
           <div class="modal-header">
-            <h2>🎛 Interface settings</h2>
-            <button type="button" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="closeUiSettings">×</button>
+            <h2 id="uiSettingsDialog-title">🎛 Interface settings</h2>
+            <button type="button" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="closeUiSettings" title="Close" aria-label="Close interface settings">×</button>
           </div>
           <p class="ui-settings-hint">
             Defaults come from <code>{{ uiSettings.filePath || 'config.json' }}</code>.
@@ -707,14 +728,14 @@
             </div>
           </form>
         </div>
-      </div>
+      </dialog>
 
       <!-- User administration -->
-      <div v-if="usersOpen" class="modal-overlay" @mousedown.self="usersOpen = false">
+      <dialog v-if="usersOpen" class="modal-overlay" ref="usersDialog" closedby="any" @close="usersController.onClosed" aria-labelledby="usersDialog-title">
         <div class="modal-content users-modal">
           <div class="modal-header">
-            <h2>👥 People</h2>
-            <button type="button" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="usersOpen = false">×</button>
+            <h2 id="usersDialog-title">👥 People</h2>
+            <button type="button" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="usersOpen = false" title="Close" aria-label="Close people settings">×</button>
           </div>
           <p class="users-hint">Everyone shares this workspace. Admins can add people, reset passwords, and disable accounts.</p>
 
@@ -766,14 +787,14 @@
             </div>
           </div>
         </div>
-      </div>
+      </dialog>
 
       <!-- Admin: semantic search settings -->
-      <div v-if="embeddingSettingsOpen" class="modal-overlay" @mousedown.self="embeddingSettingsOpen = false">
+      <dialog v-if="embeddingSettingsOpen" class="modal-overlay" ref="embeddingSettingsDialog" closedby="any" @close="embeddingSettingsController.onClosed" aria-labelledby="embeddingSettingsDialog-title">
         <div class="modal-content embedding-modal">
           <div class="modal-header">
-            <h2>✨ Hybrid search</h2>
-            <button type="button" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="embeddingSettingsOpen = false">×</button>
+            <h2 id="embeddingSettingsDialog-title">✨ Hybrid search</h2>
+            <button type="button" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="embeddingSettingsOpen = false" title="Close" aria-label="Close hybrid search settings">×</button>
           </div>
           <p class="embedding-hint">
             OpenAI-compatible embeddings (SiliconFlow by default). The API key is encrypted at rest.
@@ -913,10 +934,10 @@
             </div>
           </div>
         </div>
-      </div>
+      </dialog>
 
       <!-- Modal for Add/Edit Note -->
-      <div v-if="isModalOpen" class="modal-overlay" @mousedown.self="closeModal">
+      <dialog v-if="isModalOpen" class="modal-overlay" ref="noteEditorDialog" closedby="any" @close="noteEditorController.onClosed" aria-labelledby="noteEditorDialog-title">
         <div
           class="modal-content note-form-modal"
           :class="[
@@ -926,7 +947,7 @@
           :style="modalSize.width ? { width: modalSize.width + 'px', height: modalSize.height + 'px', maxWidth: 'none', maxHeight: 'none' } : {}"
         >
           <div class="modal-header">
-            <h2>
+            <h2 id="noteEditorDialog-title">
               Editor
               <span
                 v-if="editingId && textCollabReady"
@@ -959,7 +980,7 @@
                 :data-shortcut="shortcut('noteHistory')"
                 title="View revision history"
               >🕘 History<span class="history-version-badge" title="Current version">v{{ editingRevisionNo }}</span></button>
-              <button @click="closeModal" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')">×</button>
+              <button @click="closeModal" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" title="Close" aria-label="Close editor">×</button>
             </div>
           </div>
           <form @submit.prevent="editingId ? saveEdit() : addNote()">
@@ -972,6 +993,7 @@
                 type="text"
                 placeholder="Title"
                 class="note-title-input"
+                :autofocus="editingId ? undefined : ''"
                 @keydown.ctrl.enter.stop.prevent="editingId ? saveEdit() : addNote()"
                 @keydown.meta.enter.stop.prevent="editingId ? saveEdit() : addNote()"
                 @blur="applyPendingRemoteTitle"
@@ -990,14 +1012,13 @@
                 <div
                   v-if="editingColorMenuOpen"
                   class="note-color-menu"
-                  role="menu"
+                  role="group"
                   aria-label="Choose note color"
                 >
                   <button
                     v-for="opt in NOTE_COLOR_OPTIONS"
                     :key="opt.id || 'default'"
                     type="button"
-                    role="menuitemradio"
                     class="note-color-option"
                     :class="[
                       `note-color-option--${opt.id || 'default'}`,
@@ -1005,7 +1026,7 @@
                     ]"
                     :title="opt.label"
                     :aria-label="opt.label"
-                    :aria-checked="(editingColor || null) === (opt.id || null)"
+                    :aria-pressed="(editingColor || null) === (opt.id || null)"
                     @click="setEditingColor(opt.id); editingColorMenuOpen = false"
                   >
                     <AppIcon
@@ -1032,7 +1053,7 @@
                 <span v-if="!propsOpen" class="props-summary">{{ propsSummary }}</span>
               </button>
               <div class="prop-row">
-                <label class="prop-key">tags</label>
+                <label class="prop-key" for="prop-tag-input">tags</label>
                 <div class="prop-chips">
                   <span
                     v-for="tag in noteTagList"
@@ -1044,20 +1065,57 @@
                       :aria-label="`Remove tag ${tag}`"
                       @click="removeTagProp(tag)"
                     >×</button></span>
-                  <input
-                    type="text"
-                    class="prop-chip-input"
-                    placeholder="Add tag…"
-                    v-model="tagDraft"
-                    @keydown.enter.prevent="addTagProp(tagDraft)"
-                    @keydown.,.prevent="addTagProp(tagDraft)"
-                    @blur="addTagProp(tagDraft)"
-                  >
+                  <div class="prop-tag-field">
+                    <input
+                      id="prop-tag-input"
+                      ref="tagInput"
+                      type="text"
+                      class="prop-chip-input"
+                      placeholder="Add tag…"
+                      autocomplete="off"
+                      role="combobox"
+                      aria-controls="tag-suggestions"
+                      :aria-expanded="tagSuggestOpen && tagSuggestions.length > 0"
+                      :aria-activedescendant="tagActiveDescendant"
+                      aria-autocomplete="list"
+                      v-model="tagDraft"
+                      @input="tagSuggestOpen = true"
+                      @focus="tagSuggestOpen = true"
+                      @blur="onTagInputBlur"
+                      @keydown.enter="onTagEnter"
+                      @keydown.,="onTagComma"
+                      @keydown.down="onTagArrow($event, 1)"
+                      @keydown.up="onTagArrow($event, -1)"
+                      @keydown.esc="onTagEscape"
+                    >
+                    <ul
+                      v-if="tagSuggestOpen && tagSuggestions.length"
+                      id="tag-suggestions"
+                      class="tag-suggestions"
+                      role="listbox"
+                      aria-label="Tag suggestions"
+                    >
+                      <li
+                        v-for="(tag, index) in tagSuggestions"
+                        :id="`tag-suggestion-${index}`"
+                        :key="tag"
+                        role="option"
+                        class="tag-suggestion"
+                        :class="{ active: index === tagSuggestIndex }"
+                        :aria-selected="index === tagSuggestIndex"
+                        @mousedown.prevent="pickTagSuggestion(tag)"
+                        @mouseenter="tagSuggestIndex = index"
+                      >
+                        <span class="tag-suggestion-path">#{{ tag }}</span>
+                      </li>
+                    </ul>
+                  </div>
                 </div>
               </div>
               <div class="prop-row">
-                <label class="prop-key">aliases</label>
+                <label class="prop-key" for="prop-aliases">aliases</label>
                 <input
+                  id="prop-aliases"
                   type="text"
                   class="prop-value"
                   :value="aliasDraft"
@@ -1066,13 +1124,14 @@
                 >
               </div>
               <div
-                v-for="entry in userPropEntries"
+                v-for="(entry, index) in userPropEntries"
                 :key="entry.key"
                 class="prop-row"
               >
-                <label class="prop-key">{{ entry.key }}</label>
+                <label class="prop-key" :for="`prop-field-${index}`">{{ entry.key }}</label>
                 <input
                   v-if="entry.type !== 'checkbox'"
+                  :id="`prop-field-${index}`"
                   type="text"
                   class="prop-value"
                   :value="entry.value"
@@ -1080,6 +1139,7 @@
                 >
                 <input
                   v-else
+                  :id="`prop-field-${index}`"
                   type="checkbox"
                   class="prop-checkbox"
                   :checked="entry.value"
@@ -1093,15 +1153,16 @@
                 >×</button>
               </div>
               <div class="prop-row">
-                <label class="prop-key">add</label>
+                <label class="prop-key" for="prop-new-key">add</label>
                 <input
+                  id="prop-new-key"
                   type="text"
                   class="prop-value"
                   placeholder="New property name…"
                   v-model="propKeyDraft"
-                  @keydown.enter.prevent="addPropKey"
+                  @keydown.enter="onPropKeyEnter"
                 >
-                <button type="button" class="prop-add" @click="addPropKey">+</button>
+                <button type="button" class="prop-add" @click="addPropKey" title="Add property" aria-label="Add property">+</button>
               </div>
             </div>
             <div class="note-editor-toolbar">
@@ -1123,6 +1184,7 @@
               class="note-editor"
               contenteditable="true"
               data-placeholder="Take a note..."
+              autofocus
               @input="onEditorInput"
               @keydown="onEditorKeydown"
               @paste="onEditorPaste"
@@ -1139,6 +1201,7 @@
               class="note-editor markdown-source"
               spellcheck="false"
               placeholder="Markdown source (images shown as URLs)..."
+              autofocus
               @keydown="onEditorKeydown"
               @paste="onMarkdownPaste"
             ></textarea>
@@ -1187,11 +1250,11 @@
           </form>
 
           <!-- Revision history overlay -->
-          <div v-if="historyOpen" class="history-overlay" @mousedown.self="closeHistory">
+          <dialog v-if="historyOpen" class="history-overlay" ref="historyDialog" closedby="any" @close="historyController.onClosed" aria-labelledby="historyDialog-title">
             <div class="history-panel">
               <div class="history-header">
-                <h3>Revision history</h3>
-                <button type="button" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="closeHistory">×</button>
+                <h3 id="historyDialog-title">Revision history</h3>
+                <button type="button" class="close-modal-btn" :data-shortcut="shortcut('closeDialog')" @click="closeHistory" title="Close" aria-label="Close revision history">×</button>
               </div>
               <p v-if="historyLoading" class="history-loading">Loading history…</p>
               <p v-if="historyError" class="error">{{ historyError }}</p>
@@ -1236,7 +1299,7 @@
                 <pre>{{ historyPreview.content }}</pre>
               </div>
             </div>
-          </div>
+          </dialog>
 
           <BacklinksPanel
             v-if="backlinksOpen"
@@ -1274,12 +1337,12 @@
             </div>
           </div>
         </div>
-      </div>
+      </dialog>
 
       <!-- Unsaved Changes Confirmation Modal -->
-      <div v-if="isUnsavedChangesOpen" class="modal-overlay" @mousedown.self="cancelDiscardChanges">
+      <dialog v-if="isUnsavedChangesOpen" class="modal-overlay" ref="unsavedChangesDialog" closedby="none" @cancel="onUnsavedChangesCancel" @close="unsavedChangesController.onClosed" aria-labelledby="unsavedChangesDialog-title">
         <div class="modal-content confirm-modal">
-          <h2>Unsaved Changes</h2>
+          <h2 id="unsavedChangesDialog-title">Unsaved Changes</h2>
           <p>
             You have unsaved changes. What would you like to do?
           </p>
@@ -1287,25 +1350,25 @@
             <button @click="saveAndClose" class="save-btn" :data-shortcut="shortcut('unsavedSave')">Save</button>
             <button v-if="editingId" @click="draftAndClose" class="draft-btn" :data-shortcut="shortcut('unsavedDraft')">Draft</button>
             <button @click="discardChanges" class="cancel-confirm-btn" :data-shortcut="shortcut('unsavedDiscard')">Discard</button>
-            <button @click="cancelDiscardChanges" class="continue-btn" :data-shortcut="shortcut('unsavedContinue')">Continue</button>
+            <button @click="cancelDiscardChanges" class="continue-btn" autofocus :data-shortcut="shortcut('unsavedContinue')">Continue</button>
           </div>
         </div>
-      </div>
+      </dialog>
 
       <!-- Custom Confirmation Modal for Deletion -->
-      <div v-if="isConfirmOpen" class="modal-overlay" @mousedown.self="closeConfirm">
+      <dialog v-if="isConfirmOpen" class="modal-overlay" ref="confirmDialog" closedby="any" @close="confirmController.onClosed" aria-labelledby="confirmDialog-title">
         <div class="modal-content confirm-modal">
-          <h2>{{ noteToDeleteId ? 'Archive Note?' : 'Archive Selected Notes?' }}</h2>
+          <h2 id="confirmDialog-title">{{ noteToDeleteId ? 'Archive Note?' : 'Archive Selected Notes?' }}</h2>
           <p>
             {{ noteToDeleteId ? 'This note will be hidden from the list.' : `These ${selectedNoteIds.size} notes will be hidden from the list.` }}
             Its revision history is kept and the note can be restored.
           </p>
           <div class="confirm-actions">
             <button @click="confirmDelete" class="delete-confirm-btn" :data-shortcut="shortcut('confirmArchive')">Archive</button>
-            <button @click="closeConfirm" class="cancel-confirm-btn" :data-shortcut="shortcut('confirmCancel')">Cancel</button>
+            <button @click="closeConfirm" class="cancel-confirm-btn" autofocus :data-shortcut="shortcut('confirmCancel')">Cancel</button>
           </div>
         </div>
-      </div>
+      </dialog>
 
       <!-- Floating Action Button (dashboard only — not over the whiteboard view) -->
       <div v-if="isAuthenticated && currentView !== 'canvas'" class="fab-container" :class="{ 'shortcuts-visible': shortcutsVisible }">
@@ -1364,6 +1427,8 @@ import { getDisplayTitle } from './utils/notes.js'
 import { renderMermaidBlocks } from './utils/mermaid.js'
 import { matchEditorShortcut } from './shared/editorTools.js'
 import { SHORTCUTS, shortcutLabel, eventShortcut } from './shared/shortcuts.js'
+import { isImeComposing, runUnlessIme } from './shared/ime.js'
+import { createOverlayStack, createDialogController, installLightDismiss } from './shared/dialog.js'
 import { buildLinkMarkdown } from './shared/linkMarkdown.js'
 import {
   DEFAULT_UI_CONFIG,
@@ -1381,7 +1446,7 @@ import {
   setProp,
   removeProp
 } from './shared/noteMeta.js'
-import { normalizeTag, isValidTag, MAX_TAGS_PER_NOTE } from './shared/tags.js'
+import { normalizeTag, isValidTag, matchTags, MAX_TAGS_PER_NOTE } from './shared/tags.js'
 import { NOTE_COLOR_OPTIONS, readNoteColorChange, noteColorLabel } from './shared/noteColors.js'
 import { createTextCollabManager } from './collab/textCollabManager.js'
 
@@ -1516,7 +1581,9 @@ export default {
     const propsOpen = ref(false)
     const tagDraft = ref('')
     const propKeyDraft = ref('')
-
+    // Tag autocomplete: suggestions come from the known tag tree while typing.
+    const tagSuggestOpen = ref(false)
+    const tagSuggestIndex = ref(-1)
     /** Tags as a plain list from the `tags` property. */
     const noteTagList = computed(() => {
       const value = noteProps.value.find(e => e && !e.blank && e.key === 'tags')?.value
@@ -1545,6 +1612,15 @@ export default {
       if (userPropEntries.value.length) parts.push(`${userPropEntries.value.length} prop`)
       return parts.join(' · ')
     })
+
+    /** Clear every editor-local property draft so a new note starts empty. */
+    function resetNoteProps() {
+      noteProps.value = []
+      tagDraft.value = ''
+      propKeyDraft.value = ''
+      tagSuggestOpen.value = false
+      tagSuggestIndex.value = -1
+    }
 
     function addTagProp(raw) {
       const tag = normalizeTag(raw)
@@ -1588,6 +1664,11 @@ export default {
       if (!key || /[\n\r:]/.test(key)) return
       if (noteProps.value.some(e => e && !e.blank && e.key === key)) return
       noteProps.value = setProp(noteProps.value, key, '')
+    }
+
+    // Enter adds the property key, but only when no IME owns the keystroke.
+    function onPropKeyEnter(event) {
+      runUnlessIme(event, addPropKey)
     }
 
     /**
@@ -1664,7 +1745,10 @@ export default {
     let pendingRemoteText = null
     let pendingRemoteTitle = null
     let compositionActive = false
-    const editorMode = ref('write') // 'write' (Visual) | 'plain' (Source)
+    // Source (plain markdown) is the default editing surface. Visual remains
+    // one toggle away in the bottom-left mode switch.
+    const DEFAULT_EDITOR_MODE = 'plain'
+    const editorMode = ref(DEFAULT_EDITOR_MODE) // 'write' (Visual) | 'plain' (Source)
     const PASTE_MODE_KEY = 'local-keep-paste-mode'
     const storedPasteMode = (() => {
       try {
@@ -1686,6 +1770,26 @@ export default {
     let editorDirty = false
     const revisionNotice = ref('')
     let revisionNoticeTimer = null
+
+    /**
+     * Centralised live regions.
+     *
+     * The page keeps exactly one polite region and one assertive region so
+     * announcements stay consistent. `notify()` clears the region before
+     * writing to it: a live region only fires when its content changes, so
+     * without the clear a repeated message would stay silent.
+     */
+    const livePolite = ref('')
+    const liveAssertive = ref('')
+    let liveTimer = null
+
+    const notify = (message, level = 'polite') => {
+      if (!message) return
+      const target = level === 'assertive' ? liveAssertive : livePolite
+      target.value = ''
+      if (liveTimer) clearTimeout(liveTimer)
+      liveTimer = setTimeout(() => { target.value = message }, 60)
+    }
     let recentLocalRevision = null
     const historyOpen = ref(false)
     const historyLoading = ref(false)
@@ -1762,6 +1866,53 @@ export default {
     const uiSettingsSaving = ref(false)
     const uiSettingsError = ref('')
     const uiSettingsNotice = ref('')
+
+    // ── Native overlay plumbing ──────────────────────────────────────────
+    // Every blocking overlay is a native <dialog> opened with showModal(),
+    // so the platform provides focus containment, background inertness, the
+    // top layer, Esc dismissal, and focus return. The stack records which
+    // overlay is on top, because DOM order no longer describes stacking.
+    const overlayStack = createOverlayStack()
+    const mcpSettingsDialog = ref(null)
+    const accountSettingsDialog = ref(null)
+    const uiSettingsDialog = ref(null)
+    const usersDialog = ref(null)
+    const embeddingSettingsDialog = ref(null)
+    const noteEditorDialog = ref(null)
+    const historyDialog = ref(null)
+    const unsavedChangesDialog = ref(null)
+    const confirmDialog = ref(null)
+
+    const mcpSettingsController = createDialogController({
+      open: mcpSettingsOpen, element: mcpSettingsDialog, stack: overlayStack
+    })
+    const accountSettingsController = createDialogController({
+      open: accountSettingsOpen, element: accountSettingsDialog, stack: overlayStack
+    })
+    const uiSettingsController = createDialogController({
+      open: uiSettingsOpen, element: uiSettingsDialog, stack: overlayStack
+    })
+    const usersController = createDialogController({
+      open: usersOpen, element: usersDialog, stack: overlayStack
+    })
+    const embeddingSettingsController = createDialogController({
+      open: embeddingSettingsOpen, element: embeddingSettingsDialog, stack: overlayStack
+    })
+    const noteEditorController = createDialogController({
+      open: isModalOpen, element: noteEditorDialog, stack: overlayStack
+    })
+    const historyController = createDialogController({
+      open: historyOpen, element: historyDialog, stack: overlayStack
+    })
+    const unsavedChangesController = createDialogController({
+      open: isUnsavedChangesOpen, element: unsavedChangesDialog, stack: overlayStack
+    })
+    const confirmController = createDialogController({
+      open: isConfirmOpen, element: confirmDialog, stack: overlayStack
+    })
+
+    let removeLightDismiss = null
+
     const uiStyleVars = computed(() => ({
       '--note-modal-width': `${uiConfig.value.noteModalWidth}px`,
       '--note-modal-height': `${uiConfig.value.noteModalHeight}px`,
@@ -2249,7 +2400,7 @@ export default {
         return false
       }
       if (summary.archivedAt) {
-        showRevisionNotice(options.archived || 'This note is archived. Restore it to open.')
+        showRevisionNotice(options.archived || 'This note is archived. Restore it to open.', { assertive: true })
         return false
       }
       if (editingId.value === id && isModalOpen.value) return true
@@ -2260,7 +2411,7 @@ export default {
       try {
         const note = await ensureNoteDetail(id, { full: options.full })
         if (!note) {
-          showRevisionNotice(options.notFound || 'Note not found')
+          showRevisionNotice(options.notFound || 'Note not found', { assertive: true })
           return false
         }
         if (isModalOpen.value) {
@@ -2272,7 +2423,7 @@ export default {
         else startEditing(note)
         return true
       } catch (e) {
-        showRevisionNotice(e.message || 'Failed to open note')
+        showRevisionNotice(e.message || 'Failed to open note', { assertive: true })
         return false
       } finally {
         openingNoteId.value = null
@@ -2341,6 +2492,115 @@ export default {
       }, 600)
     }
 
+    // ── Tag autocomplete ──
+    /** Every tag path known to the active tree (parents included). */
+    const knownTags = computed(() => {
+      const out = []
+      const seen = new Set()
+      const walk = (nodes) => {
+        for (const node of nodes || []) {
+          if (node?.tag && !seen.has(node.tag)) {
+            seen.add(node.tag)
+            out.push(node.tag)
+          }
+          walk(node?.children)
+        }
+      }
+      walk(tagsTree.value?.tags)
+      // Include the note's own tags even if the tree has not refreshed yet.
+      for (const tag of noteTagList.value) {
+        if (!seen.has(tag)) {
+          seen.add(tag)
+          out.push(tag)
+        }
+      }
+      return out
+    })
+
+    const tagSuggestions = computed(() => {
+      const query = tagDraft.value.trim()
+      if (!query) return []
+      return matchTags(query, knownTags.value, {
+        exclude: noteTagList.value,
+        limit: 8
+      })
+    })
+
+    /**
+     * `aria-activedescendant` for the tag combobox. It points at the
+     * highlighted suggestion's option id, but only while the list is open:
+     * the list is removed from the DOM when it closes, and a reference to a
+     * missing id is invalid.
+     */
+    const tagActiveDescendant = computed(() => {
+      if (!tagSuggestOpen.value) return undefined
+      const list = tagSuggestions.value
+      const index = tagSuggestIndex.value
+      if (!list.length || index < 0 || index >= list.length) return undefined
+      return `tag-suggestion-${index}`
+    })
+
+    watch(tagDraft, () => {
+      tagSuggestIndex.value = -1
+    })
+
+    function pickTagSuggestion(tag) {
+      addTagProp(tag)
+      tagSuggestOpen.value = true
+    }
+
+    function commitTagDraft() {
+      const list = tagSuggestions.value
+      const index = tagSuggestIndex.value
+      if (list.length && index >= 0 && index < list.length) {
+        pickTagSuggestion(list[index])
+        return
+      }
+      addTagProp(tagDraft.value)
+    }
+
+    // The tag input commits on Enter and on comma, and moves a suggestion
+    // highlight with the arrow keys. While an IME is composing, those keys
+    // belong to the IME, so the handlers stand down and leave the default
+    // action alone (hence no `.prevent` modifier on the bindings).
+    function onTagEnter(event) {
+      runUnlessIme(event, commitTagDraft)
+    }
+
+    function onTagComma(event) {
+      runUnlessIme(event, commitTagDraft)
+    }
+
+    function onTagArrow(event, delta) {
+      runUnlessIme(event, () => moveTagSuggestion(delta))
+    }
+
+    function moveTagSuggestion(delta) {
+      const list = tagSuggestions.value
+      if (!list.length) return
+      tagSuggestOpen.value = true
+      if (tagSuggestIndex.value < 0) {
+        tagSuggestIndex.value = delta > 0 ? 0 : list.length - 1
+        return
+      }
+      tagSuggestIndex.value = (tagSuggestIndex.value + delta + list.length) % list.length
+    }
+
+    function onTagEscape(event) {
+      // Escape cancels an IME candidate before it can close anything.
+      if (isImeComposing(event)) return
+      if (!tagSuggestOpen.value || !tagSuggestions.value.length) return
+      event.preventDefault()
+      event.stopPropagation()
+      tagSuggestOpen.value = false
+    }
+
+    function onTagInputBlur() {
+      tagSuggestOpen.value = false
+      tagSuggestIndex.value = -1
+      if (tagDraft.value.trim()) addTagProp(tagDraft.value)
+    }
+
     const loadDrafts = async () => {
       draftsLoading.value = true
       try {
@@ -2373,6 +2633,35 @@ export default {
       if (tab === 'drafts') loadDrafts()
     }
 
+    /**
+     * ARIA tab pattern: arrow keys move between tabs and select them, and
+     * Home/End jump to the ends. The tabs use a roving `tabindex`, so the
+     * group is a single tab stop and focus follows the selection.
+     */
+    const DASHBOARD_TABS = ['notes', 'archived', 'drafts']
+
+    function onTabKeydown(event, tab) {
+      const index = DASHBOARD_TABS.indexOf(tab)
+      if (index === -1) return
+      let next = null
+      if (event.key === 'ArrowRight' || event.key === 'ArrowDown') {
+        next = DASHBOARD_TABS[(index + 1) % DASHBOARD_TABS.length]
+      } else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') {
+        next = DASHBOARD_TABS[(index - 1 + DASHBOARD_TABS.length) % DASHBOARD_TABS.length]
+      } else if (event.key === 'Home') {
+        next = DASHBOARD_TABS[0]
+      } else if (event.key === 'End') {
+        next = DASHBOARD_TABS[DASHBOARD_TABS.length - 1]
+      }
+      if (!next) return
+      event.preventDefault()
+      setDashboardTab(next)
+      nextTick(() => {
+        const el = document.getElementById(`tab-${next}`)
+        if (el) el.focus()
+      })
+    }
+
     const selectTag = (payload) => {
       const tag = payload?.tag || null
       if (tag === '__untagged__') {
@@ -2400,30 +2689,20 @@ export default {
       }
     }
 
-    const SHORTCUT_LAYER_SELECTOR = [
-      '.modal-overlay',
-      '.history-overlay',
-      '.graph-overlay',
-      '.links-overlay',
-      '.backlinks-overlay',
-      '.link-dialog-overlay',
-      '.deleted-mask'
-    ].join(', ')
-
-    function shortcutElementVisible(el) {
-      if (!el || el.disabled) return false
+    function shortcutElementVisible(el) {      if (!el || el.disabled) return false
       const style = window.getComputedStyle(el)
       return style.visibility !== 'hidden' && style.display !== 'none' && el.getClientRects().length > 0
     }
 
     function shortcutRoot() {
-      const layers = [...document.querySelectorAll(SHORTCUT_LAYER_SELECTOR)]
-        .filter(shortcutElementVisible)
-      return layers.length ? layers[layers.length - 1] : document
+      // The top layer does not follow DOM order, so the overlay stack is the
+      // source of truth for which overlay is on top. Popovers (menus and
+      // palettes) do not block the page and are not part of the stack.
+      return overlayStack.top() || document
     }
 
     function activateShortcutFromDom(e) {
-      if (e.defaultPrevented || e.isComposing || e.repeat) return false
+      if (e.defaultPrevented || isImeComposing(e) || e.repeat) return false
       const combo = eventShortcut(e, modKey)
       if (!combo) return false
       const active = document.activeElement
@@ -2461,36 +2740,36 @@ export default {
       // 0. Skip keyboard shortcuts when in canvas editor view
       if (currentView.value === 'canvas') return
 
+      // Enter and Escape belong to the IME while a composition is active:
+      // Enter confirms the current candidate, Escape cancels it. Acting on
+      // them here would commit a half-composed value (the unsaved-changes
+      // dialog saves the editor behind it) or close the surface the user is
+      // still typing into. Modifier combinations are exempt — they do not
+      // conflict with candidate confirmation.
+      if (isImeComposing(e) &&
+          (e.key === 'Enter' || e.key === 'Escape') &&
+          !e.ctrlKey && !e.metaKey) {
+        return
+      }
+
       if (openColorNoteId.value && e.key === 'Escape' && !e.ctrlKey && !e.metaKey) {
+        // The colour palette is a popover, so the platform dismisses it.
         e.preventDefault()
         closeNoteColorPicker()
         return
       }
 
-      // 1. Handlers when delete confirmation modal is open
-      if (isConfirmOpen.value) {
-        if (e.key === 'Enter') {
-          e.preventDefault()
-          confirmDelete()
-          return
-        }
-        if (e.key === 'Escape') {
-          e.preventDefault()
-          closeConfirm()
-          return
-        }
-      }
+      // 1. The archive confirmation is a native dialog: the platform closes
+      // it on Escape and returns focus to the invoker. A global Enter must
+      // not confirm a destructive action — only the confirmation's own
+      // control (or the shortcut bound to it) may archive the note.
 
-      // 2. Handlers when unsaved changes confirmation is open
+      // 2. The unsaved-changes dialog is a native dialog too. Its Escape is
+      // handled by its `cancel` event, which means "keep editing".
       if (isUnsavedChangesOpen.value) {
         if (e.key === 'Enter') {
           e.preventDefault()
           saveAndClose()
-          return
-        }
-        if (e.key === 'Escape') {
-          e.preventDefault()
-          cancelDiscardChanges()
           return
         }
       }
@@ -2512,44 +2791,13 @@ export default {
         }
       }
 
-      // 5. Link dialog Escape handling (nested above the note editor modal)
-      if (linkDialogOpen.value && e.key === 'Escape' && !e.ctrlKey && !e.metaKey) {
-        e.preventDefault()
-        closeLinkDialog()
-        return
-      }
+      // 5. Escape is handled by the platform for every native dialog: the
+      // topmost one closes and returns focus to its invoker. The link dialog,
+      // the note editor, the admin dialogs, the history, graph, backlinks and
+      // selection-links panels are all native dialogs now.
 
-      // 6. Escape closes the topmost shortcut layer (history, backlinks,
-      // graph, admin modals) before falling through to the note editor.
-      if (e.key === 'Escape' && !e.ctrlKey && !e.metaKey) {
-        const layer = shortcutRoot()
-        const close = layer !== document
-          ? layer.querySelector('button[data-shortcut="Esc"]')
-          : null
-        if (close) {
-          e.preventDefault()
-          close.click()
-          return
-        }
-      }
-
-      // 7. Handlers when note editor modal is open
-      if (isModalOpen.value) {
-        if (e.key === 'Escape') {
-          e.preventDefault()
-          closeModal()
-          return
-        }
-      }
-
-      // 7. Selection links overlay Escape handling
-      if (selectionLinksOpen.value && e.key === 'Escape' && !e.ctrlKey && !e.metaKey) {
-        e.preventDefault()
-        closeSelectionLinks()
-        return
-      }
-
-      // 8. Search bar Escape handling
+      // 6. Search bar Escape handling. The search field is inline in the
+      // header, not an overlay, so it still needs its own handler.
       if (searchOpen.value && e.key === 'Escape' && !e.ctrlKey && !e.metaKey) {
         e.preventDefault()
         closeSearch()
@@ -2661,6 +2909,9 @@ export default {
       window.addEventListener('pointerdown', onShortcutRevealPointer)
       window.addEventListener('blur', resetShortcutReveal)
       document.addEventListener('click', closeNoteColorPicker)
+      // `closedby` is not supported everywhere, so the light-dismiss fallback
+      // is installed for the dialogs that ask for it.
+      removeLightDismiss = installLightDismiss(document)
       try {
         const bootstrap = await api('/api/auth/bootstrap')
         if (bootstrap.needsSetup) {
@@ -2695,6 +2946,8 @@ export default {
       window.removeEventListener('pointerdown', onShortcutRevealPointer)
       window.removeEventListener('blur', resetShortcutReveal)
       document.removeEventListener('click', closeNoteColorPicker)
+      if (removeLightDismiss) removeLightDismiss()
+      removeLightDismiss = null
       if (revisionNoticeTimer) clearTimeout(revisionNoticeTimer)
       if (tagsRefreshTimer) clearTimeout(tagsRefreshTimer)
       if (draftsRefreshTimer) clearTimeout(draftsRefreshTimer)
@@ -3124,21 +3377,21 @@ export default {
       editingId.value = null
       editingBaseRevisionId.value = null
       editingRevisionNo.value = 1
-      editorMode.value = 'write'
+      editorMode.value = DEFAULT_EDITOR_MODE
       editorDirty = false
       historyOpen.value = false
       backlinksOpen.value = false
       backlinks.value = []
       newNoteTitle.value = ''
       newNoteContent.value = ''
+      // A new note always starts with an empty properties section. Without
+      // this reset the previous editor session's tags leaked into the new one.
+      resetNoteProps()
       editingOriginalTitle = ''
       editingOriginalContent = ''
       modalSize.value = { width: null, height: null }
-      setTimeout(() => {
-        if (modalTitleInput.value) {
-          modalTitleInput.value.focus()
-        }
-      }, 50)
+      // The dialog focuses its `autofocus` element (the title field), and the
+      // browser returns focus to the invoker when it closes.
     }
 
     const handleWindowPaste = async (e) => {
@@ -3172,18 +3425,17 @@ export default {
       editingId.value = null
       editingBaseRevisionId.value = null
       editingRevisionNo.value = 1
-      editorMode.value = 'write'
+      editorMode.value = DEFAULT_EDITOR_MODE
       editorDirty = false
       historyOpen.value = false
       backlinksOpen.value = false
       backlinks.value = []
       newNoteTitle.value = ''
       newNoteContent.value = content
+      resetNoteProps()
       modalSize.value = { width: null, height: null }
       nextTick(() => {
         renderEditorContent()
-        if (imageEditor.value) imageEditor.value.focus()
-        else if (modalTitleInput.value) modalTitleInput.value.focus()
       })
     }
 
@@ -3206,7 +3458,7 @@ export default {
       editingId.value = null
       editingBaseRevisionId.value = null
       editingRevisionNo.value = 1
-      editorMode.value = 'write'
+      editorMode.value = DEFAULT_EDITOR_MODE
       editorDirty = false
       historyOpen.value = false
       backlinksOpen.value = false
@@ -3219,6 +3471,7 @@ export default {
       historyError.value = ''
       newNoteTitle.value = ''
       newNoteContent.value = ''
+      resetNoteProps()
       editingOriginalTitle = ''
       editingOriginalContent = ''
       if (pendingNotes.value) {
@@ -3268,6 +3521,19 @@ export default {
 
     const cancelDiscardChanges = () => {
       isUnsavedChangesOpen.value = false
+    }
+
+    /**
+     * Escape in the unsaved-changes dialog means "keep editing", not "close".
+     *
+     * The dialog asks for `closedby="none"`, but Safari ignores that
+     * attribute, so the guard lives in the `cancel` event as well: Esc fires
+     * `cancel` there and then closes the dialog, and here it means "keep
+     * editing". The handler does not prevent the default, because dismissing
+     * the dialog is exactly what should happen.
+     */
+    const onUnsavedChangesCancel = () => {
+      cancelDiscardChanges()
     }
 
     const startResize = (e) => {
@@ -3488,7 +3754,7 @@ export default {
       editingId.value = note.id
       editingBaseRevisionId.value = note.revisionId || null
       editingRevisionNo.value = note.revisionNo || 1
-      editorMode.value = 'write'
+      editorMode.value = DEFAULT_EDITOR_MODE
       editorDirty = false
       historyOpen.value = false
       backlinksOpen.value = false
@@ -3500,6 +3766,10 @@ export default {
       // Body only: the fence is edited through the properties panel.
       const parsed = parseNoteContent(note.content || '')
       noteProps.value = parsed.entries
+      tagDraft.value = ''
+      propKeyDraft.value = ''
+      tagSuggestOpen.value = false
+      tagSuggestIndex.value = -1
       newNoteContent.value = parsed.body
       editingOriginalTitle = newNoteTitle.value
       editingOriginalContent = newNoteContent.value
@@ -3509,7 +3779,6 @@ export default {
       modalSize.value = { width: null, height: null }
       nextTick(() => {
         renderEditorContent()
-        if (modalTitleInput.value) modalTitleInput.value.focus()
       })
       startTextCollab(note)
     }
@@ -3738,11 +4007,12 @@ export default {
       return `${names.join(', ')} are viewing this note`
     }
 
-    const showRevisionNotice = (message) => {
+    const showRevisionNotice = (message, options = {}) => {
       if (!message) return
       revisionNotice.value = message
       if (revisionNoticeTimer) clearTimeout(revisionNoticeTimer)
       revisionNoticeTimer = setTimeout(() => { revisionNotice.value = '' }, 7000)
+      notify(message, options.assertive ? 'assertive' : 'polite')
     }
 
     const dismissRevisionNotice = () => {
@@ -4817,6 +5087,28 @@ export default {
       // Account
       accountMenuOpen,
       accountSettingsOpen,
+
+      // Native overlay plumbing
+      overlayStack,
+      mcpSettingsDialog,
+      accountSettingsDialog,
+      uiSettingsDialog,
+      usersDialog,
+      embeddingSettingsDialog,
+      noteEditorDialog,
+      historyDialog,
+      unsavedChangesDialog,
+      confirmDialog,
+      mcpSettingsController,
+      accountSettingsController,
+      uiSettingsController,
+      usersController,
+      embeddingSettingsController,
+      noteEditorController,
+      historyController,
+      unsavedChangesController,
+      confirmController,
+      onUnsavedChangesCancel,
       accountSettingsForced,
       changePasswordForm,
       changePasswordError,
@@ -4857,12 +5149,25 @@ export default {
       userPropEntries,
       tagDraft,
       propKeyDraft,
+      tagSuggestOpen,
+      tagSuggestIndex,
+      tagSuggestions,
+      tagActiveDescendant,
       addTagProp,
       removeTagProp,
+      commitTagDraft,
+      pickTagSuggestion,
+      moveTagSuggestion,
+      onTagEnter,
+      onTagComma,
+      onTagArrow,
+      onTagEscape,
+      onTagInputBlur,
       setAliasProp,
       setUserProp,
       removePropKey,
       addPropKey,
+      onPropKeyEnter,
       runTagOp,
       editingColor,
       setEditingColor,
@@ -4877,6 +5182,9 @@ export default {
       textCollabPeers,
       textCollabStatus,
       revisionNotice,
+      livePolite,
+      liveAssertive,
+      notify,
       dismissRevisionNotice,
       sortedNotes,
       dashboardNotes,
@@ -4890,6 +5198,7 @@ export default {
       onVirtualUpdate,
       dashboardTab,
       setDashboardTab,
+      onTabKeydown,
       notesTabCount,
       archivedTabCount,
       visibleNoteCount,
@@ -6134,7 +6443,6 @@ export default {
 .account-form input:focus,
 .new-user-form input:focus,
 .new-user-form select:focus {
-  outline: none;
   border-color: #6366f1;
   box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.14);
 }
@@ -6168,7 +6476,7 @@ export default {
 }
 
 .auth-hint {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.74rem;
 }
 
@@ -6191,7 +6499,7 @@ export default {
   font-size: 0.92rem;
   font-weight: 700;
   cursor: pointer;
-  transition: filter 0.15s, transform 0.15s;
+  transition: filter 0.15s;
 }
 
 .auth-primary:hover,
@@ -6206,7 +6514,7 @@ export default {
 .auth-footnote {
   margin: 1.2rem 0 0;
   text-align: center;
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.72rem;
 }
 
@@ -6320,7 +6628,7 @@ header {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+  transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease;
   flex-shrink: 0;
 }
 
@@ -6389,12 +6697,11 @@ header {
   background: transparent;
   font-size: 0.95rem;
   color: #0f172a;
-  outline: none;
   border-radius: 8px;
 }
 
 .search-input::placeholder {
-  color: #94a3b8;
+  color: var(--text-muted);
 }
 
 .search-semantic-btn {
@@ -6428,7 +6735,7 @@ header {
   white-space: nowrap;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.12s ease, transform 0.12s ease;
+  transition: opacity 0.12s ease;
   box-shadow: 0 8px 22px rgba(15, 23, 42, 0.22);
   z-index: 320;
 }
@@ -6472,7 +6779,7 @@ button[data-shortcut]:not(.icon-btn):not(.fab-btn):not(.md-tool-btn):not(.note-e
   white-space: nowrap;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.12s ease, transform 0.12s ease;
+  transition: opacity 0.12s ease;
   box-shadow: 0 8px 22px rgba(15, 23, 42, 0.22);
   z-index: 330;
 }
@@ -6533,7 +6840,6 @@ button[data-shortcut]:not(.icon-btn):not(.fab-btn):not(.md-tool-btn):not(.note-e
 
 .sync-status.connecting .sync-dot {
   background: #f59e0b;
-  animation: sync-pulse 1.4s ease-in-out infinite;
 }
 
 @keyframes sync-pulse {
@@ -6599,7 +6905,7 @@ button[data-shortcut]:not(.icon-btn):not(.fab-btn):not(.md-tool-btn):not(.note-e
 }
 
 .account-chevron {
-  color: #94a3b8;
+  color: var(--text-muted);
   display: inline-flex;
   align-items: center;
 }
@@ -6632,7 +6938,7 @@ button[data-shortcut]:not(.icon-btn):not(.fab-btn):not(.md-tool-btn):not(.note-e
 }
 
 .account-menu-head small {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.7rem;
 }
 
@@ -6667,6 +6973,13 @@ main {
   max-width: 1200px;
   margin: 0 auto;
   padding: 2rem;
+  /* Size query container for the workspace layout.
+     A container query measures the CONTENT BOX, and `main` has 2rem of
+     horizontal padding, so the viewport width and the workspace width differ
+     by 64px. The stacking breakpoint is about the space the workspace
+     actually has, so it is measured here and not against the viewport. */
+  container-type: inline-size;
+  container-name: workspace;
 }
 
 .workspace {
@@ -6746,7 +7059,7 @@ main {
 }
 
 .note-title-input:focus {
-  outline: none;
+  border-color: #1a73e8;
 }
 
 /* Head metadata row: the folder name and its icon share a line. */
@@ -6855,7 +7168,6 @@ main {
 .prop-value:hover,
 .prop-value:focus {
   border-color: var(--border-color, rgba(0, 0, 0, 0.18));
-  outline: none;
 }
 
 .prop-checkbox {
@@ -6907,7 +7219,58 @@ main {
 
 .prop-chip-input:focus {
   border-color: var(--border-color, rgba(0, 0, 0, 0.18));
-  outline: none;
+}
+
+/* Tag autocomplete: suggestions float under the tag input without moving
+   the properties rows. */
+.prop-tag-field {
+  position: relative;
+  flex: 1 1 6rem;
+  min-width: 5rem;
+}
+
+.prop-tag-field .prop-chip-input {
+  width: 100%;
+}
+
+.tag-suggestions {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 2px);
+  left: 0;
+  min-width: 12rem;
+  max-width: 24rem;
+  max-height: 12rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0.25rem;
+  list-style: none;
+  background: var(--card-surface, #fff);
+  border: 1px solid var(--border-color, rgba(0, 0, 0, 0.18));
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.16);
+}
+
+.tag-suggestion {
+  display: flex;
+  align-items: center;
+  padding: 0.25rem 0.375rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag-suggestion.active,
+.tag-suggestion:hover {
+  background: var(--chip-bg, rgba(0, 0, 0, 0.07));
+}
+
+.tag-suggestion-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .prop-remove,
@@ -6932,7 +7295,7 @@ main {
 }
 
 .note-form textarea:focus {
-  outline: none;
+  border-color: #1a73e8;
 }
 
 .note-form-actions {
@@ -7014,7 +7377,7 @@ main {
   align-items: center;
   justify-content: center;
   gap: 0.25rem;
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 0.8125rem;
   padding: 1rem;
 }
@@ -7024,7 +7387,7 @@ main {
 }
 
 .canvas-untitled {
-  color: #80868b;
+  color: var(--text-muted);
   font-style: italic;
 }
 
@@ -7078,7 +7441,6 @@ main {
   border-radius: 4px;
   background: linear-gradient(90deg, #eef1f6 0%, #f7f9fc 50%, #eef1f6 100%);
   background-size: 200% 100%;
-  animation: note-skeleton-shimmer 1.4s ease-in-out infinite;
 }
 
 .note-preview-skeleton span:nth-child(2) {
@@ -7112,7 +7474,7 @@ main {
   padding: 1rem;
   position: relative;
   cursor: pointer;
-  transition: box-shadow 0.2s, border-color 0.2s, background-color 0.2s, transform 0.2s;
+  transition: box-shadow 0.2s, border-color 0.2s, background-color 0.2s;
   height: 380px;
   width: 100%;
   max-width: none;
@@ -7403,7 +7765,7 @@ main {
 }
 
 .card-color-btn:hover {
-  border-color: #94a3b8;
+  border-color: var(--text-muted);
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
 }
 
@@ -7472,7 +7834,7 @@ main {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.12s ease, box-shadow 0.12s ease;
+  transition: box-shadow 0.12s ease;
 }
 
 .note-color-option:hover {
@@ -7501,6 +7863,14 @@ main {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* Skip layout and painting for a card body that is off-screen.
+     The card has an explicit height (380px) and the body is sized by the
+     flex algorithm (flex-basis 0%, flex-grow 1), so skipping the body
+     cannot change the card's height or the scroller's 396px row height.
+     `auto` remembers the last rendered size, so the reserved space stays
+     stable while the body is skipped. */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 12rem;
 }
 
 .note-content h3 {
@@ -7585,23 +7955,28 @@ main {
   overflow-y: auto;
   padding-right: 4px;
   scrollbar-width: thin;
-  scrollbar-color: #dadce0 transparent;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
-.note-preview::-webkit-scrollbar,
-.markdown-preview::-webkit-scrollbar {
-  width: 4px;
+.markdown-preview {
+  font-size: 0.9rem;
+  line-height: 1.55;
 }
 
-.note-preview::-webkit-scrollbar-track,
-.markdown-preview::-webkit-scrollbar-track {
-  background: transparent;
-}
+/* Legacy fallback for WebKit/Blink. Isolated so it does not fight the
+   standard properties in browsers that support both natively. The colours
+   cascade from the custom properties, so they are not repeated here. */
+@supports not (scrollbar-color: auto) {
+  .note-preview::-webkit-scrollbar,
+  .markdown-preview::-webkit-scrollbar {
+    width: 4px;
+  }
 
-.note-preview::-webkit-scrollbar-thumb,
-.markdown-preview::-webkit-scrollbar-thumb {
-  background-color: #dadce0;
-  border-radius: 2px;
+  .note-preview::-webkit-scrollbar-thumb,
+  .markdown-preview::-webkit-scrollbar-thumb {
+    background-color: var(--scrollbar-thumb);
+    border-radius: 2px;
+  }
 }
 
 /* Shared rendered-markdown typography */
@@ -7609,6 +7984,8 @@ main {
 .markdown-preview {
   font-size: 0.9rem;
   line-height: 1.55;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
 
 .note-preview h1,
@@ -7701,7 +8078,7 @@ main {
 .note-date {
   display: block;
   margin-top: 0.75rem;
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 0.75rem;
   flex-shrink: 0;
 }
@@ -7711,7 +8088,7 @@ main {
   height: 24px;
   border: none;
   background: transparent;
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 1.25rem;
   cursor: pointer;
   transition: color 0.2s;
@@ -7726,7 +8103,7 @@ main {
   height: 24px;
   border: none;
   background: transparent;
-  color: #80868b;
+  color: var(--text-muted);
   cursor: pointer;
   transition: color 0.2s;
   display: flex;
@@ -7736,7 +8113,7 @@ main {
 
 .copy-btn.copied {
   opacity: 1;
-  color: #1e8e3e;
+  color: var(--text-success);
 }
 
 .delete-btn:hover {
@@ -7752,11 +8129,9 @@ main {
   background: white;
   border-radius: 12px;
   padding: 1.5rem;
-  width: 90%;
-  max-width: 400px;
+  width: min(400px, 90vw);
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
   position: relative;
-  animation: slideUp 0.2s ease-out;
   text-align: center;
   box-sizing: border-box;
 }
@@ -7857,19 +8232,22 @@ main {
 }
 
 /* Modal Layout */
+/* Native dialog: the element is the centred box and `::backdrop` is the dim
+   layer. The platform puts the dialog in the top layer, so there is no
+   z-index to maintain and no focus trap to hand-roll. */
 .modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  border: none;
+  padding: 0;
+  background: transparent;
+  width: auto;
+  max-width: none;
+  max-height: none;
+  overflow: visible;
+}
+
+.modal-overlay::backdrop {
   background: rgba(0, 0, 0, 0.4);
   backdrop-filter: blur(4px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-  animation: fadeIn 0.2s ease-out;
 }
 
 @keyframes fadeIn {
@@ -7900,7 +8278,6 @@ main {
   max-height: 92vh;
   box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
   position: relative;
-  animation: slideUp 0.2s ease-out;
   display: flex;
   flex-direction: column;
 }
@@ -8006,7 +8383,6 @@ main {
   inset: -5px;
   border-radius: 50%;
   border: 1px solid rgba(52, 168, 83, 0.35);
-  animation: presence-pulse 2s ease-out infinite;
 }
 
 @keyframes presence-pulse {
@@ -8058,7 +8434,7 @@ main {
   color: #5f6368;
 }
 .version-chain-label { font-weight: 600; }
-.version-chain-arrow { color: #80868b; }
+.version-chain-arrow { color: var(--text-muted); }
 .version-chain-node { color: #1a73e8; font-weight: 600; }
 
 .revision-toast {
@@ -8088,20 +8464,22 @@ main {
 }
 
 .history-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 20;
-  display: flex;
-  align-items: stretch;
-  justify-content: center;
+  border: none;
   padding: 1rem;
+  background: transparent;
+  width: auto;
+  max-width: none;
+  max-height: none;
+  overflow: visible;
+}
+
+.history-overlay::backdrop {
   background: rgba(32, 33, 36, 0.35);
-  border-radius: 12px;
 }
 
 .history-panel {
-  width: 100%;
-  max-height: 100%;
+  width: min(720px, 94vw);
+  max-height: 88vh;
   overflow-y: auto;
   background: #fff;
   border-radius: 10px;
@@ -8125,7 +8503,7 @@ main {
 
 .history-loading,
 .history-actor {
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 0.8rem;
 }
 
@@ -8200,7 +8578,7 @@ main {
   border: none;
   background: transparent;
   font-size: 1.5rem;
-  color: #80868b;
+  color: var(--text-muted);
   cursor: pointer;
   padding: 0;
   line-height: 1;
@@ -8277,7 +8655,6 @@ main {
      blank lines. Source editing keeps pre-wrap on .markdown-source. */
   white-space: normal;
   word-wrap: break-word;
-  outline: none;
   cursor: text;
   line-height: 1.5;
 }
@@ -8288,7 +8665,7 @@ main {
 
 .note-form-modal .note-editor:empty::before {
   content: attr(data-placeholder);
-  color: #9aa0a6;
+  color: var(--text-muted);
   pointer-events: none;
 }
 
@@ -8332,7 +8709,6 @@ main {
 .note-form-modal .note-title-input:focus,
 .note-form-modal textarea:focus,
 .note-form-modal .note-editor:focus {
-  outline: none;
   border-color: #1a73e8;
 }
 
@@ -8557,7 +8933,7 @@ main {
 }
 
 .ui-settings-loading {
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 0.85rem;
   text-align: center;
   padding: 1rem;
@@ -8594,7 +8970,6 @@ main {
 }
 
 .ui-settings-grid input:focus {
-  outline: none;
   border-color: #1a73e8;
   box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.14);
 }
@@ -8602,7 +8977,7 @@ main {
 .ui-settings-grid small {
   font-size: 0.68rem;
   font-weight: 400;
-  color: #80868b;
+  color: var(--text-muted);
 }
 
 .ui-settings-actions {
@@ -8732,7 +9107,6 @@ main {
   font-size: 0.875rem;
   color: #202124;
   cursor: pointer;
-  outline: none;
 }
 
 .sort-select:focus {
@@ -8771,7 +9145,6 @@ main {
   border: 1px solid #d2e3fc;
   border-radius: 8px;
   color: #1a73e8;
-  animation: fadeIn 0.2s ease-out;
   position: sticky;
   top: var(--app-header-height, 66px);
   z-index: 9;
@@ -8879,7 +9252,7 @@ main {
   align-items: center;
   justify-content: center;
   box-shadow: 0 10px 26px rgba(37, 99, 235, 0.34), 0 2px 6px rgba(15, 23, 42, 0.12);
-  transition: transform 0.18s ease, box-shadow 0.18s ease, border-radius 0.18s ease;
+  transition: box-shadow 0.18s ease, border-radius 0.18s ease;
   z-index: 99;
 }
 
@@ -8894,7 +9267,7 @@ main {
 }
 
 .fab-btn svg {
-  transition: transform 0.2s ease;
+  transition: none;
 }
 
 .fab-btn.fab-open {
@@ -8944,7 +9317,6 @@ main {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
-  animation: slideUp 0.15s ease-out;
 }
 
 .fab-menu-item {
@@ -8961,7 +9333,7 @@ main {
   color: #1e293b;
   white-space: nowrap;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
-  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+  transition: background 0.15s ease, border-color 0.15s ease;
 }
 
 .fab-menu-item:hover {
@@ -9020,7 +9392,7 @@ main {
 }
 
 .embedding-form label small {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-weight: 400;
   font-size: 0.68rem;
 }
@@ -9071,7 +9443,7 @@ main {
 .embedding-advanced small {
   display: block;
   margin-top: 0.5rem;
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.68rem;
 }
 
@@ -9096,7 +9468,7 @@ main {
 }
 
 .embedding-rerank-head h3 span {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-weight: 400;
   font-size: 0.68rem;
 }
@@ -9190,7 +9562,7 @@ main {
 }
 
 .embedding-model-row small {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.68rem;
 }
 
@@ -9227,7 +9599,7 @@ main {
 }
 
 .account-summary small {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.72rem;
 }
 
@@ -9286,7 +9658,7 @@ main {
 }
 
 .account-danger small {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.7rem;
 }
 
@@ -9340,7 +9712,7 @@ main {
 }
 
 .user-identity small {
-  color: #94a3b8;
+  color: var(--text-muted);
   font-size: 0.68rem;
 }
 
@@ -9557,7 +9929,7 @@ main {
 
 .mcp-token-row small {
   display: block;
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 0.7rem;
   margin-top: 0.1rem;
 }
@@ -9651,9 +10023,8 @@ main {
   }
 }
 
-/* Stacked-layout breakpoint: MUST match the `@media (max-width: 600px)` query
-   in TagSidebar.vue (sidebar collapse). If these drift apart, a width:100%
-   sidebar lands inside a row .workspace and crushes the notes area. */
+/* Viewport-driven chrome: the header, the page padding, and the floating
+   action button all follow the window, so they stay on a media query. */
 @media (max-width: 600px) {
   :root {
     --app-header-height: 63px;
@@ -9667,22 +10038,91 @@ main {
     padding: 1rem;
   }
 
+  .fab-btn {
+    bottom: 1.5rem;
+    right: 1.5rem;
+    width: 42px;
+    height: 42px;
+  }
+}
+
+/* Stacked-layout breakpoint: measured against the workspace's content box,
+   not the viewport. The matching rule for the sidebar itself lives in
+   TagSidebar.vue and uses the same container and the same threshold;
+   `tests/responsiveLayout.test.js` fails if the two ever drift apart. If
+   they do, a width:100% sidebar lands inside a row .workspace and crushes
+   the notes area. */
+@container workspace (max-width: 600px) {
   .workspace {
     flex-direction: column;
     /* Stacked children must fill the row width (default flex-start shrinks
        them to min-content and misaligns/overflows at very narrow widths). */
     align-items: stretch;
   }
+}
 
-  .notes-grid {
-    grid-template-columns: 1fr;
+/* There is deliberately no column-count rule for the notes grid. The column
+   count is derived from the measured grid width by `dashboardColumnCount()`
+   and applied as an inline style, so it already follows the container and
+   not the viewport. */
+
+/* ── Reduced motion ──────────────────────────────────────────────────
+   Spatial motion is opt-in: the keyframe animations and the transform
+   part of each transition are declared here instead of in the base rules,
+   so a user who asks for reduced motion simply does not get them. Colour,
+   opacity, filter, box-shadow, and border-radius transitions stay in the
+   base rules because they do not move anything. */
+@media (prefers-reduced-motion: no-preference) {
+  .sync-status.connecting .sync-dot {
+    animation: sync-pulse 1.4s ease-in-out infinite;
   }
-  
+  .note-preview-skeleton span {
+    animation: note-skeleton-shimmer 1.4s ease-in-out infinite;
+  }
+  .confirm-modal {
+    animation: slideUp 0.2s ease-out;
+  }
+  .modal-overlay {
+    animation: fadeIn 0.2s ease-out;
+  }
+  .note-form-modal {
+    animation: slideUp 0.2s ease-out;
+  }
+  .presence-dot::after {
+    animation: presence-pulse 2s ease-out infinite;
+  }
+  .selection-bar {
+    animation: fadeIn 0.2s ease-out;
+  }
+  .fab-menu {
+    animation: slideUp 0.15s ease-out;
+  }
+  .auth-box button {
+    transition: filter 0.15s, transform 0.15s;
+  }
+  .icon-btn {
+    transition: background 0.16s ease, color 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
+  }
+  .fab-btn[data-label]::after {
+    transition: opacity 0.12s ease, transform 0.12s ease;
+  }
+  button[data-shortcut]:not(.icon-btn):not(.fab-btn):not(.md-tool-btn):not(.note-editor-toolbar button)::after {
+    transition: opacity 0.12s ease, transform 0.12s ease;
+  }
+  :where(.note-card) {
+    transition: box-shadow 0.2s, border-color 0.2s, background-color 0.2s, transform 0.2s;
+  }
+  .note-color-option {
+    transition: transform 0.12s ease, box-shadow 0.12s ease;
+  }
   .fab-btn {
-    bottom: 1.5rem;
-    right: 1.5rem;
-    width: 42px;
-    height: 42px;
+    transition: transform 0.18s ease, box-shadow 0.18s ease, border-radius 0.18s ease;
+  }
+  .fab-btn svg {
+    transition: transform 0.2s ease;
+  }
+  .fab-menu-item {
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
   }
 }
 </style>

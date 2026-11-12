@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createFreshContext } from './helpers/testDb.js'
+import { matchTags } from '../src/shared/tags.js'
 
 /** Wire tag rewriting to property mutations the way server.js does. */
 function wire(ctx) {
@@ -108,4 +109,26 @@ test('exact-path delete keeps partial matches', () => {
   } finally {
     ctx.cleanup()
   }
+})
+
+test('tag autocomplete ranks exact, prefix, segment, substring and subsequence matches', () => {
+  const known = ['project', 'area/project', 'area/project/alpha', 'archive', 'alpha/beta']
+
+  assert.deepEqual(matchTags('project', known).slice(0, 2), ['project', 'area/project'])
+  assert.deepEqual(matchTags('proj', known)[0], 'project', 'whole-path prefix wins')
+  assert.deepEqual(matchTags('alpha', known)[0], 'alpha/beta', 'shortest exact-ish match first')
+  assert.deepEqual(matchTags('ject', known)[0], 'project', 'substring matches')
+  assert.ok(matchTags('apj', known).includes('area/project'), 'in-order subsequence matches')
+})
+
+test('tag autocomplete excludes applied tags and respects the limit', () => {
+  const known = ['area/one', 'area/two', 'area/three', 'other']
+  assert.deepEqual(matchTags('area', known, { exclude: ['area/one'] }), ['area/two', 'area/three'])
+  assert.equal(matchTags('', known, { limit: 2 }).length, 2)
+  assert.deepEqual(matchTags('zzz', known), [])
+})
+
+test('tag autocomplete normalises queries and candidates', () => {
+  assert.deepEqual(matchTags('#Area/Proj', ['area/project']), ['area/project'])
+  assert.deepEqual(matchTags('  area/proj  ', ['AREA/PROJECT']), ['area/project'])
 })

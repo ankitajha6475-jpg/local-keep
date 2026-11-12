@@ -1,9 +1,9 @@
 <template>
-  <div class="links-overlay" @mousedown.self="$emit('close')">
+  <dialog class="links-overlay" ref="linksDialog" closedby="any" @close="onClosed" aria-labelledby="linksDialog-title">
     <div class="links-panel">
       <div class="links-header">
         <div>
-          <h2>🔗 Links in selection</h2>
+          <h2 id="linksDialog-title">🔗 Links in selection</h2>
           <p class="links-subtitle">
             {{ selectedCount }} selected {{ selectedCount === 1 ? 'note' : 'notes' }}
             <template v-if="!loading && !error">
@@ -32,7 +32,7 @@
             @click="$emit('update:mode', 'incoming')"
           >Linked from</button>
         </div>
-        <button type="button" class="links-close" title="Close" :data-shortcut="shortcut('linksClose')" @click="$emit('close')">×</button>
+        <button type="button" class="links-close" title="Close" aria-label="Close selection links" :data-shortcut="shortcut('linksClose')" @click="$emit('close')">×</button>
       </div>
 
       <p v-if="loading" class="links-empty">Loading links…</p>
@@ -103,11 +103,12 @@
         </section>
       </div>
     </div>
-  </div>
+  </dialog>
 </template>
 
 <script>
 import { SHORTCUTS, shortcutLabel } from '../shared/shortcuts.js'
+import { showModalDialog } from '../shared/dialog.js'
 
 export default {
   name: 'SelectionLinksPanel',
@@ -173,7 +174,15 @@ export default {
 
     return { noteTitle, outgoingKey, viaLabel, firstContext, isInSelection, formatDate }
   },
+  mounted() {
+    this.$nextTick(() => {
+      showModalDialog(this.$refs.linksDialog)
+    })
+  },
   methods: {
+    onClosed() {
+      this.$emit('close')
+    },
     shortcut(id) {
       return shortcutLabel(SHORTCUTS[id], this.modKey)
     },
@@ -186,15 +195,19 @@ export default {
 </script>
 
 <style scoped>
+/* Native dialog: the element is the box and `::backdrop` is the dim layer. */
 .links-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 150;
-  background: rgba(32, 33, 36, 0.45);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  border: none;
   padding: 1.25rem;
+  background: transparent;
+  width: auto;
+  max-width: none;
+  max-height: none;
+  overflow: visible;
+}
+
+.links-overlay::backdrop {
+  background: rgba(32, 33, 36, 0.45);
 }
 
 .links-panel {
@@ -226,7 +239,7 @@ export default {
 .links-subtitle {
   margin: 0.2rem 0 0;
   font-size: 0.75rem;
-  color: #80868b;
+  color: var(--text-muted);
 }
 
 .links-modes {
@@ -260,7 +273,7 @@ export default {
 .links-close {
   border: none;
   background: transparent;
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 1.35rem;
   line-height: 1;
   cursor: pointer;
@@ -385,7 +398,7 @@ export default {
 
 .links-row-meta {
   font-size: 0.7rem;
-  color: #80868b;
+  color: var(--text-muted);
 }
 
 .links-row-context {
@@ -398,7 +411,7 @@ export default {
 
 .links-empty {
   margin: 0;
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 0.8rem;
   text-align: center;
   padding: 1rem 0.5rem;

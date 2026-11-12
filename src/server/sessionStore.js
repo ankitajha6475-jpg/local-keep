@@ -5,7 +5,24 @@ import path from 'path'
 import { loadOrCreateSecret } from './secret.js'
 
 const COOKIE_NAME = 'local_keep_session'
+// The `__Host-` prefix (RFC 6265bis) binds the cookie to the exact host that
+// set it: the browser rejects it unless it is Secure, has Path=/, and carries
+// no Domain attribute. It is only usable when Secure is guaranteed, so the
+// same condition decides both.
+const HOST_COOKIE_NAME = '__Host-local_keep_session'
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30 // 30 days
+
+/**
+ * Whether the session cookie is sent with the `Secure` attribute.
+ *
+ * Read at call time rather than at module load so a test can vary it per
+ * process. The `__Host-` prefix and the `Secure` attribute are decided by
+ * this one predicate, so they can never disagree: a prefixed cookie is
+ * always Secure, and a Secure cookie is always prefixed.
+ */
+export function secureCookies(env = process.env) {
+  return env.NODE_ENV === 'production' || env.COOKIE_SECURE === '1'
+}
 
 export function createSessionStore({ db, dataDir }) {
   const SECRET = loadOrCreateSecret(path.join(dataDir, 'server_secret'))
@@ -134,18 +151,25 @@ export function createSessionStore({ db, dataDir }) {
 
   function cookieHeader(sessionId, { clear = false } = {}) {
     const flags = ['Path=/', 'HttpOnly', 'SameSite=Strict']
-    if (process.env.NODE_ENV === 'production' || process.env.COOKIE_SECURE === '1') {
+    if (secureCookies()) {
       flags.push('Secure')
     }
+    const name = cookieName()
     if (clear) {
       flags.push('Max-Age=0')
-      return `${COOKIE_NAME}=; ${flags.join('; ')}`
+      return `${name}=; ${flags.join('; ')}`
     }
     flags.push(`Max-Age=${SESSION_MAX_AGE_SECONDS}`)
-    return `${COOKIE_NAME}=${signCookie(sessionId)}; ${flags.join('; ')}`
+    return `${name}=${signCookie(sessionId)}; ${flags.join('; ')}`
   }
 
-  function cookieName() { return COOKIE_NAME }
+  /**
+   * The current session cookie name. Prefixed with `__Host-` whenever the
+   * cookie is Secure, which is what the prefix requires.
+   */
+  function cookieName() {
+    return secureCookies() ? HOST_COOKIE_NAME : COOKIE_NAME
+  }
 
   /**
    * Parse the Cookie header of an Express request and return the session ID
@@ -155,12 +179,13 @@ export function createSessionStore({ db, dataDir }) {
     const header = req.headers && req.headers.cookie
     if (!header) return null
     const cookies = header.split(/;\s*/)
+    const expected = cookieName()
     for (const c of cookies) {
       const eq = c.indexOf('=')
       if (eq <= 0) continue
       const name = c.slice(0, eq)
       const value = c.slice(eq + 1)
-      if (name === COOKIE_NAME) return parseCookie(decodeURIComponent(value))
+      if (name === expected) return parseCookie(decodeURIComponent(value))
     }
     return null
   }

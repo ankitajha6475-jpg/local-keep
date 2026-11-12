@@ -97,7 +97,7 @@ marked.use({
       const width = match ? match[1] : null
       const dataMd = `![${token.text || ''}](${token.href || ''})${width ? `{width=${width}}` : ''}`
       const widthAttrs = width ? ` data-width="${width}" width="${width}"` : ''
-      return `<img src="${escapeAttr(token.href)}" alt="${escapeAttr(token.text || '')}" data-md="${escapeAttr(dataMd)}"${widthAttrs}>`
+      return `<img src="${escapeAttr(token.href)}" alt="${escapeAttr(token.text || '')}" data-md="${escapeAttr(dataMd)}"${widthAttrs} loading="lazy" decoding="async">`
     },
     link(token) {
       const href = token.href || ''

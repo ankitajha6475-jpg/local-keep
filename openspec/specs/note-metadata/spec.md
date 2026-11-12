@@ -63,6 +63,8 @@ Property values SHALL infer their type from the literal: unquoted text is text, 
 
 The properties panel SHALL present system properties (`tags`, `aliases`) with their dedicated controls and user properties with typed controls. The title SHALL appear as a first-class panel row even though it is not a fence key. `color` SHALL appear under a separate Presentation heading and MUST NOT be written into the fence. Unknown user keys SHALL be preserved.
 
+No property key SHALL be added while an IME owns the keystroke. Enter SHALL stand down during a composition so the IME can confirm its candidate.
+
 #### Scenario: Title edits in the panel
 
 - **WHEN** the user edits the title row in the properties panel
@@ -74,6 +76,12 @@ The properties panel SHALL present system properties (`tags`, `aliases`) with th
 - **WHEN** the user sets the color from the properties panel
 - **THEN** the tint is stored as head metadata
 - **AND** the fence is unchanged
+
+#### Scenario: Add a property key during IME composition
+
+- **WHEN** the user presses Enter while an IME is composing a property name
+- **THEN** the IME confirms the candidate
+- **AND** no property key is added
 
 ### Requirement: Property queries
 

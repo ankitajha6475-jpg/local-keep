@@ -1,0 +1,75 @@
+/**
+ * Global design tokens and base rules.
+ *
+ * This stylesheet is unscoped and imported before the app so that the tokens
+ * and the focus indicator apply to every component, including the ones whose
+ * own styles are `scoped`. Tokens are enough for the colour work — CSS
+ * custom properties inherit through the DOM regardless of scoping — but the
+ * focus rule and the live-region utility need a genuinely global sheet.
+ */
+
+:root {
+  /* Tell the browser which appearance to draw its own surfaces with, so
+     scrollbars, select popups, and autofill match the app. The app is
+     deliberately light-only; a dark theme would be a separate proposal. */
+  color-scheme: light;
+
+  /* ── Text colour scale ──────────────────────────────────────────────────
+     Every value is at least 4.5:1 against the white surfaces it is used on
+     (WCAG 1.4.3). `--text-muted` replaces the previous #80868b (3.68:1),
+     #94a3b8 (2.56:1) and #9aa0a6 (2.64:1). */
+  --text-muted: #6b7280;      /* 4.83:1 on #ffffff */
+  --text-success: #137333;    /* 5.95:1 on #ffffff */
+
+  /* ── Scrollbars ─────────────────────────────────────────────────────────
+     The thumb must clear 3:1 against the track and against the container
+     background where the track is transparent (WCAG 1.4.11). */
+  --scrollbar-thumb: #80868b;                       /* 3.68:1 on #ffffff */
+  --scrollbar-track: transparent;
+  --scrollbar-thumb-dark: rgba(255, 255, 255, 0.4); /* 3.53:1 on #2e2e2e */
+
+  /* ── Focus indicator ────────────────────────────────────────────────────
+     4.51:1 against #ffffff, above the 3:1 minimum for non-text contrast. */
+  --focus-ring-color: #1a73e8;
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+}
+
+/* One focus indicator for every focusable control.
+   `:where()` holds the element part at zero specificity, so a component can
+   still override the ring deliberately; `:focus-visible` keeps the ring off
+   pointer clicks while still covering text inputs and contenteditables. */
+:where(a:any-link, button, input, select, textarea, summary, [contenteditable], [tabindex]):focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring-color);
+  outline-offset: var(--focus-ring-offset);
+}
+
+/* Scroll containment for modal dialogs. Without it a scroll gesture over
+   the backdrop, or one that runs past the end of the dialog's content,
+   scrolls the page behind it. `overscroll-behavior` is limited availability,
+   so this is progressive enhancement: the dialog still contains its own
+   scroll, and `showModal()` still makes the page inert. */
+dialog:modal {
+  overscroll-behavior: contain;
+}
+
+/* `::backdrop` is not a scroll container by default, so it ignores the
+   `overscroll-behavior` above unless it can scroll itself. */
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
+/* Visually hidden, still announced. Used by the live regions. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

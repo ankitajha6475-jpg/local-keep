@@ -501,6 +501,38 @@ function getAllNotes() {
   return notesService.listNoteIndex({ includeArchived: true })
 }
 
+// Security headers.
+//
+// The policy deliberately has no `default-src`: it constrains only the three
+// directives it names, so scripts, styles, images and connections stay
+// unconstrained. That matters here — the app embeds the Excalidraw React
+// component, loads Excalidraw fonts, and serves exported images from `blob:`
+// URLs. A strict policy would break all three.
+//
+// A strict policy is still the right end state, but it has to be deployed
+// report-only first, and the `innerHTML` sinks in `src/utils/markdown.js`,
+// `src/utils/mermaid.js`, and the Visual editor have to be converted to
+// Trusted-Types-safe APIs before it can be enforced.
+//
+// The headers are registered before the route handlers, so they cover the
+// REST API, the image routes, `/mcp`, and (in production) the static
+// frontend. The WebSocket handshake is not an HTTP response and is not
+// covered — correctly, since it carries no document.
+const SECURITY_HEADERS = {
+  'Content-Security-Policy': "frame-ancestors 'none'; object-src 'none'; base-uri 'none'",
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'same-origin',
+  // Legacy spelling of `frame-ancestors 'none'`, for engines that predate it.
+  'X-Frame-Options': 'DENY'
+}
+
+app.use((req, res, next) => {
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    res.setHeader(name, value)
+  }
+  next()
+})
+
 // Middleware
 app.use(cors())
 app.use(express.json({ limit: '10mb' }))

@@ -34,6 +34,68 @@ export function tagMatchesPrefix(tag, prefix, { exact = false } = {}) {
 }
 
 /**
+ * Rank known tag paths against user input for the editor's tag autocomplete.
+ *
+ * Matching is forgiving ("fuzzy") but deterministic:
+ *   - exact and whole-path prefix matches rank highest
+ *   - a prefix of any path segment matches (`proj` -> `area/project`)
+ *   - substrings match (`ject` -> `area/project`)
+ *   - in-order character subsequences match last (`apj` -> `area/project`)
+ *
+ * Returns normalised paths best-first, excluding `exclude` (already applied
+ * tags) and capped at `limit`.
+ */
+export function matchTags(query, tags = [], { limit = 8, exclude = [] } = {}) {
+  const wanted = normalizeTag(query)
+  const excluded = new Set((exclude || []).map(normalizeTag).filter(Boolean))
+  const scored = []
+  const seen = new Set()
+  for (const raw of tags || []) {
+    const tag = normalizeTag(raw)
+    if (!tag || seen.has(tag) || excluded.has(tag)) continue
+    seen.add(tag)
+    const score = tagMatchScore(tag, wanted)
+    if (score === null) continue
+    scored.push({ tag, score })
+  }
+  scored.sort((a, b) =>
+    b.score - a.score ||
+    a.tag.length - b.tag.length ||
+    a.tag.localeCompare(b.tag)
+  )
+  return scored.slice(0, Math.max(0, limit)).map(entry => entry.tag)
+}
+
+function tagMatchScore(tag, wanted) {
+  if (!wanted) return 1
+  if (tag === wanted) return 1000
+  if (tag.startsWith(wanted)) return 900 - (tag.length - wanted.length)
+
+  let segmentMatch = false
+  for (const segment of tag.split('/')) {
+    if (segment.startsWith(wanted)) {
+      segmentMatch = true
+      break
+    }
+  }
+  if (segmentMatch) return 800 - (tag.length - wanted.length)
+
+  const index = tag.indexOf(wanted)
+  if (index !== -1) return 700 - index * 5 - (tag.length - wanted.length)
+
+  // In-order subsequence: every typed character appears, in order.
+  let cursor = 0
+  let gaps = 0
+  for (const char of wanted) {
+    const found = tag.indexOf(char, cursor)
+    if (found === -1) return null
+    gaps += found - cursor
+    cursor = found + 1
+  }
+  return 500 - gaps - (tag.length - wanted.length)
+}
+
+/**
  * Parse inline tags outside fenced/inline code.
  * @param {string} text
  * @returns {string[]} unique normalised tag paths, capped

@@ -90,6 +90,15 @@ test('renderMarkdown preserves the width extension and data-md', () => {
   assert.match(html, /width="320"/)
 })
 
+test('renderMarkdown gives note images a loading behaviour that survives sanitising', () => {
+  const html = renderMarkdown('![cat](/api/images/abc.png)')
+  assert.match(html, /loading="lazy"/)
+  assert.match(html, /decoding="async"/)
+  // The attributes must survive DOMPurify, and the handler stripping must still work.
+  const hostile = renderMarkdown('<img src="x" onerror="alert(1)">')
+  assert.equal(/<img[^>]*onerror/i.test(hostile), false)
+})
+
 test('renderMarkdown sanitises scripts, styles, iframes, and handlers', () => {
   const html = renderMarkdown([
     '<script>alert(1)</script>',

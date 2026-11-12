@@ -45,6 +45,7 @@ scripts/mcp-token.js              # MCP token CLI
 scripts/auth-reset.js             # human password reset CLI
 src/
   main.js                         # Vue app entry
+  styles/base.css                 # global tokens, focus ring, .sr-only
   App.vue                         # Main app: note list/editor, history, archived view, WS
   components/
     WhiteboardEditor.vue          # Excalidraw wrapper (manual React mount, not veaury bridge)
@@ -98,6 +99,8 @@ src/
     noteColors.js                 # dashboard note tint ids, labels, normalization
     uiConfig.js                   # UI dimension fields, defaults, and clamping
     shortcuts.js                  # central UI shortcut map + display/event normalization
+    ime.js                        # IME composition guard for Enter/Escape handlers
+    dialog.js                     # native overlay stack + dialog controller
   utils/
     markdown.js                   # sanitised renderer, Turndown paste conversion
     editorSerialize.js            # contentEditable -> canonical markdown
@@ -269,7 +272,9 @@ corresponding card while any session has that note open.
 - First run creates the first admin. Existing single-password installs get
   `admin` / `Administrator` with the old password in migration 4.
 - Sessions are opaque IDs stored in `sessions` (user_id, hash, expiresAt)
-  and signed into the `local_keep_session` cookie. The DB is authoritative for
+  and signed into the `local_keep_session` cookie — or
+  `__Host-local_keep_session` when the cookie is `Secure`, which the
+  `__Host-` prefix requires. The DB is authoritative for
   validation/revocation, so CLI resets invalidate live sessions immediately.
 - `checkAuth`/`mcpAuth` share `authenticate()`: bearer MCP token → `mcp:<name>`,
   session → `user:<username>`. Admin routes use `requireAdmin`.
@@ -291,6 +296,38 @@ corresponding card while any session has that note open.
   published on `127.0.0.1` only); browser MCP clients can use
   `https://192.168.3.222:5174/mcp`, which is also how LAN machines reach the API.
 
+### Security Headers
+
+`server.js` sends a baseline header set on every response, from middleware
+registered before the route handlers:
+
+```
+Content-Security-Policy: frame-ancestors 'none'; object-src 'none'; base-uri 'none'
+X-Content-Type-Options: nosniff
+Referrer-Policy: same-origin
+X-Frame-Options: DENY
+```
+
+- The policy has **no `default-src`** and names no source lists. It restricts
+  only framing, plugins, and `<base>`. Do not add `default-src`,
+  `script-src`, `style-src`, `img-src`, or `connect-src` without first
+  accounting for the Excalidraw React mount, the Excalidraw fonts, and the
+  `blob:` URLs the whiteboard exports images to.
+- A strict policy is still the right end state. It has to be deployed
+  **report-only** first, and the `innerHTML` sinks in `src/utils/markdown.js`,
+  `src/utils/mermaid.js`, and the Visual editor have to become
+  Trusted-Types-safe first. That is a separate change.
+- `nosniff` depends on every content-bearing route setting a `Content-Type`.
+  The image route uses `imageMimeForExt(ext)`; `express.static` derives it
+  from the extension.
+- The WebSocket handshake is not covered: it is not an HTTP response and
+  carries no document.
+- In development the **document** is served by Vite on `:5174`, not by
+  Express, so the HTML itself does not carry these headers. The API
+  responses proxied through Vite do.
+- `tests/securityHeaders.test.js` enforces the header set and the absence of
+  a `default-src`.
+
 ### Interface Configuration
 
 - Interface dimensions live in `config.json` at the repo root. `LOCAL_KEEP_CONFIG`
@@ -309,6 +346,44 @@ corresponding card while any session has that note open.
   resizing still wins via inline styles for that open modal.
 - Migration 12 creates `app_settings`. Config-file values are clamped; runtime admin
   values are rejected with 400 when out of range.
+
+### Browser Support
+
+Baseline features that shipped in Chrome/Edge 116, Safari 17 and Firefox 125 or
+earlier are usable. Adopt newer features only with a feature detect and a
+graceful degradation, and never bundle a polyfill except where the guide
+requires one.
+
+| Feature | Status | Fallback |
+|---|---|---|
+| `<dialog>` + `showModal()` | Baseline | none needed |
+| `closedby` | Chrome 134+, Firefox 141+, no Safari | `Esc`-only dismissal + the `pointerdown`/`pointerup` outside-test in `installLightDismiss` |
+| `overscroll-behavior` | Chrome 144+, Firefox 150+, no Safari | progressive enhancement; the dialog still contains its own scroll and the page is still inert |
+| `:focus-visible`, `color-mix`, `oklch`, `min()`/`max()`, `clamp()` | Baseline | none needed |
+| `@container` + `container-type` | Baseline (Chrome 105+, Safari 16+, Firefox 110+) | none needed — the workspace layout is the only consumer |
+| `content-visibility: auto` + `contain-intrinsic-size` | Baseline (Chrome 85+, Safari 18+, Firefox 125+) | none needed — the card keeps its fixed height either way |
+| `popover` | Baseline (Chrome 116+) | **not used** — an unanchored popover is centred on the viewport and CSS anchor positioning is not Baseline |
+| CSS anchor positioning | not Baseline | menus keep their absolute positioning |
+| Invoker Commands (`command`/`commandfor`) | not Baseline | buttons keep their `@click` handlers |
+
+### Overlays and Dialogs
+
+Every blocking overlay is a native `<dialog>` opened with `showModal()`.
+
+- `src/shared/dialog.js` owns the plumbing: `createOverlayStack()`,
+  `createDialogController()`, `showModalDialog()`, `hideDialog()` and
+  `installLightDismiss()`.
+- The reactive `open` flag is the single source of truth. Every call site that
+  sets it opens or closes the dialog — the controller watches it.
+- The dialog's `close` event is the single source of truth for "this overlay
+  is gone". It fires for `Esc`, the back gesture, and `close()`.
+- The dim layer is `::backdrop`. Never paint a backdrop on the dialog itself.
+- Do not add `role="dialog"`, `aria-modal`, a focus trap, `inert` toggling, a
+  manual `Esc` handler, a `z-index`, or a manual `.focus()` call.
+- Name each dialog with `aria-labelledby` and put `autofocus` on the primary
+  control — or on the **safe** action in a destructive confirmation.
+- `overlayStack` records the open overlays because the top layer does not
+  follow DOM order. `shortcutRoot()` asks the stack.
 
 ### Semantic Search / Embeddings
 
@@ -374,10 +449,11 @@ corresponding card while any session has that note open.
   plain text (`text/plain`) with a toolbar switch for opt-in rich mode; rich mode converts
   `text/html` through Turndown + GFM. The preference is per browser (`local-keep-paste-mode`
   in localStorage).
-- Two modes: **Visual** (contentEditable, rendered markdown, images displayed) and
-  **Source** (raw markdown textarea, image references shown as URLs). `Ctrl/Cmd+Shift+M`
-  toggles them. Preview was removed because Visual already renders the note; the gallery
-  and detail view are the read-only surfaces.
+- Two modes: **Source** (raw markdown textarea, image references shown as URLs) and
+  **Visual** (contentEditable, rendered markdown, images displayed). **Source is the
+  default** for new and existing notes; opening the editor must not depend on the last
+  used mode. `Ctrl/Cmd+Shift+M` toggles them. Preview was removed because Visual already
+  renders the note; the gallery and detail view are the read-only surfaces.
 - The markdown toolbar (`MarkdownToolbar.vue` + `shared/editorTools.js`) is available in
   both modes: inline formatting, headings, quote, lists, links/wiki links, code, tables,
   and rules. Shortcuts require Ctrl/Cmd; hold Alt/Option to replace tooltips with shortcuts.
@@ -459,10 +535,17 @@ corresponding card while any session has that note open.
 
 - The tag sidebar is a fixed 230px column with `overflow-x: hidden`; long tag
   names truncate with an ellipsis so a horizontal scrollbar can never appear.
-- The sidebar collapse query in `TagSidebar.vue` and `.workspace
-  { flex-direction: column }` in `App.vue` must share the same 600px breakpoint
-  (comments cross-reference them). If they drift, a `width: 100%` sidebar lands
-  inside a row flex container and crushes/overflows the notes area.
+- The sidebar stacking is driven by a **container query**, not a media query.
+  `main` is the query container (`container-type: inline-size;
+  container-name: workspace`), and both the sidebar rule in `TagSidebar.vue`
+  and the `.workspace { flex-direction: column }` rule in `App.vue` use
+  `@container workspace (max-width: 600px)`. They must use the same container
+  and the same threshold; `tests/responsiveLayout.test.js` fails if they
+  drift. If they do, a `width: 100%` sidebar lands inside a row flex
+  container and crushes/overflows the notes area.
+- A container query measures the **content box**. `main` has `2rem` of
+  horizontal padding, so the viewport width and the workspace width differ by
+  64px — a viewport media query fires 64px too late.
 
 ### Relationships and Tags
 
@@ -475,6 +558,10 @@ corresponding card while any session has that note open.
 - Tags are inline `#tag` / `#area/project/topic`, code-aware, NFKC/lowercased, hex
   colours rejected, max 100/note. `note_tags` stores full paths; the tree computes
   unique-note direct/subtree counts. `GET /api/tags` returns the tree.
+- The editor's tag input suggests existing paths while typing (client-side fuzzy
+  ranking in `matchTags` from `src/shared/tags.js`: exact, path prefix, segment
+  prefix, substring, then in-order subsequence). Applied tags are excluded, and a
+  manually typed new tag still commits with Enter/blur.
 - The UI filters tags client-side from the in-memory note list (including archived notes)
   so link resolution stays complete; the API also supports `tag`/`exactTag` for external
   clients. Descendants are included by default.
@@ -523,6 +610,10 @@ corresponding card while any session has that note open.
   comes from the measured container width; `chunkDashboardItems` groups the flat list;
   each row has a fixed `396px` height (380px card + 16px gap). The scroller uses
   `page-mode`, an `800px` render buffer, and `:emit-update="true"`.
+- `.note-content` (the card body) uses `content-visibility: auto`, so a card that is
+  off-screen skips layout and painting. The card's height is explicit (380px) and the
+  body is sized by the flex algorithm, so the row height cannot change. See gotcha 76
+  before moving an absolutely positioned element into the card body.
 - Card bodies hydrate in 30-note batches as the visible range changes. Keep one batch of
   prefetch on each side, evict outside that padded range, and never evict the editing
   note. The hard cache cap is 120 notes. `DashboardNoteCard` shows summary metadata plus a
@@ -768,3 +859,21 @@ All notable changes must be recorded in `CHANGELOG.md`. When making changes:
 58. **Shape changes need a consumer audit, not a search-and-replace**: splitting canonical content into `props` + `body` touched FTS, embeddings, markdown, notes, revisions, tags and MCP — and the bug survived because the one layer I missed (`textCollab`) *stores* the shape instead of rendering it. For any cross-cutting data-shape change, enumerate every read **and** write path first, including persistence (Yjs, `note_text_docs`, snapshots, exports). This is why 157 tests passed while data was corrupting: the save-through-draft path had no coverage. Add the regression test in the same commit as the fix.
 59. **`:where()` only helps if EVERY fallback is wrapped**: to declare a default that loses to a modifier class, wrap the whole fallback selector in `:where()` (specificity 0). One unwrapped declaration on the same element silently wins by source order — no warning, no error. This is why the editor tint stayed white despite `.note-color-amber` being applied: `.note-form-modal`'s white `--card-surface-*` defaults overrode the tint. Check the built CSS, not just the source.
 60. **Repair and migration scripts must be import-safe**: wrap side effects in `main()` gated on `import.meta.url === pathToFileURL(process.argv[1]).href`, and export only the pure helpers. `scripts/repair-fences.js` wrote to the live database on a bare `import`, bypassing its own `--dry-run` gate. A dry-run flag is worthless if importing ignores it. Verify the guard by importing the module and asserting nothing is written.
+61. **New-note state must be reset explicitly**: `noteProps`, `tagDraft`, `propKeyDraft`, and the tag-suggestion state are editor-local. Every new-note path (`openNewNoteModal`, global paste) and `closeModal` must call `resetNoteProps()`; otherwise tags added in the previous editor session appear on the next new note. Existing notes still load their parsed fence in `startEditing`.
+62. **Tag autocomplete is advisory and client-side**: `matchTags` ranks exact → path prefix → segment prefix → substring → in-order subsequence and excludes tags already on the note. Enter accepts a highlighted suggestion but must still add a manually typed new path; do not make the dropdown a closed list of existing tags.
+63. **IME-owned keystrokes must not be intercepted**: while an IME composes, `Enter` confirms the candidate, `Escape` cancels it, and the arrow keys move between candidates. Any keydown handler that acts on those keys must stand down. Use `isImeComposing(event)` / `runUnlessIme(event, action)` from `src/shared/ime.js` — never check `isComposing` inline, and never apply Vue's `.prevent` modifier to an `Enter`/`Escape` binding: `.prevent` expands to a `preventDefault()` that runs *before* the handler body, so it cannot stand down and it swallows the candidate confirmation. Drop `.prevent` and call `event.preventDefault()` inside the handler, after the composition check. The `keyCode === 229` fallback exists only because Safari delivers `compositionend` before the confirming `Enter` keydown, and it is deliberately limited to `Enter`/`Escape`/`Tab`: soft keyboards report `229` for ordinary character entry. `Ctrl/Cmd+Enter` is exempt — modifier combos do not conflict with candidate confirmation. `tests/ime.test.js` enforces the invariant at the source level.
+64. **`App.vue` and the other components use the Options API**: they are `<script>` blocks with an explicit `setup()` return object, not `<script setup>`. A new function that the template calls must be added to that return object or the template silently gets `undefined`.
+65. **Global tokens and the focus ring live in `src/styles/base.css`**: it is unscoped and imported from `main.js`. Text colours come from `--text-muted` / `--text-success` (never a raw hex — every value must clear 4.5:1 on white, and `tests/accessibility.test.js` enforces it). Do NOT write `outline: none` on a focusable control: the shared `:focus-visible` ring is the only indicator, and deleting it silently removes the keyboard affordance. Per gotcha 59, that global rule is wrapped in `:where()` so a component *can* override it deliberately — but only with a compliant replacement.
+66. **Spatial motion is opt-in**: keyframe animations and `transform` transitions belong inside the `@media (prefers-reduced-motion: no-preference)` block at the end of `App.vue`'s stylesheet, never in the base rule. Colour, opacity, filter, box-shadow, and border-radius transitions stay in the base rule. Do not use the global `animation-duration: 0.01ms` reset — the guide calls it out as making some animations *more* jarring.
+67. **One polite and one assertive live region**: `App.vue` keeps a single `role="status"` and a single `role="alert"`, both `.sr-only`. Announce through `notify(message, 'polite' | 'assertive')`, never by adding another `role="status"` to a component. `notify()` clears the region before writing so a repeated message is announced again.
+68. **Scrollbars use the standard properties plus an isolated fallback**: a container that customises a scrollbar MUST declare `scrollbar-width` and `scrollbar-color`, and its `::-webkit-scrollbar` rules MUST sit inside `@supports not (scrollbar-color: auto)`. The thumb colour comes from `--scrollbar-thumb` / `--scrollbar-thumb-dark` in `src/styles/base.css` and must clear 3:1 against the container background where the track is transparent — `tests/visualTokens.test.js` computes and enforces it. Do not repeat the colour in the fallback block: the custom property cascades.
+69. **`color-scheme` is declared, dark mode is not**: the app is deliberately light-only and `src/styles/base.css` says `color-scheme: light` so UA-drawn surfaces match. Adding a `prefers-color-scheme: dark` theme is a separate product decision, not a tweak — do not bundle it.
+70. **Every `<img>` declares `loading` and `decoding`**: `tests/visualTokens.test.js` scans the template blocks of every component and fails on an `<img>` without them. Do not combine `fetchpriority="high"` with `loading="lazy"`, and do not add `fetchpriority="low"` to a lazy image. Note that a rendered note image's size cannot be reserved — the image store does not report dimensions — so `aspect-ratio` is not available there.
+71. **Blocking overlays are native `<dialog>` elements**: the note editor, the link dialog, the revision history, the graph, the backlinks and selection-links panels, and every admin settings dialog. They are opened with `showModal()` through `createDialogController` in `src/shared/dialog.js`, so the platform provides focus containment, background inertness, the top layer, `Esc` dismissal and focus return. Do NOT add `role="dialog"`, `aria-modal`, a focus trap, `inert` toggling, a manual `Esc` handler, a `z-index`, or a manual `.focus()` call to them. The dim layer is `::backdrop`, not a background on the dialog. `tests/overlays.test.js` enforces these invariants.
+72. **The topmost overlay comes from the overlay stack, not DOM order**: overlays live in the top layer, so DOM order no longer describes stacking. `overlayStack` in `App.vue` records them and `shortcutRoot()` asks it. Add a new overlay to the stack through its `createDialogController`; do not reintroduce a DOM-order lookup.
+73. **`role="menu"` needs the whole menu pattern**: arrow keys, a roving `tabindex`, `Home`/`End`, `Escape` to close, and focus moving into the menu. The account menu and the colour pickers do not implement it, so they use plain buttons and toggle buttons (`aria-pressed`) in a `role="group"` instead. Do not use `popover` for them either: an unanchored popover is centred on the viewport, and CSS anchor positioning is not Baseline.
+74. **Browser floor**: Baseline features that shipped in Chrome/Edge 116, Safari 17 and Firefox 125 or earlier are usable. `<dialog>` and `showModal()` are Baseline; `closedby` is not (Chrome 134+, Firefox 141+, no Safari) and degrades to `Esc`-only dismissal plus the `pointerdown`/`pointerup` outside-test in `installLightDismiss`. `overscroll-behavior` is not universally supported and is progressive enhancement. No polyfill is bundled.
+75. **The workspace layout is a container query, not a media query**: `main` carries `container-type: inline-size; container-name: workspace`, and the sidebar stacking and the `.workspace` column switch both live in `@container workspace (max-width: 600px)` — in `TagSidebar.vue` and `App.vue` respectively. A container query measures the **content box**, and `main` has `2rem` of padding, so a viewport media query fires 64px too late. The two thresholds must stay identical; `tests/responsiveLayout.test.js` enforces it.
+76. **`content-visibility: auto` creates a containing block**: it implies paint and layout containment, so an absolutely positioned descendant of the skipped element is anchored to it instead of to the card. That is why `.presence-dot` is a direct child of `.note-card` and not of `.note-content`. Do not move it back. Also never put `content-visibility: auto` on a scroll container (`.note-preview`): a skipped subtree has no scrollable overflow, so the scrollbar would vanish and reappear and reflow the text under the cursor.
+77. **The `__Host-` cookie prefix and the `Secure` attribute are one decision**: `secureCookies()` in `src/server/sessionStore.js` is the single predicate that decides both, so a prefixed cookie is always `Secure` and a `Secure` cookie is always prefixed. The browser rejects a `__Host-` cookie that is not `Secure`, has a `Domain`, or has a `Path` other than `/`. Renaming the cookie invalidates the browser's copy, so the first request after a deploy needs one re-login; the sessions in the database stay valid.
+78. **The CSP has no `default-src` on purpose**: it constrains only framing, plugins, and `<base>`. Do not add `default-src`, `script-src`, `style-src`, `img-src`, or `connect-src` without accounting for the Excalidraw React mount, the Excalidraw fonts, and the `blob:` URLs the whiteboard exports. A strict policy is deployed report-only first, and the `innerHTML` sinks have to be converted to Trusted-Types-safe APIs before it can be enforced.

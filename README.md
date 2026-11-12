@@ -9,8 +9,8 @@ A Google Keep-like notes app with text notes and Excalidraw whiteboard canvas. V
 - Stable document identity while editing; stale concurrent edits are kept as branches
 - Revision history drawer with view, restore, and promote; archive by default with restore
 - Wiki-link relationships (`[[Note]]`), backlinks, and an interactive relationship graph
-- Hierarchical tags (`#area/project/topic`) with a tag tree, counts, and filtering
-- Two editor modes: **Visual** (rendered markdown, images and Mermaid diagrams displayed) and **Source** (raw markdown, images shown as URLs); paste defaults to exact plain text with optional rich HTML conversion and markdown image refs
+- Hierarchical tags (`#area/project/topic`) with a tag tree, counts, fuzzy autocomplete while typing, and filtering
+- Two editor modes: **Source** (raw markdown, images shown as URLs; the default) and **Visual** (rendered markdown, images and Mermaid diagrams displayed); paste defaults to exact plain text with optional rich HTML conversion and markdown image refs
 - Configurable interface dimensions (note editor, link dialog, graph, links panel) via `config.json` and admin runtime overrides
 - Whiteboard page rendering: ordered page images (left→right, top→bottom) with a Pages drawer
 - Embedded MCP server: search with timestamps, revision threads, links/tags/graph, and whiteboard recall as multiple images

@@ -8,7 +8,7 @@
         placeholder="Whiteboard title..."
         @change="flushTitle"
         @keyup.enter="flushTitle"
-        @keydown.enter.prevent
+        @keydown.enter="onTitleEnter"
       />
       <div class="wb-header-actions">
         <span v-if="syncStatus" class="wb-save-status">{{ syncStatus === 'saved' ? '✓ Saved' : syncStatus === 'saving' ? '○ Saving...' : syncStatus === 'loaded' ? '✓ Loaded' : syncStatus }}</span>
@@ -18,10 +18,10 @@
         <button @click="pagesOpen = !pagesOpen" class="wb-pages-btn" :class="{ active: pagesOpen }" title="Whiteboard pages">
           Pages<span v-if="latestRender?.tileCount" class="wb-pages-count">{{ latestRender.tileCount }}</span>
         </button>
-        <button @click="debugOpen = !debugOpen" class="wb-debug-btn" :title="debugOpen ? 'Hide pen inspector' : 'Pen event inspector'">
+        <button @click="debugOpen = !debugOpen" class="wb-debug-btn" :title="debugOpen ? 'Hide pen inspector' : 'Pen event inspector'" :aria-label="debugOpen ? 'Hide pen inspector' : 'Pen event inspector'">
           🖊
         </button>
-        <button @click="toggleFullscreen" class="wb-fs-btn" :title="isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'">
+        <button @click="toggleFullscreen" class="wb-fs-btn" :title="isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'" :aria-label="isFullscreen ? 'Exit fullscreen' : 'Fullscreen'">
           {{ isFullscreen ? '↙' : '↗' }}
         </button>
       </div>
@@ -32,7 +32,7 @@
     <aside v-if="pagesOpen" class="wb-pages-panel">
       <div class="wb-pages-header">
         <h3>Whiteboard pages</h3>
-        <button type="button" class="wb-pages-close" @click="pagesOpen = false">×</button>
+        <button type="button" class="wb-pages-close" title="Close" aria-label="Close whiteboard pages" @click="pagesOpen = false">×</button>
       </div>
 
       <p v-if="isRendering" class="wb-pages-status">
@@ -51,7 +51,7 @@
       <div v-if="latestRender?.tiles?.length" class="wb-pages-grid">
         <figure v-for="tile in latestRender.tiles" :key="tile.pageIndex" class="wb-page-card">
           <a :href="tile.url" target="_blank" rel="noopener">
-            <img :src="tile.url" :alt="`Whiteboard page ${tile.pageIndex + 1}`">
+            <img :src="tile.url" :alt="`Whiteboard page ${tile.pageIndex + 1}`" loading="lazy" decoding="async">
           </a>
           <figcaption>
             Page {{ tile.pageIndex + 1 }}
@@ -77,11 +77,11 @@
       <div class="debug-header">
         <span>Pen Event Inspector</span>
         <span class="debug-count">{{ debugLog.length }} events</span>
-        <button @click="copyLog" class="debug-copy-btn" :title="copyStatus || 'Copy log'">
+        <button @click="copyLog" class="debug-copy-btn" :title="copyStatus || 'Copy log'" aria-label="Copy log">
           {{ copyStatus || '📋' }}
         </button>
         <button @click="debugLog = []" class="debug-clear-btn">Clear</button>
-        <button @click="debugOpen = false" class="debug-close-btn">✕</button>
+        <button @click="debugOpen = false" class="debug-close-btn" title="Close" aria-label="Close pen inspector">✕</button>
       </div>
       <!-- Active filter chips -->
       <div v-if="debugFilters.length" class="debug-filter-bar">
@@ -140,6 +140,7 @@ import '@excalidraw/excalidraw/index.css'
 import { createCollabManager } from '../collab/collabManager.js'
 import { DRAWING_TOOLS, isFingerTouch, shouldUseHandTool } from '../utils/whiteboardTouch.js'
 import { planPages } from '../utils/whiteboardTiles.js'
+import { isImeComposing } from '../shared/ime.js'
 
 export default {
   name: 'WhiteboardEditor',
@@ -274,6 +275,13 @@ export default {
 
     function flushTitle() {
       collab.setTitle(title.value)
+    }
+
+    // Enter must not submit or move focus, but it also must not be swallowed
+    // while an IME is composing — Enter is the IME's candidate-confirm key.
+    function onTitleEnter(event) {
+      if (isImeComposing(event)) return
+      event.preventDefault()
     }
 
     // ── Stylus button pen/eraser toggle (via keyup: Unidentified, keyCode=0) ──
@@ -768,6 +776,7 @@ export default {
       toggleFullscreen,
       getCurrentScene,
       flushTitle,
+      onTitleEnter,
       pagesOpen,
       latestRender,
       renderLoading,
@@ -833,7 +842,6 @@ export default {
   font-size: 1rem;
   font-weight: 600;
   color: #202124;
-  outline: none;
   transition: border-color 0.2s;
 }
 
@@ -842,7 +850,7 @@ export default {
 }
 
 .wb-title-input::placeholder {
-  color: #80868b;
+  color: var(--text-muted);
   font-weight: 400;
 }
 
@@ -855,7 +863,7 @@ export default {
 
 .wb-save-status {
   font-size: 0.8125rem;
-  color: #1e8e3e;
+  color: var(--text-success);
 }
 
 .wb-render-status {
@@ -922,13 +930,13 @@ export default {
 .wb-pages-close {
   border: none;
   background: transparent;
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 1.2rem;
   cursor: pointer;
 }
 
 .wb-pages-status {
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 0.8rem;
   padding: 0.5rem 0;
 }
@@ -1011,7 +1019,7 @@ export default {
 
 .wb-pages-time {
   display: block;
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 0.7rem;
   margin-top: 0.5rem;
 }
@@ -1200,15 +1208,20 @@ export default {
   flex: 1;
   overflow-y: auto;
   padding: 0.35rem 0.5rem;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb-dark) transparent;
 }
 
-.debug-log::-webkit-scrollbar {
-  width: 4px;
-}
+/* Legacy fallback for WebKit/Blink, isolated from the standard properties. */
+@supports not (scrollbar-color: auto) {
+  .debug-log::-webkit-scrollbar {
+    width: 4px;
+  }
 
-.debug-log::-webkit-scrollbar-thumb {
-  background: rgba(255,255,255,0.15);
-  border-radius: 2px;
+  .debug-log::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb-dark);
+    border-radius: 2px;
+  }
 }
 
 .debug-entry {

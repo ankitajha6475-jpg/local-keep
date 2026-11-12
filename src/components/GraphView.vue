@@ -1,8 +1,8 @@
 <template>
-  <div class="graph-overlay" @mousedown.self="$emit('close')">
+  <dialog class="graph-overlay" ref="graphDialog" closedby="any" @close="onClosed" aria-labelledby="graphDialog-title">
     <div class="graph-panel">
       <div class="graph-header">
-        <h2>🕸 Relationship graph</h2>
+        <h2 id="graphDialog-title">🕸 Relationship graph</h2>
         <div class="graph-controls">
           <label>
             Depth
@@ -21,7 +21,7 @@
             Unresolved
           </label>
           <button type="button" :data-shortcut="shortcut('graphRefresh')" @click="$emit('refresh', { depth, includeUnresolved })">↻ Refresh</button>
-          <button type="button" class="graph-close" :data-shortcut="shortcut('graphClose')" @click="$emit('close')">×</button>
+          <button type="button" class="graph-close" :data-shortcut="shortcut('graphClose')" title="Close" aria-label="Close relationship graph" @click="$emit('close')">×</button>
         </div>
       </div>
       <p v-if="loading" class="graph-loading">Loading graph…</p>
@@ -37,12 +37,13 @@
         No relationships yet. Add <code>[[Another note]]</code> to a note.
       </p>
     </div>
-  </div>
+  </dialog>
 </template>
 
 <script>
 import GraphCanvas from './GraphCanvas.vue'
 import { SHORTCUTS, shortcutLabel } from '../shared/shortcuts.js'
+import { showModalDialog } from '../shared/dialog.js'
 
 export default {
   name: 'GraphView',
@@ -58,7 +59,17 @@ export default {
     modKey: { type: String, default: 'Ctrl' }
   },
   emits: ['close', 'refresh', 'open'],
+  mounted() {
+    // The graph is a native dialog: the platform provides the top layer, the
+    // focus containment and the Esc dismissal.
+    this.$nextTick(() => {
+      showModalDialog(this.$refs.graphDialog)
+    })
+  },
   methods: {
+    onClosed() {
+      this.$emit('close')
+    },
     shortcut(id) {
       return shortcutLabel(SHORTCUTS[id], this.modKey)
     }
@@ -67,15 +78,19 @@ export default {
 </script>
 
 <style scoped>
+/* Native dialog: the element is the box and `::backdrop` is the dim layer. */
 .graph-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 150;
-  background: rgba(32, 33, 36, 0.45);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  border: none;
   padding: 1.25rem;
+  background: transparent;
+  width: auto;
+  max-width: none;
+  max-height: none;
+  overflow: visible;
+}
+
+.graph-overlay::backdrop {
+  background: rgba(32, 33, 36, 0.45);
 }
 
 .graph-panel {
@@ -136,7 +151,7 @@ export default {
 
 .graph-loading,
 .graph-empty {
-  color: #80868b;
+  color: var(--text-muted);
   text-align: center;
   padding: 2rem;
   font-size: 0.85rem;

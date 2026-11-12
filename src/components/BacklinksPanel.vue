@@ -1,9 +1,9 @@
 <template>
-  <div class="backlinks-overlay" @mousedown.self="$emit('close')">
+  <dialog class="backlinks-overlay" ref="backlinksDialog" closedby="any" @close="onClosed" aria-labelledby="backlinksDialog-title">
     <div class="backlinks-panel">
       <div class="backlinks-header">
-        <h3>🔗 Backlinks</h3>
-        <button type="button" class="backlinks-close" data-shortcut="Esc" @click="$emit('close')">×</button>
+        <h3 id="backlinksDialog-title">🔗 Backlinks</h3>
+        <button type="button" class="backlinks-close" data-shortcut="Esc" title="Close" aria-label="Close backlinks" @click="$emit('close')">×</button>
       </div>
       <p v-if="loading" class="backlinks-empty">Loading…</p>
       <p v-else-if="error" class="error">{{ error }}</p>
@@ -27,10 +27,12 @@
         </button>
       </div>
     </div>
-  </div>
+  </dialog>
 </template>
 
 <script>
+import { showModalDialog } from '../shared/dialog.js'
+
 export default {
   name: 'BacklinksPanel',
   props: {
@@ -39,6 +41,16 @@ export default {
     error: { type: String, default: '' }
   },
   emits: ['close', 'open'],
+  mounted() {
+    this.$nextTick(() => {
+      showModalDialog(this.$refs.backlinksDialog)
+    })
+  },
+  methods: {
+    onClosed() {
+      this.$emit('close')
+    }
+  },
   setup() {
     function formatDate(iso) {
       if (!iso) return ''
@@ -52,14 +64,19 @@ export default {
 </script>
 
 <style scoped>
+/* Native dialog: the element is the box and `::backdrop` is the dim layer. */
 .backlinks-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 22;
-  background: rgba(32, 33, 36, 0.32);
-  border-radius: 12px;
-  display: flex;
+  border: none;
   padding: 1rem;
+  background: transparent;
+  width: auto;
+  max-width: none;
+  max-height: none;
+  overflow: visible;
+}
+
+.backlinks-overlay::backdrop {
+  background: rgba(32, 33, 36, 0.32);
 }
 
 .backlinks-panel {
@@ -89,13 +106,13 @@ export default {
 .backlinks-close {
   border: none;
   background: transparent;
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 1.2rem;
   cursor: pointer;
 }
 
 .backlinks-empty {
-  color: #80868b;
+  color: var(--text-muted);
   font-size: 0.8rem;
   text-align: center;
   padding: 1rem;
@@ -132,7 +149,7 @@ export default {
 
 .backlink-meta {
   font-size: 0.7rem;
-  color: #80868b;
+  color: var(--text-muted);
 }
 
 .backlink-context {
