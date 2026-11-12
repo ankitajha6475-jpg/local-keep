@@ -1,7 +1,7 @@
 # Session Log: Modern web guidance modernisation
 
 - **Date**: 2026-11-12 08:02
-- **Commit**: _pending_
+- **Commit**: `1d3431439e018ca75c4eee5262b17ff1eff5227b` — `feat(ui): modernise the workspace against the current web platform guidance`
 - **Change**: six OpenSpec changes (see below), all archived under `openspec/changes/archive/2026-11-11-*/`
 
 ## Summary
