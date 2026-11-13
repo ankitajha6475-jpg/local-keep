@@ -123,9 +123,43 @@
       :noteId="editingCanvasId"
       :canvasData="editingCanvasData"
       :initialTitle="editingCanvasTitle"
+      :initialColor="editingCanvasColor"
+      :initialTags="editingCanvasTags"
+      :revisionNo="editingCanvasRevisionNo"
+      :knownTags="knownTags"
       :ws="wsRef"
       @back="closeCanvasEditor"
       @note-gone="handleNoteDeletedElsewhere"
+    />
+
+    <!-- Chat Room Editor (full-screen) -->
+    <ChatRoomEditor
+      v-else-if="isAuthenticated && currentView === 'chat'"
+      :noteId="editingChatId"
+      :initialTitle="editingChatTitle"
+      :initialColor="editingChatColor"
+      :initialTags="editingChatTags"
+      :initialContent="editingChatContent"
+      :revisionNo="editingChatRevisionNo"
+      :knownTags="knownTags"
+      :ws="wsRef"
+      :currentUser="currentUser"
+      @back="closeChatEditor"
+    />
+
+    <!-- Kanban Board Editor (full-screen) -->
+    <KanbanBoardEditor
+      v-else-if="isAuthenticated && currentView === 'kanban'"
+      :noteId="editingKanbanId"
+      :initialTitle="editingKanbanTitle"
+      :initialColor="editingKanbanColor"
+      :initialTags="editingKanbanTags"
+      :initialContent="editingKanbanContent"
+      :revisionNo="editingKanbanRevisionNo"
+      :knownTags="knownTags"
+      :ws="wsRef"
+      :currentUser="currentUser"
+      @back="closeKanbanEditor"
     />
 
     <!-- Canvas deletion-elsewhere mask (no alert; inline prompt) -->
@@ -1393,8 +1427,8 @@
         </div>
       </dialog>
 
-      <!-- Floating Action Button (dashboard only — not over the whiteboard view) -->
-      <div v-if="isAuthenticated && currentView !== 'canvas'" class="fab-container" :class="{ 'shortcuts-visible': shortcutsVisible }">
+      <!-- Floating Action Button (dashboard only — not over the whiteboard, chat or kanban view) -->
+      <div v-if="isAuthenticated && currentView !== 'canvas' && currentView !== 'chat' && currentView !== 'kanban'" class="fab-container" :class="{ 'shortcuts-visible': shortcutsVisible }">
         <div v-if="fabMenuOpen" class="fab-menu">
           <button @click="fabNewTextNote" class="fab-menu-item" :data-shortcut="shortcut('fabTextNote')">
             <span class="fab-menu-icon"><AppIcon name="note" :size="18" /></span>
@@ -1403,6 +1437,14 @@
           <button @click="fabNewWhiteboard" class="fab-menu-item" :data-shortcut="shortcut('fabWhiteboard')">
             <span class="fab-menu-icon"><AppIcon name="whiteboard" :size="18" /></span>
             <span>Whiteboard</span>
+          </button>
+          <button @click="fabNewChatRoom" class="fab-menu-item">
+            <span class="fab-menu-icon"><AppIcon name="message" :size="18" /></span>
+            <span>Chat Room</span>
+          </button>
+          <button @click="fabNewKanbanBoard" class="fab-menu-item">
+            <span class="fab-menu-icon"><AppIcon name="kanban" :size="18" /></span>
+            <span>Kanban Board</span>
           </button>
         </div>
         <button
@@ -1431,6 +1473,8 @@ import { ref, reactive, computed, onMounted, onUnmounted, nextTick, watch } from
 import { RecycleScroller } from 'vue-virtual-scroller'
 import debug from 'debug'
 import WhiteboardEditor from './components/WhiteboardEditor.vue'
+import ChatRoomEditor from './components/ChatRoomEditor.vue'
+import KanbanBoardEditor from './components/KanbanBoardEditor.vue'
 import TagSidebar from './components/TagSidebar.vue'
 import GraphView from './components/GraphView.vue'
 import BacklinksPanel from './components/BacklinksPanel.vue'
@@ -1504,7 +1548,7 @@ const modKey = isMac ? 'Cmd' : 'Ctrl'
 
 export default {
   name: 'App',
-  components: { WhiteboardEditor, TagSidebar, GraphView, BacklinksPanel, SelectionLinksPanel, MarkdownToolbar, LinkDialog, AppIcon, DashboardNoteCard, RecycleScroller },
+  components: { WhiteboardEditor, ChatRoomEditor, KanbanBoardEditor, TagSidebar, GraphView, BacklinksPanel, SelectionLinksPanel, MarkdownToolbar, LinkDialog, AppIcon, DashboardNoteCard, RecycleScroller },
   setup() {
     // Auth state
     const showSetup = ref(false)
@@ -1957,10 +2001,29 @@ export default {
     let searchSeq = 0
 
     // Canvas / Whiteboard state
-    const currentView = ref('list') // 'list' | 'canvas'
+    const currentView = ref('list') // 'list' | 'canvas' | 'chat' | 'kanban'
     const editingCanvasId = ref(null)
     const editingCanvasData = ref(null)
     const editingCanvasTitle = ref('')
+    const editingCanvasColor = ref(null)
+    const editingCanvasTags = ref([])
+    const editingCanvasRevisionNo = ref(1)
+
+    // Chat room state
+    const editingChatId = ref(null)
+    const editingChatTitle = ref('')
+    const editingChatColor = ref(null)
+    const editingChatTags = ref([])
+    const editingChatRevisionNo = ref(1)
+    const editingChatContent = ref('')
+
+    // Kanban board state
+    const editingKanbanId = ref(null)
+    const editingKanbanTitle = ref('')
+    const editingKanbanColor = ref(null)
+    const editingKanbanTags = ref([])
+    const editingKanbanRevisionNo = ref(1)
+    const editingKanbanContent = ref('')
 
     // Deletion-elsewhere mask state: { noteId, deletedAt } | null.
     // When set AND the user is viewing/editing that note, an inline overlay
@@ -2444,6 +2507,8 @@ export default {
         }
         await nextTick()
         if (note.type === 'canvas') openCanvasNote(note)
+        else if (note.type === 'chat') openChatNote(note)
+        else if (note.type === 'kanban') openKanbanNote(note)
         else startEditing(note)
         return true
       } catch (e) {
@@ -3248,6 +3313,16 @@ export default {
     const fabNewWhiteboard = () => {
       fabMenuOpen.value = false
       openNewCanvas()
+    }
+
+    const fabNewChatRoom = () => {
+      fabMenuOpen.value = false
+      openNewChat()
+    }
+
+    const fabNewKanbanBoard = () => {
+      fabMenuOpen.value = false
+      openNewKanban()
     }
 
     // ── Markdown editor helpers ──
@@ -4742,6 +4817,9 @@ export default {
         editingCanvasId.value = note.id
         editingCanvasData.value = null
         editingCanvasTitle.value = ''
+        editingCanvasColor.value = null
+        editingCanvasTags.value = []
+        editingCanvasRevisionNo.value = 1
         currentView.value = 'canvas'
       } catch (e) {
         console.error('Failed to create canvas note', e)
@@ -4753,6 +4831,9 @@ export default {
       editingCanvasId.value = note.id
       editingCanvasData.value = note.canvasData || null
       editingCanvasTitle.value = note.title || ''
+      editingCanvasColor.value = note.color || null
+      editingCanvasTags.value = Array.isArray(note.tags) ? [...note.tags] : []
+      editingCanvasRevisionNo.value = note.revisionNo || 1
       currentView.value = 'canvas'
     }
 
@@ -4761,7 +4842,102 @@ export default {
       editingCanvasId.value = null
       editingCanvasData.value = null
       editingCanvasTitle.value = ''
+      editingCanvasColor.value = null
+      editingCanvasTags.value = []
+      editingCanvasRevisionNo.value = 1
       // If the canvas was masked because of an external deletion, drop it now.
+      if (deletedMask.value) deletedMask.value = null
+    }
+
+    // Chat note methods
+    const openNewChat = async () => {
+      teardownTextCollab()
+      try {
+        const note = await api('/api/notes', {
+          method: 'POST',
+          body: JSON.stringify({
+            title: '',
+            content: JSON.stringify({ messages: [] }),
+            type: 'chat'
+          })
+        })
+        editingChatId.value = note.id
+        editingChatTitle.value = ''
+        editingChatColor.value = null
+        editingChatTags.value = []
+        editingChatRevisionNo.value = 1
+        editingChatContent.value = note.content || ''
+        currentView.value = 'chat'
+      } catch (e) {
+        console.error('Failed to create chat room', e)
+      }
+    }
+
+    const openChatNote = (note) => {
+      teardownTextCollab()
+      editingChatId.value = note.id
+      editingChatTitle.value = note.title || ''
+      editingChatColor.value = note.color || null
+      editingChatTags.value = Array.isArray(note.tags) ? [...note.tags] : []
+      editingChatRevisionNo.value = note.revisionNo || 1
+      editingChatContent.value = note.content || ''
+      currentView.value = 'chat'
+    }
+
+    const closeChatEditor = () => {
+      currentView.value = 'list'
+      editingChatId.value = null
+      editingChatTitle.value = ''
+      editingChatColor.value = null
+      editingChatTags.value = []
+      editingChatRevisionNo.value = 1
+      editingChatContent.value = ''
+      if (deletedMask.value) deletedMask.value = null
+    }
+
+    // Kanban note methods
+    const openNewKanban = async () => {
+      teardownTextCollab()
+      try {
+        const note = await api('/api/notes', {
+          method: 'POST',
+          body: JSON.stringify({
+            title: '',
+            content: '',
+            type: 'kanban'
+          })
+        })
+        editingKanbanId.value = note.id
+        editingKanbanTitle.value = ''
+        editingKanbanColor.value = null
+        editingKanbanTags.value = []
+        editingKanbanRevisionNo.value = 1
+        editingKanbanContent.value = note.content || ''
+        currentView.value = 'kanban'
+      } catch (e) {
+        console.error('Failed to create kanban board', e)
+      }
+    }
+
+    const openKanbanNote = (note) => {
+      teardownTextCollab()
+      editingKanbanId.value = note.id
+      editingKanbanTitle.value = note.title || ''
+      editingKanbanColor.value = note.color || null
+      editingKanbanTags.value = Array.isArray(note.tags) ? [...note.tags] : []
+      editingKanbanRevisionNo.value = note.revisionNo || 1
+      editingKanbanContent.value = note.content || ''
+      currentView.value = 'kanban'
+    }
+
+    const closeKanbanEditor = () => {
+      currentView.value = 'list'
+      editingKanbanId.value = null
+      editingKanbanTitle.value = ''
+      editingKanbanColor.value = null
+      editingKanbanTags.value = []
+      editingKanbanRevisionNo.value = 1
+      editingKanbanContent.value = ''
       if (deletedMask.value) deletedMask.value = null
     }
 
@@ -4774,7 +4950,9 @@ export default {
       if (!noteId) return
       const isOpenTextNote = isModalOpen.value && editingId.value === noteId
       const isOpenCanvas = currentView.value === 'canvas' && editingCanvasId.value === noteId
-      if (!isOpenTextNote && !isOpenCanvas) return
+      const isOpenChat = currentView.value === 'chat' && editingChatId.value === noteId
+      const isOpenKanban = currentView.value === 'kanban' && editingKanbanId.value === noteId
+      if (!isOpenTextNote && !isOpenCanvas && !isOpenChat && !isOpenKanban) return
       // Idempotent: if already masked for this note, no-op.
       if (deletedMask.value && deletedMask.value.noteId === noteId) return
       deletedMask.value = { noteId, deletedAt: Date.now() }
@@ -5423,10 +5601,36 @@ export default {
       editingCanvasId,
       editingCanvasData,
       editingCanvasTitle,
+      editingCanvasColor,
+      editingCanvasTags,
+      editingCanvasRevisionNo,
+      knownTags,
       wsRef,
       openNewCanvas,
       openCanvasNote,
       closeCanvasEditor,
+      // Chat
+      editingChatId,
+      editingChatTitle,
+      editingChatColor,
+      editingChatTags,
+      editingChatRevisionNo,
+      editingChatContent,
+      openNewChat,
+      openChatNote,
+      closeChatEditor,
+      fabNewChatRoom,
+      // Kanban
+      editingKanbanId,
+      editingKanbanTitle,
+      editingKanbanColor,
+      editingKanbanTags,
+      editingKanbanRevisionNo,
+      editingKanbanContent,
+      openNewKanban,
+      openKanbanNote,
+      closeKanbanEditor,
+      fabNewKanbanBoard,
       // Deletion-elsewhere mask
       deletedMask,
       whiteboardEditorRef,
@@ -7436,6 +7640,106 @@ main {
 .canvas-untitled {
   color: var(--text-muted);
   font-style: italic;
+}
+
+.chat-card-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  font-size: 0.8125rem;
+  color: #334155;
+  margin-top: 0.25rem;
+}
+
+.chat-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.chat-card-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 0.72rem;
+  font-weight: 500;
+  padding: 0.15rem 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid #e2e8f0;
+}
+
+.chat-card-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.chat-card-msg {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4;
+}
+
+.chat-card-sender {
+  font-weight: 600;
+  color: #1e293b;
+  margin-right: 0.25rem;
+}
+
+.chat-card-text {
+  color: #475569;
+}
+
+.chat-card-empty {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.8125rem;
+}
+
+.kanban-card-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  font-size: 0.8125rem;
+  color: #334155;
+  margin-top: 0.25rem;
+}
+
+.kanban-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.kanban-card-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 0.72rem;
+  font-weight: 500;
+  padding: 0.15rem 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid #e2e8f0;
+}
+
+.kanban-card-col-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.kanban-card-col-pill {
+  font-size: 0.7rem;
+  color: #475569;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  padding: 0.1rem 0.35rem;
 }
 
 /* Quick Shortcuts is a read-only virtual note, so it uses the normal card

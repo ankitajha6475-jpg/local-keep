@@ -49,6 +49,9 @@ src/
   App.vue                         # Main app: note list/editor, history, archived view, WS
   components/
     WhiteboardEditor.vue          # Excalidraw wrapper (manual React mount, not veaury bridge)
+    ChatRoomEditor.vue            # Live multi-user chat room with markdown and timeline
+    KanbanBoardEditor.vue         # Interactive kanban board with drag-and-drop cards
+    NoteHeader.vue                # Universal note header: title, color tint, tags, version badge
     DashboardNoteCard.vue         # virtual-list card (index summary + hydrated detail)
     TagSidebar.vue                # hierarchical tag tree/filter
     GraphView.vue, GraphCanvas.vue# relationship graph (d3-force)
@@ -237,6 +240,23 @@ a client explicitly saves.
 join/leave broadcasts `{ type: 'presence', noteId, count, users }`; a full
 `presence` snapshot is sent on connect. The dashboard renders a green dot on the
 corresponding card while any session has that note open.
+
+### Chat Room Notes (`type: 'chat'`)
+
+- Materialized head in `notes.content`: structured JSON transcript `{ "messages": [ { id, sender, senderName, text, timestamp } ] }`, with optional property fence for tags (`---\ntags:\n  - chat/dev\n---\n`).
+- Revisions in `note_revisions`: discrete delta `{ type: 'chat_message', message: { ... } }` with `source: 'chat'`. Each message increments revision number (+1).
+- Restore/promote: re-aggregates discrete deltas up to target revision number to recreate the exact transcript snapshot.
+- Protocol: REST `POST /api/notes/:id/chat/messages`, WS `chat-join`, `chat-leave`, `chat-send`, `chat-delta`.
+- FTS indexing: `fts.js` extracts each message's sender and body text to index in `notes_fts`.
+
+### Kanban Board Notes (`type: 'kanban'`)
+
+- Materialized head in `notes.content`: JSON layout `{ "columns": [...], "cards": [...] }`, with optional property fence for tags.
+- Revisions in `note_revisions`: semantic delta action suites `{ type: 'kanban_delta_suite', actions: [...] }` with `source: 'kanban'`.
+- Debounced auto-save (1.5s idle) or explicit Save commits the delta suite and increments revision (+1).
+- Actions supported: `card_added`, `card_updated`, `card_moved`, `card_deleted`, `column_added`, `column_renamed`, `column_deleted`.
+- Protocol: REST `PUT /api/notes/:id/kanban`, WS `kanban-join`, `kanban-leave`, `kanban-save`, `kanban-delta`.
+- FTS indexing: indexes all card titles and descriptions.
 
 ### Note Threads and Revisions
 

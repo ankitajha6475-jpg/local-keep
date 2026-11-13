@@ -153,8 +153,36 @@
             :title="'Filter by #' + tag"
           >#{{ tag }}</button>
         </div>
+        <div v-if="note.type === 'chat' && !isHydrating" class="chat-card-preview">
+          <div class="chat-card-meta">
+            <span class="chat-card-pill">
+              <AppIcon name="message" :size="12" />
+              <span>{{ chatPreview.count }} {{ chatPreview.count === 1 ? 'message' : 'messages' }}</span>
+            </span>
+          </div>
+          <div v-if="chatPreview.recent.length" class="chat-card-messages">
+            <div v-for="m in chatPreview.recent" :key="m.id" class="chat-card-msg">
+              <strong class="chat-card-sender">{{ m.senderName || m.sender }}:</strong>
+              <span class="chat-card-text">{{ m.text }}</span>
+            </div>
+          </div>
+          <div v-else class="chat-card-empty">No messages yet. Click to chat.</div>
+        </div>
+        <div v-else-if="note.type === 'kanban' && !isHydrating" class="kanban-card-preview">
+          <div class="kanban-card-meta">
+            <span class="kanban-card-pill">
+              <AppIcon name="kanban" :size="12" />
+              <span>{{ kanbanPreview.colCount }} cols · {{ kanbanPreview.cardCount }} cards</span>
+            </span>
+          </div>
+          <div class="kanban-card-col-pills">
+            <span v-for="c in kanbanPreview.columns" :key="c.id" class="kanban-card-col-pill">
+              {{ c.title }}: {{ c.count }}
+            </span>
+          </div>
+        </div>
         <MarkdownView
-          v-if="note.type !== 'canvas' && !isHydrating"
+          v-else-if="note.type !== 'canvas' && !isHydrating"
           class="note-preview"
           :html="renderContent(note.content)"
           @click="$emit('content-click', $event, note)"
@@ -209,12 +237,50 @@ export default {
     },
     displayTitle() {
       const note = this.note
-      const fallback = note.type === 'canvas' ? 'Untitled Whiteboard' : 'Untitled'
+      const fallback = note.type === 'canvas' ? 'Untitled Whiteboard' : (note.type === 'chat' ? 'Untitled Chat' : (note.type === 'kanban' ? 'Untitled Kanban' : 'Untitled'))
       if ((note.title || '').trim()) return note.title.trim()
       // The index stores a content-derived display title, so titleless cards
       // keep their label while their body is still hydrating.
       if (note.displayTitle && note.displayTitle !== 'Untitled') return note.displayTitle
       return getDisplayTitle(note, { fallback })
+    },
+    chatPreview() {
+      if (this.note.type !== 'chat') return { count: 0, recent: [] }
+      try {
+        const raw = this.note.content || ''
+        const body = raw.replace(/^---[\s\S]*?---\n*/, '').trim()
+        if (body.startsWith('{')) {
+          const data = JSON.parse(body)
+          const messages = Array.isArray(data.messages) ? data.messages : []
+          return {
+            count: messages.length,
+            recent: messages.slice(-2)
+          }
+        }
+      } catch (_) {}
+      return { count: 0, recent: [] }
+    },
+    kanbanPreview() {
+      if (this.note.type !== 'kanban') return { colCount: 0, cardCount: 0, columns: [] }
+      try {
+        const raw = this.note.content || ''
+        const body = raw.replace(/^---[\s\S]*?---\n*/, '').trim()
+        if (body.startsWith('{')) {
+          const data = JSON.parse(body)
+          const columns = Array.isArray(data.columns) ? data.columns : []
+          const cards = Array.isArray(data.cards) ? data.cards : []
+          return {
+            colCount: columns.length,
+            cardCount: cards.length,
+            columns: columns.map(col => ({
+              id: col.id,
+              title: col.title,
+              count: cards.filter(c => c.columnId === col.id).length
+            }))
+          }
+        }
+      } catch (_) {}
+      return { colCount: 0, cardCount: 0, columns: [] }
     }
   },
   methods: { noteColorLabel }

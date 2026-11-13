@@ -24,7 +24,29 @@ export function extractCanvasText(canvasData) {
 export function noteIndexText(content) {
   const { body, props } = parseNoteContent(content)
   const tags = Array.isArray(props.tags) ? props.tags : []
-  return `${markdownToText(body)}\n${tags.join('\n')}`.trim()
+  let bodyText = ''
+  try {
+    const trimmed = (body || '').trim()
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+      const parsed = JSON.parse(trimmed)
+      if (parsed && Array.isArray(parsed.messages)) {
+        bodyText = parsed.messages
+          .map(m => `${m.senderName || m.sender || ''}: ${m.text || ''}`)
+          .join('\n')
+      } else if (parsed && Array.isArray(parsed.cards)) {
+        bodyText = parsed.cards
+          .map(c => `${c.title || ''}\n${c.description || ''}`)
+          .join('\n')
+      } else {
+        bodyText = markdownToText(body)
+      }
+    } else {
+      bodyText = markdownToText(body)
+    }
+  } catch (_) {
+    bodyText = markdownToText(body)
+  }
+  return `${bodyText}\n${tags.join('\n')}`.trim()
 }
 
 export function indexNote(db, { noteId, title, content, canvasText }) {

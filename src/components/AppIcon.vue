@@ -126,6 +126,18 @@ const ICONS = {
   lock: [
     { x: 3, y: 11, width: 18, height: 11, rx: 2, ry: 2 },
     { d: 'M7 11V7a5 5 0 0 1 10 0v4' }
+  ],
+  message: [
+    { d: 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z' }
+  ],
+  kanban: [
+    { x: 3, y: 3, width: 5, height: 18, rx: 1, ry: 1 },
+    { x: 10, y: 3, width: 5, height: 12, rx: 1, ry: 1 },
+    { x: 17, y: 3, width: 5, height: 15, rx: 1, ry: 1 }
+  ],
+  send: [
+    { d: 'm22 2-7 20-4-9-9-4Z' },
+    { d: 'M22 2 11 13' }
   ]
 }
 

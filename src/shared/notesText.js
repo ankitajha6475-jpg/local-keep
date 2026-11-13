@@ -85,6 +85,28 @@ export function getDisplayTitle(note, opts = {}) {
   if (!note) return fallback
   const title = (note.title || '').trim()
   if (title) return title
+
+  if (note.type === 'chat') {
+    try {
+      const stripped = String(note.content || '').replace(/^---[\s\S]*?---\n*/, '').trim()
+      if (stripped.startsWith('{')) {
+        const parsed = JSON.parse(stripped)
+        if (Array.isArray(parsed.messages) && parsed.messages.length > 0) {
+          const first = (parsed.messages[0].text || '').trim()
+          if (first) {
+            const s = cleanContent(first)
+            return s.length > maxLen ? s.slice(0, maxLen) + '…' : s
+          }
+        }
+      }
+    } catch (_) {}
+    return fallback === 'Untitled' ? 'Untitled Chat' : fallback
+  }
+
+  if (note.type === 'kanban') {
+    return fallback === 'Untitled' ? 'Untitled Kanban' : fallback
+  }
+
   const cleaned = cleanContent(note.content || '')
   if (!cleaned) return fallback
   if (cleaned.length > maxLen) return cleaned.slice(0, maxLen) + '…'

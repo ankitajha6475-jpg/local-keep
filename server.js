@@ -636,6 +636,42 @@ function broadcastToAllClients(message) {
   return sent
 }
 
+function broadcastChatDelta(noteId, message, revisionNo) {
+  let noteTags = []
+  try {
+    const note = notesService.getNote(noteId)
+    noteTags = note?.tags || []
+  } catch (_) {}
+  const payload = JSON.stringify({ type: 'chat-delta', noteId, message, revisionNo })
+  for (const wsSet of clients.values()) {
+    for (const ws of wsSet) {
+      if (ws.readyState === WebSocket.OPEN) {
+        if (!ws._tagMatcher || ws._tagMatcher.isUnrestricted || ws._tagMatcher.isAllowed(noteTags)) {
+          try { ws.send(payload) } catch (_) {}
+        }
+      }
+    }
+  }
+}
+
+function broadcastKanbanDelta(noteId, actions, revisionNo) {
+  let noteTags = []
+  try {
+    const note = notesService.getNote(noteId)
+    noteTags = note?.tags || []
+  } catch (_) {}
+  const payload = JSON.stringify({ type: 'kanban-delta', noteId, actions, revisionNo })
+  for (const wsSet of clients.values()) {
+    for (const ws of wsSet) {
+      if (ws.readyState === WebSocket.OPEN) {
+        if (!ws._tagMatcher || ws._tagMatcher.isUnrestricted || ws._tagMatcher.isAllowed(noteTags)) {
+          try { ws.send(payload) } catch (_) {}
+        }
+      }
+    }
+  }
+}
+
 // ── Live presence (dashboard dots) ───────────────────────────────────────
 function presenceUser(ws) {
   if (!ws._presenceUser) {
@@ -1522,7 +1558,8 @@ app.put('/api/notes/:id', checkAuth, (req, res) => {
       mode: req.body.mode || 'append',
       actor: req.actor || 'ui',
       source: 'ui',
-      message: req.body.message || null
+      message: req.body.message || null,
+      tagMatcher: req.tagMatcher
     })
     res.json(updated)
     broadcastNotes()
@@ -1540,6 +1577,59 @@ app.put('/api/notes/:id/color', checkAuth, (req, res) => {
       noteId: note.id,
       color: note.color ?? null
     })
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.patch('/api/notes/:id/properties', checkAuth, (req, res) => {
+  try {
+    const updated = notesService.setProperties(req.params.id, {
+      set: req.body?.set,
+      remove: req.body?.remove,
+      baseRevisionId: req.body?.baseRevisionId || null,
+      actor: req.actor || 'ui',
+      message: req.body?.message || 'property edit'
+    }, req.tagMatcher)
+    res.json(updated)
+    broadcastNotes()
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.post('/api/notes/:id/chat/messages', checkAuth, (req, res) => {
+  try {
+    const text = req.body?.text
+    const sender = req.user?.username || req.auth?.client || 'user'
+    const senderName = req.user?.displayName || req.user?.username || 'User'
+    const result = notesService.sendChatMessage(
+      req.params.id,
+      { text, sender, senderName },
+      req.tagMatcher
+    )
+    broadcastChatDelta(req.params.id, result.message, result.revision.revisionNo)
+    broadcastNotes()
+    res.status(201).json(result)
+  } catch (error) {
+    sendServiceError(res, error)
+  }
+})
+
+app.put('/api/notes/:id/kanban', checkAuth, (req, res) => {
+  try {
+    const actions = req.body?.actions || []
+    const board = req.body?.board || null
+    const message = req.body?.message || null
+    const actor = req.actor || req.user?.username || 'ui'
+    const result = notesService.saveKanbanBoard(
+      req.params.id,
+      { actions, board, actor, message },
+      req.tagMatcher
+    )
+    broadcastKanbanDelta(req.params.id, actions, result.revision.revisionNo)
+    broadcastNotes()
+    res.json(result)
   } catch (error) {
     sendServiceError(res, error)
   }
@@ -1920,6 +2010,14 @@ wss.on('connection', (ws, req) => {
     if (ws._textNoteId) {
       removeTextSession(ws._textNoteId, ws)
     }
+    if (ws._chatNoteId) {
+      removeNotePresence(ws._chatNoteId, ws, 'chat')
+      ws._chatNoteId = null
+    }
+    if (ws._kanbanNoteId) {
+      removeNotePresence(ws._kanbanNoteId, ws, 'kanban')
+      ws._kanbanNoteId = null
+    }
     removeAllPresenceForSocket(ws)
     console.log(`WebSocket client disconnected. Total clients: ${countClients()}`)
   })
@@ -2032,6 +2130,73 @@ wss.on('connection', (ws, req) => {
           if (sessions.size <= 1) {
             textCollab.discard(msg.noteId)
             ws.send(JSON.stringify({ type: 'text-discarded', noteId: msg.noteId }))
+          }
+          break
+        }
+        case 'chat-join': {
+          if (!msg.noteId) break
+          if (ws._chatNoteId && ws._chatNoteId !== msg.noteId) {
+            removeNotePresence(ws._chatNoteId, ws, 'chat')
+          }
+          ws._chatNoteId = msg.noteId
+          addNotePresence(msg.noteId, ws, 'chat')
+          break
+        }
+        case 'chat-leave': {
+          if (!msg.noteId) break
+          if (ws._chatNoteId === msg.noteId) {
+            removeNotePresence(msg.noteId, ws, 'chat')
+            ws._chatNoteId = null
+          }
+          break
+        }
+        case 'chat-send': {
+          if (!msg.noteId || !msg.text) break
+          const sender = ws._user?.username || 'user'
+          const senderName = ws._user?.displayName || ws._user?.username || 'User'
+          try {
+            const result = notesService.sendChatMessage(
+              msg.noteId,
+              { text: msg.text, sender, senderName },
+              ws._tagMatcher
+            )
+            broadcastChatDelta(msg.noteId, result.message, result.revision.revisionNo)
+            broadcastNotes()
+          } catch (err) {
+            ws.send(JSON.stringify({ type: 'error', message: err.message }))
+          }
+          break
+        }
+        case 'kanban-join': {
+          if (!msg.noteId) break
+          if (ws._kanbanNoteId && ws._kanbanNoteId !== msg.noteId) {
+            removeNotePresence(ws._kanbanNoteId, ws, 'kanban')
+          }
+          ws._kanbanNoteId = msg.noteId
+          addNotePresence(msg.noteId, ws, 'kanban')
+          break
+        }
+        case 'kanban-leave': {
+          if (!msg.noteId) break
+          if (ws._kanbanNoteId === msg.noteId) {
+            removeNotePresence(msg.noteId, ws, 'kanban')
+            ws._kanbanNoteId = null
+          }
+          break
+        }
+        case 'kanban-save': {
+          if (!msg.noteId) break
+          const actor = ws._actor || ws._user?.username || 'ui'
+          try {
+            const result = notesService.saveKanbanBoard(
+              msg.noteId,
+              { actions: msg.actions || [], board: msg.board || null, actor },
+              ws._tagMatcher
+            )
+            broadcastKanbanDelta(msg.noteId, msg.actions || [], result.revision.revisionNo)
+            broadcastNotes()
+          } catch (err) {
+            ws.send(JSON.stringify({ type: 'error', message: err.message }))
           }
           break
         }

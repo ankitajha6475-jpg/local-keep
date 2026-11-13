@@ -233,8 +233,21 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     source = 'ui',
     tagMatcher = null
   } = {}) {
+    let initialContent = content || ''
+    if (type === 'chat' && !initialContent.trim()) {
+      initialContent = JSON.stringify({ messages: [] })
+    } else if (type === 'kanban' && !initialContent.trim()) {
+      initialContent = JSON.stringify({
+        columns: [
+          { id: 'col_todo', title: 'To Do', order: 1000 },
+          { id: 'col_doing', title: 'In Progress', order: 2000 },
+          { id: 'col_done', title: 'Done', order: 3000 }
+        ],
+        cards: []
+      })
+    }
     if (tagMatcher && !tagMatcher.isUnrestricted) {
-      const { props } = parseNoteContent(content || '')
+      const { props } = parseNoteContent(initialContent || '')
       const fromFence = Array.isArray(props.tags) ? props.tags : []
       const fromCanvas = canvasData ? parseTags(extractCanvasText(canvasData)) : []
       const noteTags = [...fromFence, ...fromCanvas].map(normalizeTag).filter(Boolean)
@@ -249,11 +262,11 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
       db.prepare(`
         INSERT INTO notes (id, title, content, type, canvasData, thumbnail, createdAt, updatedAt)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(id, title || '', content || '', type || 'text', canvasData || null, thumbnail || null, now, now)
+      `).run(id, title || '', initialContent || '', type || 'text', canvasData || null, thumbnail || null, now, now)
       revisions.insertInitialRevision({
         noteId: id,
         title,
-        content,
+        content: initialContent,
         type,
         canvasData,
         thumbnail,
@@ -524,6 +537,59 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     }
   }
 
+  function sendChatMessage(noteId, { text, sender = 'ui', senderName = 'User' } = {}, tagMatcher = null) {
+    if (!text || !text.trim()) {
+      throw fail(400, 'Message text cannot be empty', 'empty_message')
+    }
+    const note = getNote(noteId, { tagMatcher })
+    if (note.archivedAt) {
+      throw fail(400, 'Cannot send message to an archived chat', 'note_archived')
+    }
+    if (note.type !== 'chat') {
+      throw fail(400, 'Note is not a chat room', 'invalid_note_type')
+    }
+    const message = {
+      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      sender,
+      senderName: senderName || sender,
+      text: text.trim(),
+      timestamp: new Date().toISOString()
+    }
+    const result = revisions.commitChatDelta({
+      noteId,
+      message,
+      actor: sender
+    })
+    return {
+      message,
+      revision: revisionDto(result.revision),
+      transcript: result.transcript,
+      note: getNote(noteId, { tagMatcher })
+    }
+  }
+
+  function saveKanbanBoard(noteId, { actions = [], board = null, actor = 'ui', message = null } = {}, tagMatcher = null) {
+    const note = getNote(noteId, { tagMatcher })
+    if (note.archivedAt) {
+      throw fail(400, 'Cannot update an archived kanban board', 'note_archived')
+    }
+    if (note.type !== 'kanban') {
+      throw fail(400, 'Note is not a kanban board', 'invalid_note_type')
+    }
+    const result = revisions.commitKanbanDeltaSuite({
+      noteId,
+      actions,
+      board,
+      actor,
+      message
+    })
+    return {
+      revision: revisionDto(result.revision),
+      board: result.board,
+      note: getNote(noteId, { tagMatcher })
+    }
+  }
+
   return {
     listNotes,
     listNoteIndex,
@@ -535,6 +601,8 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     renameNote,
     setProperties,
     setNoteColor,
+    sendChatMessage,
+    saveKanbanBoard,
     archiveNote,
     archiveNotes,
     restoreNote,

@@ -7,6 +7,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- **Chat Room note type (`type: 'chat'`)**: Chat room notes with structured transcripts (`notes.content`), discrete message delta revisions (`note_revisions`), real-time multi-user WebSocket messaging (`chat-join`, `chat-leave`, `chat-send`, `chat-delta`), SQLite FTS indexing of message transcripts, and dashboard card previews with recent message snippets
+- **Kanban Board note type (`type: 'kanban'`)**: Full Kanban board with custom columns, cards, checklist progress, HTML5 drag-and-drop, debounced action suite delta revisions, SQLite FTS indexing of card titles/descriptions, and dashboard preview pills
+- **Universal Note Header & Tags (`NoteHeader.vue`)**: Shared header component providing title editing, 12-color tint palette, tag chips with autocomplete combobox, revision badge, and custom actions slot across Whiteboard, Chat Room, and Kanban Board editors. All note types support tags via property fences and `PATCH /api/notes/:id/properties`
 - Unified user accounts and API/MCP tokens: API tokens now belong to human accounts (`api_tokens.user_id`), and accounts support `.gitignore`-style `tagWhitelist` rules (including `:untagged` support) to restrict visible and editable notes across REST, WebSocket broadcast, and MCP tools
 - User administration modal now allows admins to view and edit `.gitignore` tag whitelists per user, and all authenticated users can manage their own MCP API tokens
 - Notes now have an Obsidian-style **properties section**: a typed metadata block at the top of the canonical file (title, tags, aliases, and free-form keys) with a properties panel in the editor. The body is pure markdown again — `#` always means a heading, never a tag

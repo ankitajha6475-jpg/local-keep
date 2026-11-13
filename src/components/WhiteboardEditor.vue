@@ -1,30 +1,36 @@
 <template>
   <div ref="editorRoot" class="whiteboard-editor">
-    <header class="wb-header">
+    <header class="wb-header" :class="[color ? `note-color-${color}` : '']">
       <button @click="goBack" class="wb-back-btn" title="Back to notes">← Notes</button>
-      <input
-        v-model="title"
-        class="wb-title-input"
+      <NoteHeader
+        :title="title"
+        :color="color"
+        :tags="tags"
+        :revision-no="revisionNo"
+        :known-tags="knownTags"
         placeholder="Whiteboard title..."
-        @change="flushTitle"
-        @keyup.enter="flushTitle"
-        @keydown.enter="onTitleEnter"
-      />
-      <div class="wb-header-actions">
-        <span v-if="syncStatus" class="wb-save-status">{{ syncStatus === 'saved' ? '✓ Saved' : syncStatus === 'saving' ? '○ Saving...' : syncStatus === 'loaded' ? '✓ Loaded' : syncStatus }}</span>
-        <span v-if="isRendering" class="wb-render-status">
-          Rendering {{ renderProgress.current }}/{{ renderProgress.total }}
-        </span>
-        <button @click="pagesOpen = !pagesOpen" class="wb-pages-btn" :class="{ active: pagesOpen }" title="Whiteboard pages">
-          Pages<span v-if="latestRender?.tileCount" class="wb-pages-count">{{ latestRender.tileCount }}</span>
-        </button>
-        <button @click="debugOpen = !debugOpen" class="wb-debug-btn" :title="debugOpen ? 'Hide pen inspector' : 'Pen event inspector'" :aria-label="debugOpen ? 'Hide pen inspector' : 'Pen event inspector'">
-          🖊
-        </button>
-        <button @click="toggleFullscreen" class="wb-fs-btn" :title="isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'" :aria-label="isFullscreen ? 'Exit fullscreen' : 'Fullscreen'">
-          {{ isFullscreen ? '↙' : '↗' }}
-        </button>
-      </div>
+        class="wb-note-header"
+        @update:title="title = $event"
+        @change:title="flushTitle"
+        @update:color="onColorChange"
+        @update:tags="onTagsChange"
+      >
+        <template #actions>
+          <span v-if="syncStatus" class="wb-save-status">{{ syncStatus === 'saved' ? '✓ Saved' : syncStatus === 'saving' ? '○ Saving...' : syncStatus === 'loaded' ? '✓ Loaded' : syncStatus }}</span>
+          <span v-if="isRendering" class="wb-render-status">
+            Rendering {{ renderProgress.current }}/{{ renderProgress.total }}
+          </span>
+          <button @click="pagesOpen = !pagesOpen" class="wb-pages-btn" :class="{ active: pagesOpen }" title="Whiteboard pages">
+            Pages<span v-if="latestRender?.tileCount" class="wb-pages-count">{{ latestRender.tileCount }}</span>
+          </button>
+          <button @click="debugOpen = !debugOpen" class="wb-debug-btn" :title="debugOpen ? 'Hide pen inspector' : 'Pen event inspector'" :aria-label="debugOpen ? 'Hide pen inspector' : 'Pen event inspector'">
+            🖊
+          </button>
+          <button @click="toggleFullscreen" class="wb-fs-btn" :title="isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'" :aria-label="isFullscreen ? 'Exit fullscreen' : 'Fullscreen'">
+            {{ isFullscreen ? '↙' : '↗' }}
+          </button>
+        </template>
+      </NoteHeader>
     </header>
     <div ref="canvasContainer" class="wb-canvas-container"></div>
 
@@ -141,18 +147,53 @@ import { createCollabManager } from '../collab/collabManager.js'
 import { DRAWING_TOOLS, isFingerTouch, shouldUseHandTool } from '../utils/whiteboardTouch.js'
 import { planPages } from '../utils/whiteboardTiles.js'
 import { isImeComposing } from '../shared/ime.js'
+import NoteHeader from './NoteHeader.vue'
 
 export default {
   name: 'WhiteboardEditor',
+  components: { NoteHeader },
   props: {
     noteId: { type: String, required: true },
     canvasData: { type: String, default: null },
     initialTitle: { type: String, default: '' },
+    initialColor: { type: String, default: null },
+    initialTags: { type: Array, default: () => [] },
+    revisionNo: { type: Number, default: 1 },
+    knownTags: { type: Array, default: () => [] },
     ws: { type: Object, default: null }  // WebSocket instance for collab
   },
   emits: ['back', 'saved'],
   setup(props, { emit }) {
     const title = ref(props.initialTitle || '')
+    const color = ref(props.initialColor || null)
+    const tags = ref([...(props.initialTags || [])])
+
+    async function onColorChange(nextColor) {
+      color.value = nextColor
+      try {
+        await fetch(`/api/notes/${props.noteId}/color`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ color: nextColor })
+        })
+      } catch (e) {
+        console.error('Failed to update whiteboard color', e)
+      }
+    }
+
+    async function onTagsChange(nextTags) {
+      tags.value = nextTags
+      try {
+        await fetch(`/api/notes/${props.noteId}/properties`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ set: { tags: nextTags } })
+        })
+      } catch (e) {
+        console.error('Failed to update whiteboard tags', e)
+      }
+    }
+
     const canvasContainer = ref(null)
     const editorRoot = ref(null)
     const syncStatus = ref('')   // 'saved' | 'saving' | 'loaded' | ''
@@ -760,6 +801,10 @@ export default {
 
     return {
       title,
+      color,
+      tags,
+      onColorChange,
+      onTagsChange,
       canvasContainer,
       editorRoot,
       syncStatus,
@@ -809,12 +854,19 @@ export default {
 .wb-header {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  padding: 0.5rem 1rem;
+  gap: 0.75rem;
+  padding: 0.4rem 1rem;
   background: #fff;
   border-bottom: 1px solid #e8eaed;
   z-index: 10;
   flex-shrink: 0;
+}
+
+.wb-note-header {
+  flex: 1;
+  min-width: 0;
+  border-bottom: none;
+  padding: 0;
 }
 
 .wb-back-btn {

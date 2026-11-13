@@ -1,5 +1,6 @@
 import crypto from 'crypto'
 import { getDisplayTitle } from '../../shared/notesText.js'
+import { parseNoteContent, buildNoteContent } from '../../shared/noteMeta.js'
 import {
   computeCanvasHashFromData,
   hydrateCanvasData,
@@ -121,8 +122,8 @@ export function createRevisionService({ db, imageStore, imageRefs, bus, tags, li
   function indexHead(head, revision) {
     indexNote(db, {
       noteId: head.id,
-      title: revision.title || '',
-      content: revision.content || '',
+      title: head.title || revision?.title || '',
+      content: head.content || '',
       canvasText: extractCanvasText(head.canvasData)
     })
   }
@@ -486,10 +487,331 @@ export function createRevisionService({ db, imageStore, imageRefs, bus, tags, li
     return revision
   }
 
+  function reconstructChatSnapshot(noteId, targetRevisionNo) {
+    const revs = db.prepare(`
+      SELECT * FROM note_revisions
+      WHERE note_id = ? AND revision_no <= ?
+      ORDER BY revision_no ASC
+    `).all(noteId, targetRevisionNo)
+
+    if (revs.length === 0) return null
+    const initial = revs[0]
+    const parsed = parseNoteContent(initial.content || '')
+    let messages = []
+    try {
+      const initBody = JSON.parse(parsed.body || '{}')
+      if (Array.isArray(initBody.messages)) messages.push(...initBody.messages)
+    } catch (_) {}
+
+    for (let i = 1; i < revs.length; i++) {
+      const r = revs[i]
+      try {
+        const data = JSON.parse(r.content || '{}')
+        if (data.type === 'chat_message' && data.message) {
+          messages.push(data.message)
+        }
+      } catch (_) {}
+    }
+
+    return buildNoteContent(parsed.entries, JSON.stringify({ messages }))
+  }
+
+  function commitChatDelta({
+    noteId,
+    message,
+    actor = 'ui'
+  }) {
+    const head = getHead(noteId)
+    if (!head || head.archived_at) throw fail(404, 'Note not found', 'note_not_found')
+    if (head.type !== 'chat') throw fail(400, 'Note is not a chat room', 'invalid_note_type')
+
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      const fresh = getHead(noteId)
+      if (!fresh) { db.exec('ROLLBACK'); throw fail(404, 'Note not found', 'note_not_found') }
+
+      const parsed = parseNoteContent(fresh.content || '')
+      let transcript = { messages: [] }
+      try {
+        if (parsed.body && parsed.body.trim()) {
+          const loaded = JSON.parse(parsed.body)
+          if (loaded && Array.isArray(loaded.messages)) {
+            transcript = loaded
+          }
+        }
+      } catch (_) {
+        transcript = { messages: [] }
+      }
+
+      transcript.messages.push(message)
+      const newBody = JSON.stringify(transcript)
+      const newContent = buildNoteContent(parsed.entries, newBody)
+
+      const parentRevisionId = fresh.head_revision_id || null
+      const revNo = nextRevisionNo(noteId)
+      const deltaContent = JSON.stringify({ type: 'chat_message', message })
+      const hash = snapshotHash({ title: fresh.title || '', content: newContent, canvasHash: null })
+
+      const revision = insertRevision({
+        noteId,
+        parentRevisionId,
+        revisionNo: revNo,
+        title: fresh.title || '',
+        content: deltaContent,
+        displayTitle: fresh.display_title || getDisplayTitle(fresh),
+        type: 'chat',
+        canvasData: null,
+        thumbnail: null,
+        hash,
+        actor,
+        source: 'chat',
+        message: message.text ? message.text.slice(0, 100) : 'chat message'
+      })
+
+      db.prepare(`
+        UPDATE notes
+        SET content = ?, content_hash = ?, head_revision_id = ?, revision_no = ?, updatedAt = ?
+        WHERE id = ?
+      `).run(
+        newContent,
+        hash,
+        revision.id,
+        revision.revision_no,
+        message.timestamp || revision.created_at,
+        noteId
+      )
+
+      imageRefs.syncHeadRefs(noteId, newContent, null)
+      imageRefs.syncRevisionRefs(revision.id, deltaContent, null)
+      tags?.syncNote(noteId, newContent, null)
+      links?.syncNote(noteId, revision.id, newContent, null)
+      embeddings?.enqueueNote(noteId)
+
+      indexHead({ ...fresh, content: newContent }, revision)
+      insertEventStmt.run(
+        noteId, revision.id, 'revision', actor,
+        JSON.stringify({ source: 'chat', messageId: message.id }), revision.created_at
+      )
+
+      db.exec('COMMIT')
+
+      bus?.emit(EVENTS.NOTE_REVISED, {
+        noteId,
+        revisionId: revision.id,
+        revisionNo: revision.revision_no,
+        actor,
+        source: 'chat',
+        conflict: false,
+        headRevisionId: revision.id
+      })
+
+      return { revision, transcript, content: newContent }
+    } catch (error) {
+      try { db.exec('ROLLBACK') } catch (_) { /* noop */ }
+      throw error
+    }
+  }
+
+  function applyKanbanAction(board, action) {
+    if (!board || !action) return board
+    const columns = Array.isArray(board.columns) ? board.columns.map(c => ({ ...c })) : []
+    let cards = Array.isArray(board.cards) ? board.cards.map(c => ({ ...c })) : []
+
+    switch (action.type) {
+      case 'card_added':
+        if (action.card && !cards.some(c => c.id === action.card.id)) {
+          cards.push({ ...action.card })
+        }
+        break
+      case 'card_updated': {
+        const idx = cards.findIndex(c => c.id === action.cardId)
+        if (idx !== -1) {
+          cards[idx] = { ...cards[idx], ...action.updates }
+        }
+        break
+      }
+      case 'card_moved': {
+        const idx = cards.findIndex(c => c.id === action.cardId)
+        if (idx !== -1) {
+          cards[idx] = {
+            ...cards[idx],
+            columnId: action.toColumnId ?? action.columnId ?? cards[idx].columnId,
+            order: action.order !== undefined ? action.order : cards[idx].order
+          }
+        }
+        break
+      }
+      case 'card_deleted':
+        cards = cards.filter(c => c.id !== action.cardId)
+        break
+      case 'column_added':
+        if (action.column && !columns.some(col => col.id === action.column.id)) {
+          columns.push({ ...action.column })
+        }
+        break
+      case 'column_renamed': {
+        const col = columns.find(c => c.id === action.columnId)
+        if (col && action.title !== undefined) {
+          col.title = action.title
+        }
+        break
+      }
+      case 'column_deleted': {
+        const colIdx = columns.findIndex(c => c.id === action.columnId)
+        if (colIdx !== -1) {
+          columns.splice(colIdx, 1)
+          cards = cards.filter(c => c.columnId !== action.columnId)
+        }
+        break
+      }
+    }
+
+    return { columns, cards }
+  }
+
+  function reconstructKanbanSnapshot(noteId, targetRevisionNo) {
+    const revs = db.prepare(`
+      SELECT * FROM note_revisions
+      WHERE note_id = ? AND revision_no <= ?
+      ORDER BY revision_no ASC
+    `).all(noteId, targetRevisionNo)
+
+    if (revs.length === 0) return null
+    const initial = revs[0]
+    const parsed = parseNoteContent(initial.content || '')
+    let board = { columns: [], cards: [] }
+    try {
+      const initBody = JSON.parse(parsed.body || '{}')
+      if (initBody && Array.isArray(initBody.columns)) {
+        board = initBody
+      }
+    } catch (_) {}
+
+    for (let i = 1; i < revs.length; i++) {
+      const r = revs[i]
+      try {
+        const data = JSON.parse(r.content || '{}')
+        if (data.type === 'kanban_delta_suite' && Array.isArray(data.actions)) {
+          for (const action of data.actions) {
+            board = applyKanbanAction(board, action)
+          }
+        }
+      } catch (_) {}
+    }
+
+    return buildNoteContent(parsed.entries, JSON.stringify(board))
+  }
+
+  function commitKanbanDeltaSuite({
+    noteId,
+    actions = [],
+    board = null,
+    actor = 'ui',
+    message = null
+  }) {
+    const head = getHead(noteId)
+    if (!head || head.archived_at) throw fail(404, 'Note not found', 'note_not_found')
+    if (head.type !== 'kanban') throw fail(400, 'Note is not a kanban board', 'invalid_note_type')
+
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      const fresh = getHead(noteId)
+      if (!fresh) { db.exec('ROLLBACK'); throw fail(404, 'Note not found', 'note_not_found') }
+
+      const parsed = parseNoteContent(fresh.content || '')
+      let finalBoard = board
+      if (!finalBoard) {
+        let currentBoard = { columns: [], cards: [] }
+        try {
+          currentBoard = JSON.parse(parsed.body || '{}')
+        } catch (_) {}
+        for (const action of actions) {
+          currentBoard = applyKanbanAction(currentBoard, action)
+        }
+        finalBoard = currentBoard
+      }
+
+      const newBody = JSON.stringify(finalBoard)
+      const newContent = buildNoteContent(parsed.entries, newBody)
+
+      const parentRevisionId = fresh.head_revision_id || null
+      const revNo = nextRevisionNo(noteId)
+      const deltaContent = JSON.stringify({ type: 'kanban_delta_suite', actions })
+      const hash = snapshotHash({ title: fresh.title || '', content: newContent, canvasHash: null })
+
+      const actionCount = Array.isArray(actions) ? actions.length : 0
+      const summaryMsg = message || `Kanban update (${actionCount} ${actionCount === 1 ? 'action' : 'actions'})`
+
+      const revision = insertRevision({
+        noteId,
+        parentRevisionId,
+        revisionNo: revNo,
+        title: fresh.title || '',
+        content: deltaContent,
+        displayTitle: fresh.display_title || getDisplayTitle(fresh),
+        type: 'kanban',
+        canvasData: null,
+        thumbnail: null,
+        hash,
+        actor,
+        source: 'kanban',
+        message: summaryMsg
+      })
+
+      db.prepare(`
+        UPDATE notes
+        SET content = ?, content_hash = ?, head_revision_id = ?, revision_no = ?, updatedAt = ?
+        WHERE id = ?
+      `).run(
+        newContent,
+        hash,
+        revision.id,
+        revision.revision_no,
+        revision.created_at,
+        noteId
+      )
+
+      imageRefs.syncHeadRefs(noteId, newContent, null)
+      imageRefs.syncRevisionRefs(revision.id, deltaContent, null)
+      tags?.syncNote(noteId, newContent, null)
+      links?.syncNote(noteId, revision.id, newContent, null)
+      embeddings?.enqueueNote(noteId)
+
+      indexHead({ ...fresh, content: newContent }, revision)
+      insertEventStmt.run(
+        noteId, revision.id, 'revision', actor,
+        JSON.stringify({ source: 'kanban', actionCount }), revision.created_at
+      )
+
+      db.exec('COMMIT')
+
+      bus?.emit(EVENTS.NOTE_REVISED, {
+        noteId,
+        revisionId: revision.id,
+        revisionNo: revision.revision_no,
+        actor,
+        source: 'kanban',
+        conflict: false,
+        headRevisionId: revision.id
+      })
+
+      return { revision, board: finalBoard, content: newContent }
+    } catch (error) {
+      try { db.exec('ROLLBACK') } catch (_) { /* noop */ }
+      throw error
+    }
+  }
+
   function copyRevisionToHead({ noteId, revisionId, source, actor = 'ui' }) {
     const head = getHead(noteId)
     if (!head) throw fail(404, 'Note not found', 'note_not_found')
     const revision = revisionSnapshot(noteId, revisionId)
+    let content = revision.content || ''
+    if (revision.type === 'chat') {
+      content = reconstructChatSnapshot(noteId, revision.revision_no)
+    } else if (revision.type === 'kanban') {
+      content = reconstructKanbanSnapshot(noteId, revision.revision_no)
+    }
     const canvasData = revision.type === 'canvas'
       ? hydrateCanvasData(revision.canvas_data, imageStore)
       : null
@@ -498,7 +820,7 @@ export function createRevisionService({ db, imageStore, imageRefs, bus, tags, li
       // The title is head metadata outside the file: restore/promote copy the
       // revision's content and properties but leave the note's name alone.
       title: head.title || '',
-      content: revision.content || '',
+      content,
       type: revision.type || 'text',
       canvasData,
       thumbnail: revision.thumbnail || null,
@@ -517,6 +839,11 @@ export function createRevisionService({ db, imageStore, imageRefs, bus, tags, li
     insertInitialRevision,
     commitText,
     checkpointCanvas,
+    commitChatDelta,
+    reconstructChatSnapshot,
+    commitKanbanDeltaSuite,
+    reconstructKanbanSnapshot,
+    applyKanbanAction,
     history,
     revisionSnapshot,
     restoreRevision: ({ noteId, revisionId, actor }) =>
