@@ -7,6 +7,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- Unified user accounts and API/MCP tokens: API tokens now belong to human accounts (`api_tokens.user_id`), and accounts support `.gitignore`-style `tagWhitelist` rules (including `:untagged` support) to restrict visible and editable notes across REST, WebSocket broadcast, and MCP tools
+- User administration modal now allows admins to view and edit `.gitignore` tag whitelists per user, and all authenticated users can manage their own MCP API tokens
 - Notes now have an Obsidian-style **properties section**: a typed metadata block at the top of the canonical file (title, tags, aliases, and free-form keys) with a properties panel in the editor. The body is pure markdown again — `#` always means a heading, never a tag
 - The tag tree is now operable: rename, move, or delete a tag subtree from the sidebar, rewriting that path across every affected note in one batch (archived notes are skipped and reported)
 - Tags are edited through chips in the note's properties panel instead of typed into the body

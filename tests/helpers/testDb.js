@@ -26,6 +26,7 @@ import { migration012AppSettings } from '../../src/server/migrations/012-app-set
 import { migration013NoteColor } from '../../src/server/migrations/013-note-color.js'
 import { migration014VersionPinnedLinks } from '../../src/server/migrations/014-version-pinned-links.js'
 import { migration015NoteMetadata } from '../../src/server/migrations/015-note-metadata.js'
+import { migration016UnifiedAccountsTagWhitelist } from '../../src/server/migrations/016-unified-accounts-tag-whitelist.js'
 
 function makeDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'local-keep-test-'))
@@ -82,7 +83,7 @@ export function createFreshContext() {
   const ctx = openContext()
   const result = runMigrations({
     db: ctx.db,
-    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits, migration012AppSettings, migration013NoteColor, migration014VersionPinnedLinks, migration015NoteMetadata],
+    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits, migration012AppSettings, migration013NoteColor, migration014VersionPinnedLinks, migration015NoteMetadata, migration016UnifiedAccountsTagWhitelist],
     backupDir: ctx.backupDir,
     context: { imageStore: ctx.imageStore }
   })
@@ -99,7 +100,7 @@ export function createLegacyContext() {
   const migrate = () => {
     const result = runMigrations({
       db: ctx.db,
-      migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits, migration012AppSettings, migration013NoteColor, migration014VersionPinnedLinks, migration015NoteMetadata],
+      migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits, migration012AppSettings, migration013NoteColor, migration014VersionPinnedLinks, migration015NoteMetadata, migration016UnifiedAccountsTagWhitelist],
       backupDir: ctx.backupDir,
       context: { imageStore: ctx.imageStore }
     })

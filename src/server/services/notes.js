@@ -1,5 +1,6 @@
 import { getDisplayTitle } from '../../shared/notesText.js'
 import { normalizeNoteColor } from '../../shared/noteColors.js'
+import { parseTags, normalizeTag } from '../../shared/tags.js'
 import {
   parseNoteContent,
   buildNoteContent,
@@ -75,7 +76,8 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     limit = null,
     offset = 0,
     tag = null,
-    exactTag = false
+    exactTag = false,
+    tagMatcher = null
   } = {}) {
     const where = []
     const params = []
@@ -89,13 +91,18 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
       if (ids) rows = rows.filter(row => ids.has(row.id))
     }
 
+    const ids = rows.map(row => row.id)
+    const tagMap = tags?.tagsByNote(ids) || new Map()
+    const counts = links?.countsByNote(ids) || new Map()
+
+    if (tagMatcher && !tagMatcher.isUnrestricted) {
+      rows = rows.filter(row => tagMatcher.isAllowed(tagMap.get(row.id) || []))
+    }
+
     const start = Math.max(0, Number(offset) || 0)
     const end = limit != null ? start + Math.max(0, Number(limit) || 0) : undefined
     rows = rows.slice(start, end)
 
-    const ids = rows.map(row => row.id)
-    const tagMap = tags?.tagsByNote(ids) || new Map()
-    const counts = links?.countsByNote(ids) || new Map()
     return rows.map(row => toDto(row, {
       tags: tagMap.get(row.id) || [],
       linkCount: counts.get(row.id)?.links || 0,
@@ -108,7 +115,7 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
    * `canvasData`: the dashboard uses it for ordering, filters, counts, links,
    * and selection, then hydrates card bodies in bounded windows.
    */
-  function listNoteIndex({ includeArchived = true } = {}) {
+  function listNoteIndex({ includeArchived = true, tagMatcher = null } = {}) {
     const where = includeArchived ? '' : ' WHERE archived_at IS NULL'
     const rows = db.prepare(`
       SELECT id, title, display_title, type, head_revision_id, revision_no,
@@ -127,7 +134,7 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
       for (const [id, value] of tags?.tagsByNote(chunk) || []) tagMap.set(id, value)
       for (const [id, value] of links?.countsByNote(chunk) || []) counts.set(id, value)
     }
-    return rows.map(row => ({
+    let result = rows.map(row => ({
       id: row.id,
       title: row.title || '',
       displayTitle: row.display_title || getDisplayTitle({
@@ -145,13 +152,18 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
       linkCount: counts.get(row.id)?.links || 0,
       backlinkCount: counts.get(row.id)?.backlinks || 0
     }))
+
+    if (tagMatcher && !tagMatcher.isUnrestricted) {
+      result = result.filter(n => tagMatcher.isAllowed(n.tags))
+    }
+    return result
   }
 
   /**
    * Batched card details for the virtualized dashboard. Returns rows in the
    * requested order, omits canvas scene data, and is capped by the caller.
    */
-  function listNoteCardsByIds(ids = []) {
+  function listNoteCardsByIds(ids = [], { tagMatcher = null } = {}) {
     const unique = [...new Set((Array.isArray(ids) ? ids : []).map(String).filter(Boolean))]
     if (unique.length === 0) return []
     const placeholders = unique.map(() => '?').join(',')
@@ -169,7 +181,7 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     const orderedIds = ordered.map(row => row.id)
     const tagMap = tags?.tagsByNote(orderedIds) || new Map()
     const counts = links?.countsByNote(orderedIds) || new Map()
-    return ordered.map(row => {
+    let result = ordered.map(row => {
       const note = toDto(row, {
         tags: tagMap.get(row.id) || [],
         linkCount: counts.get(row.id)?.links || 0,
@@ -178,6 +190,11 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
       note.contentTruncated = Number(row.content_length || 0) > String(row.content || '').length
       return note
     })
+
+    if (tagMatcher && !tagMatcher.isUnrestricted) {
+      result = result.filter(n => tagMatcher.isAllowed(n.tags))
+    }
+    return result
   }
 
   function listArchivedNotes() {
@@ -196,10 +213,14 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     }))
   }
 
-  function getNote(id) {
+  function getNote(id, { tagMatcher = null } = {}) {
     const row = db.prepare('SELECT * FROM notes WHERE id = ?').get(id)
     if (!row) throw fail(404, 'Note not found', 'note_not_found')
-    return decorateRow(row)
+    const note = decorateRow(row)
+    if (tagMatcher && !tagMatcher.isUnrestricted && !tagMatcher.isAllowed(note.tags)) {
+      throw fail(404, 'Note not found', 'note_not_found')
+    }
+    return note
   }
 
   function createNote({
@@ -209,8 +230,18 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     canvasData = null,
     thumbnail = null,
     actor = 'ui',
-    source = 'ui'
+    source = 'ui',
+    tagMatcher = null
   } = {}) {
+    if (tagMatcher && !tagMatcher.isUnrestricted) {
+      const { props } = parseNoteContent(content || '')
+      const fromFence = Array.isArray(props.tags) ? props.tags : []
+      const fromCanvas = canvasData ? parseTags(extractCanvasText(canvasData)) : []
+      const noteTags = [...fromFence, ...fromCanvas].map(normalizeTag).filter(Boolean)
+      if (!tagMatcher.isAllowed(noteTags)) {
+        throw fail(403, 'Tags not allowed by tag whitelist', 'tag_whitelist_violation')
+      }
+    }
     const id = Date.now().toString() + '-' + Math.random().toString(36).slice(2, 11)
     const now = new Date().toISOString()
     db.exec('BEGIN IMMEDIATE')
@@ -256,8 +287,21 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     mode = 'append',
     actor = 'ui',
     source = 'ui',
-    message = null
+    message = null,
+    tagMatcher = null
   }) {
+    const existing = getNote(id, { tagMatcher })
+    if (tagMatcher && !tagMatcher.isUnrestricted) {
+      const effectiveContent = content !== undefined ? content : existing.content
+      const effectiveCanvas = canvasData !== undefined ? canvasData : existing.canvasData
+      const { props } = parseNoteContent(effectiveContent || '')
+      const fromFence = Array.isArray(props.tags) ? props.tags : []
+      const fromCanvas = effectiveCanvas ? parseTags(extractCanvasText(effectiveCanvas)) : []
+      const noteTags = [...fromFence, ...fromCanvas].map(normalizeTag).filter(Boolean)
+      if (!tagMatcher.isAllowed(noteTags)) {
+        throw fail(403, 'Tags not allowed by tag whitelist', 'tag_whitelist_violation')
+      }
+    }
     const result = revisions.commitText({
       noteId: id,
       title,
@@ -283,9 +327,8 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     }
   }
 
-  function setNoteColor(id, color) {
-    const row = db.prepare('SELECT * FROM notes WHERE id = ?').get(id)
-    if (!row) throw fail(404, 'Note not found', 'note_not_found')
+  function setNoteColor(id, color, tagMatcher = null) {
+    getNote(id, { tagMatcher })
     const normalized = normalizeNoteColor(color)
     if (normalized === undefined) {
       throw fail(400, 'Unknown note color', 'invalid_note_color')
@@ -300,7 +343,8 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
    * rename never creates a revision and never touches `note_revisions`, so
    * pinned references keep rendering the title recorded on their revision.
    */
-  function renameNote(id, title) {
+  function renameNote(id, title, tagMatcher = null) {
+    getNote(id, { tagMatcher })
     const row = db.prepare('SELECT * FROM notes WHERE id = ?').get(id)
     if (!row) throw fail(404, 'Note not found', 'note_not_found')
     const next = String(title ?? '')
@@ -333,9 +377,8 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
    * Edit the properties fence. Every change to the file's bytes is a revision,
    * so this commits normally with `source: 'property'`.
    */
-  function setProperties(id, { set, remove, baseRevisionId = null, actor = 'ui', message = null } = {}) {
-    const row = db.prepare('SELECT * FROM notes WHERE id = ?').get(id)
-    if (!row) throw fail(404, 'Note not found', 'note_not_found')
+  function setProperties(id, { set, remove, baseRevisionId = null, actor = 'ui', message = null } = {}, tagMatcher = null) {
+    const row = getNote(id, { tagMatcher })
     const parsed = parseNoteContent(row.content)
     let entries = parsed.entries
     for (const [key, value] of Object.entries(set || {})) {
@@ -357,17 +400,17 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     return updateNote({
       id,
       content,
-      baseRevisionId: baseRevisionId ?? row.head_revision_id,
+      baseRevisionId: baseRevisionId ?? row.headRevisionId,
       actor,
       source: 'property',
-      message: message || 'property edit'
+      message: message || 'property edit',
+      tagMatcher
     })
   }
 
-  function archiveNote(id, actor = 'ui', source = 'ui') {
-    const row = db.prepare('SELECT * FROM notes WHERE id = ?').get(id)
-    if (!row) throw fail(404, 'Note not found', 'note_not_found')
-    if (row.archived_at) return decorateRow(row)
+  function archiveNote(id, actor = 'ui', source = 'ui', tagMatcher = null) {
+    const row = getNote(id, { tagMatcher })
+    if (row.archivedAt) return row
     const archivedAt = new Date().toISOString()
     db.prepare('UPDATE notes SET archived_at = ?, updatedAt = ? WHERE id = ?')
       .run(archivedAt, archivedAt, id)
@@ -377,10 +420,18 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     return decorateRow(db.prepare('SELECT * FROM notes WHERE id = ?').get(id))
   }
 
-  function archiveNotes(ids, actor = 'ui', source = 'ui') {
+  function archiveNotes(ids, actor = 'ui', source = 'ui', tagMatcher = null) {
     const archivedAt = new Date().toISOString()
     const unique = [...new Set(ids)].filter(Boolean)
     if (unique.length === 0) return 0
+    const allowedIds = []
+    for (const id of unique) {
+      try {
+        const note = getNote(id, { tagMatcher })
+        if (note) allowedIds.push(id)
+      } catch (_) { /* ignore inaccessible */ }
+    }
+    if (allowedIds.length === 0) return 0
     db.exec('BEGIN IMMEDIATE')
     try {
       const stmt = db.prepare(
@@ -388,7 +439,7 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
       )
       let changed = 0
       const changedIds = []
-      for (const id of unique) {
+      for (const id of allowedIds) {
         const info = stmt.run(archivedAt, archivedAt, id)
         if (info.changes > 0) {
           changed += info.changes
@@ -408,10 +459,9 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     }
   }
 
-  function restoreNote(id, actor = 'ui', source = 'ui') {
-    const row = db.prepare('SELECT * FROM notes WHERE id = ?').get(id)
-    if (!row) throw fail(404, 'Note not found', 'note_not_found')
-    if (!row.archived_at) return decorateRow(row)
+  function restoreNote(id, actor = 'ui', source = 'ui', tagMatcher = null) {
+    const row = getNote(id, { tagMatcher })
+    if (!row.archivedAt) return row
     const updatedAt = new Date().toISOString()
     db.prepare('UPDATE notes SET archived_at = NULL, updatedAt = ? WHERE id = ?')
       .run(updatedAt, id)
@@ -421,9 +471,8 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     return decorateRow(db.prepare('SELECT * FROM notes WHERE id = ?').get(id))
   }
 
-  function purgeNote(id, actor = 'ui', source = 'ui') {
-    const row = db.prepare('SELECT * FROM notes WHERE id = ?').get(id)
-    if (!row) throw fail(404, 'Note not found', 'note_not_found')
+  function purgeNote(id, actor = 'ui', source = 'ui', tagMatcher = null) {
+    getNote(id, { tagMatcher })
     imageRefs.releaseNoteRefs(id)
     removeNoteFromIndex(db, id)
     tags?.deleteNote(id)
@@ -437,15 +486,18 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     return { success: true }
   }
 
-  function history(noteId) {
+  function history(noteId, tagMatcher = null) {
+    getNote(noteId, { tagMatcher })
     return revisions.history(noteId)
   }
 
-  function revisionSnapshot(noteId, revisionId) {
+  function revisionSnapshot(noteId, revisionId, tagMatcher = null) {
+    getNote(noteId, { tagMatcher })
     return revisionDto(revisions.revisionSnapshot(noteId, revisionId))
   }
 
-  function restoreRevision(noteId, revisionId, actor = 'ui') {
+  function restoreRevision(noteId, revisionId, actor = 'ui', tagMatcher = null) {
+    getNote(noteId, { tagMatcher })
     const result = revisions.restoreRevision({ noteId, revisionId, actor })
     return {
       ...decorateRow(result.note),
@@ -458,7 +510,8 @@ export function createNoteService({ db, revisions, imageRefs, bus, tags, links, 
     }
   }
 
-  function promoteRevision(noteId, revisionId, actor = 'ui') {
+  function promoteRevision(noteId, revisionId, actor = 'ui', tagMatcher = null) {
+    getNote(noteId, { tagMatcher })
     const result = revisions.promoteRevision({ noteId, revisionId, actor })
     return {
       ...decorateRow(result.note),

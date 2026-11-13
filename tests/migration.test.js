@@ -48,11 +48,14 @@ test('legacy notes become revision 1 with stable ids and a backup', () => {
     })
 
     const migrated = ctx.migrate()
-    assert.deepEqual(migrated.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
+    assert.deepEqual(migrated.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
     assert.ok(migrated.backupPath, 'a backup is created when notes exist')
     const tokenColumns = ctx.db.prepare("PRAGMA table_info('api_tokens')").all().map(column => column.name)
     assert.ok(tokenColumns.includes('expires_at'))
     assert.ok(tokenColumns.includes('created_by'))
+    assert.ok(tokenColumns.includes('user_id'))
+    const userColumns = ctx.db.prepare("PRAGMA table_info('users')").all().map(column => column.name)
+    assert.ok(userColumns.includes('tag_whitelist'))
     const noteColumns = ctx.db.prepare("PRAGMA table_info('notes')").all().map(column => column.name)
     assert.ok(noteColumns.includes('color'))
     const mcpSettings = ctx.db.prepare('SELECT * FROM mcp_settings WHERE id = 1').get()
@@ -154,7 +157,7 @@ test('migration is idempotent', () => {
       'SELECT COUNT(*) AS count FROM note_revisions'
     ).get().count
 
-    assert.equal(first.applied.length, 15)
+    assert.equal(first.applied.length, 16)
     assert.equal(revisionsAfterFirst, 1)
     assert.equal(revisionsAfterSecond, 1)
     assert.equal(ctx.db.prepare('SELECT COUNT(*) AS count FROM notes').get().count, 1)

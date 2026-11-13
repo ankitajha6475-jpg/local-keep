@@ -14,9 +14,10 @@ function normalizeTagList(tags) {
 }
 
 export function createSearchService({ db, notes, revisions, tags, renders, embeddings }) {
-  function enrich(noteId, { snippet = '', score = 0, semanticScore = null, rerankScore = null, chunkIndex = null } = {}) {
+  function enrich(noteId, { snippet = '', score = 0, semanticScore = null, rerankScore = null, chunkIndex = null } = {}, tagMatcher = null) {
     try {
-      const note = notes.getNote(noteId)
+      const note = notes.getNote(noteId, { tagMatcher })
+      if (!note) return null
       const headRevision = revisions.getRevision(note.revisionId)
       const render = note.type === 'canvas' ? renders.latest(note.id) : null
       return {
@@ -61,7 +62,8 @@ export function createSearchService({ db, notes, revisions, tags, renders, embed
     updatedBefore = null,
     includeArchived = false,
     limit = 20,
-    offset = 0
+    offset = 0,
+    tagMatcher = null
   } = {}) {
     const raw = String(query || '').trim()
     const fts = sanitizeFtsQuery(raw)
@@ -126,7 +128,7 @@ export function createSearchService({ db, notes, revisions, tags, renders, embed
     const results = page.map(row => enrich(row.note_id, {
       snippet: row.snippet || '',
       score: row.score ?? 0
-    })).filter(Boolean)
+    }, tagMatcher)).filter(Boolean)
 
     return { query: raw, mode: 'keyword', results, total, limit, offset: start }
   }
@@ -138,7 +140,8 @@ export function createSearchService({ db, notes, revisions, tags, renders, embed
     type = null,
     includeArchived = false,
     limit = 20,
-    offset = 0
+    offset = 0,
+    tagMatcher = null
   } = {}) {
     if (!embeddings) {
       const error = new Error('Semantic search is not configured')
@@ -162,7 +165,7 @@ export function createSearchService({ db, notes, revisions, tags, renders, embed
       semanticScore: match.similarity,
       rerankScore: match.rerankScore,
       chunkIndex: match.chunkIndex
-    })).filter(Boolean)
+    }, tagMatcher)).filter(Boolean)
     return {
       query: String(query || '').trim(),
       mode: 'semantic',

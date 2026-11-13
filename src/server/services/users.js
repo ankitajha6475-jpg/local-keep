@@ -15,6 +15,7 @@ function userDto(row) {
     username: row.username,
     displayName: row.display_name,
     role: row.role,
+    tagWhitelist: row.tag_whitelist ?? null,
     mustChangePassword: !!row.must_change_password,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -65,7 +66,7 @@ export function createUserService({ db }) {
     return userDto(byUsername.get(normalizeUsername(username)))
   }
 
-  async function create({ username, displayName, password, role = 'member', mustChangePassword = false }) {
+  async function create({ username, displayName, password, role = 'member', mustChangePassword = false, tagWhitelist = null }) {
     const cleanUsername = normalizeUsername(username)
     const usernameError = validateUsername(cleanUsername)
     if (usernameError) throw fail(400, usernameError, 'invalid_username')
@@ -79,8 +80,8 @@ export function createUserService({ db }) {
     const passwordHash = await hashPassword(password)
     db.prepare(`
       INSERT INTO users
-        (id, username, display_name, password_hash, role, must_change_password, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        (id, username, display_name, password_hash, role, must_change_password, created_at, updated_at, tag_whitelist)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       cleanUsername,
@@ -89,7 +90,8 @@ export function createUserService({ db }) {
       role,
       mustChangePassword ? 1 : 0,
       now,
-      now
+      now,
+      tagWhitelist !== null && tagWhitelist !== undefined ? String(tagWhitelist) : (role === 'admin' ? null : '*')
     )
     return userDto(byId.get(id))
   }
@@ -134,7 +136,7 @@ export function createUserService({ db }) {
     return changePassword(id, newPassword, { mustChange: true })
   }
 
-  function update(id, { displayName, role, disabled }) {
+  function update(id, { displayName, role, disabled, tagWhitelist }) {
     const row = byId.get(id)
     if (!row) throw fail(404, 'User not found', 'user_not_found')
     const nextRole = role !== undefined ? role : row.role
@@ -143,10 +145,13 @@ export function createUserService({ db }) {
     if (row.role === 'admin' && (nextRole !== 'admin' || nextDisabled) && activeAdminCount(id) === 0) {
       throw fail(409, 'At least one active admin is required', 'last_admin')
     }
+    const nextWhitelist = tagWhitelist !== undefined
+      ? (tagWhitelist === null ? null : String(tagWhitelist))
+      : row.tag_whitelist
     const now = new Date().toISOString()
     db.prepare(`
       UPDATE users
-      SET display_name = ?, role = ?, disabled_at = ?, updated_at = ?
+      SET display_name = ?, role = ?, disabled_at = ?, tag_whitelist = ?, updated_at = ?
       WHERE id = ?
     `).run(
       displayName !== undefined
@@ -154,6 +159,7 @@ export function createUserService({ db }) {
         : row.display_name,
       nextRole,
       nextDisabled ? (row.disabled_at || now) : null,
+      nextWhitelist,
       now,
       id
     )

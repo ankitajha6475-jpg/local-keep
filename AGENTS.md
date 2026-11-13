@@ -77,6 +77,9 @@ src/
     migrations/011-mcp-session-limits.js
     migrations/012-app-settings.js
     migrations/013-note-color.js
+    migrations/014-frozen-references.js
+    migrations/015-properties-section.js
+    migrations/016-unified-accounts-tag-whitelist.js
     services/notes.js             # head CRUD, archive/restore/purge, history facade
     services/revisions.js         # immutable revisions, branch, restore/promote, checkpoints
     services/imageRefs.js         # head/revision/tile image refs + cleanup
@@ -282,7 +285,14 @@ corresponding card while any session has that note open.
   a one-time temporary password). CLI: `npm run auth:reset -- <username>`.
 - Last active admin cannot be demoted or disabled. Password reset sets
   `must_change_password=1`; the UI forces a new password after login.
-- The workspace is shared; there is no per-note ACL in this version.
+- **Unified accounts & API tokens**: API tokens belong to a human user account
+  (`api_tokens.user_id`). Any user can create and manage their own client tokens;
+  only admins can mint admin tokens or view all tokens.
+- **Tag whitelist**: Users can have a `.gitignore`-style `tag_whitelist` (supporting
+  globs like `work/*`, exclusions with `!rule`, and `:untagged` for notes without tags).
+  Tag boundaries are enforced across REST endpoints, WebSocket broadcasts, search,
+  and MCP tools. Admins have unrestricted access by default (empty whitelist);
+  restricted users and their API tokens cannot see or modify notes outside their whitelist.
 
 ### HTTPS
 

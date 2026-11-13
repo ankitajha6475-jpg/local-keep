@@ -57,7 +57,7 @@ export function createTagService({ db }) {
     `).all()
   }
 
-  function tree({ prefix = '' } = {}) {
+  function tree({ prefix = '', tagMatcher = null } = {}) {
     const nodes = new Map()
     function ensure(path) {
       if (!nodes.has(path)) {
@@ -72,7 +72,24 @@ export function createTagService({ db }) {
       return nodes.get(path)
     }
 
-    for (const row of tagRows()) {
+    const rows = tagRows()
+    let allowedNoteIds = null
+    if (tagMatcher && !tagMatcher.isUnrestricted) {
+      const noteTagsMap = new Map()
+      for (const row of rows) {
+        if (!noteTagsMap.has(row.noteId)) noteTagsMap.set(row.noteId, [])
+        noteTagsMap.get(row.noteId).push(row.tag)
+      }
+      allowedNoteIds = new Set()
+      for (const [noteId, noteTags] of noteTagsMap) {
+        if (tagMatcher.isAllowed(noteTags)) {
+          allowedNoteIds.add(noteId)
+        }
+      }
+    }
+
+    for (const row of rows) {
+      if (allowedNoteIds && !allowedNoteIds.has(row.noteId)) continue
       if (prefix && !tagMatchesPrefix(row.tag, prefix)) continue
       for (const ancestor of tagAncestors(row.tag)) {
         const node = ensure(ancestor)
@@ -106,15 +123,22 @@ export function createTagService({ db }) {
       return list.map(toDto)
     }
 
-    const activeNotes = db.prepare(
-      'SELECT COUNT(*) AS count FROM notes WHERE archived_at IS NULL'
-    ).get().count
-    const untagged = db.prepare(`
-      SELECT COUNT(*) AS count
+    let activeNotes = 0
+    let untagged = 0
+    const activeNoteRows = db.prepare(`
+      SELECT n.id, (SELECT group_concat(t.tag, ',') FROM note_tags t WHERE t.note_id = n.id) AS tags_csv
       FROM notes n
       WHERE n.archived_at IS NULL
-        AND NOT EXISTS (SELECT 1 FROM note_tags t WHERE t.note_id = n.id)
-    `).get().count
+    `).all()
+
+    for (const row of activeNoteRows) {
+      const nTags = row.tags_csv ? row.tags_csv.split(',').filter(Boolean) : []
+      if (tagMatcher && !tagMatcher.isUnrestricted && !tagMatcher.isAllowed(nTags)) {
+        continue
+      }
+      activeNotes++
+      if (nTags.length === 0) untagged++
+    }
 
     return {
       tags: sortNodes(roots),

@@ -5,6 +5,7 @@ import {
   normalizeTag
 } from '../shared/tags.js'
 import { parseNoteContent, buildNoteContent, setProp } from '../shared/noteMeta.js'
+import { createTagMatcher } from '../shared/tagMatcher.js'
 
 /**
  * Merge tag paths into a note's canonical content by rewriting the `tags`
@@ -52,6 +53,10 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
   const { notes, revisions, tags, links, renders, search, imageStore, mcpEditing } = services
   const actor = actorFor(authInfo)
   const clientKey = authInfo?.clientId || 'mcp:anonymous'
+  const tagMatcher = createTagMatcher(authInfo?.tagWhitelist, { isAdmin: authInfo?.isAdmin ?? false })
+  function getPermittedNote(id) {
+    return notes.getNote(id, { tagMatcher })
+  }
   const server = new McpServer({ name: 'local-keep', version: '1.0.0' })
 
   function canWrite() {
@@ -331,7 +336,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
 
     for (const noteId of uniqueIds) {
       try {
-        const note = notes.getNote(noteId)
+        const note = getPermittedNote(noteId)
         if (note.archivedAt) {
           skipped += 1
           results.push({
@@ -419,7 +424,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     const parts = []
     for (const id of ids) {
       try {
-        const note = notes.getNote(id)
+        const note = getPermittedNote(id)
         parts.push(`[[note:${id}|${note.displayTitle || note.title || id}]]`)
       } catch (_) { /* ignore missing related note */ }
     }
@@ -456,7 +461,8 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
         updatedBefore: args.updated_before || null,
         includeArchived: !!args.include_archived,
         limit: args.limit || 20,
-        offset: args.offset || 0
+        offset: args.offset || 0,
+        tagMatcher
       }))
     } catch (e) { return fail(e.message) }
   })
@@ -480,7 +486,8 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
         type: args.type || null,
         includeArchived: !!args.include_archived,
         limit: args.limit || 20,
-        offset: args.offset || 0
+        offset: args.offset || 0,
+        tagMatcher
       }))
     } catch (e) { return fail(e.message) }
   })
@@ -506,7 +513,8 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
         type: args.type || null,
         includeArchived: !!args.include_archived,
         limit: args.limit || 20,
-        offset: args.offset || 0
+        offset: args.offset || 0,
+        tagMatcher
       }))
     } catch (e) { return fail(e.message) }
   })
@@ -524,7 +532,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     })
   }, async (args) => {
     try {
-      let note = notes.getNote(args.note_id)
+      let note = getPermittedNote(args.note_id)
       const includeCanvas = args.include_canvas === true
       const raw = note.content || ''
       const parsed = parseNoteContent(raw)
@@ -583,7 +591,8 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
         title: args.title || '',
         content,
         actor,
-        source: 'mcp'
+        source: 'mcp',
+        tagMatcher
       })
       const head = revisions.getHead(note.id)
       return text({
@@ -611,7 +620,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     try {
       requireWrite(authInfo)
       assertNoWriteSession()
-      const note = notes.getNote(args.note_id)
+      const note = getPermittedNote(args.note_id)
       assertActiveNote(note)
       let content = args.content
       if (args.related_note_ids?.length) {
@@ -661,7 +670,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     try {
       requireWrite(authInfo)
       assertNoWriteSession()
-      const note = notes.getNote(args.note_id)
+      const note = getPermittedNote(args.note_id)
       assertActiveNote(note)
       // Append to the body only: the fence is metadata, not prose.
       const current = parseNoteContent(note.content || '')
@@ -754,7 +763,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     try {
       requireWrite(authInfo)
       assertNoWriteSession()
-      const note = notes.getNote(args.note_id)
+      const note = getPermittedNote(args.note_id)
       assertActiveNote(note)
       if (!args.set && !args.remove) {
         throw new Error('set_properties requires set or remove')
@@ -826,6 +835,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
           error.guide = 'Pass note_id from list_notes or search_notes.'
           throw error
         }
+        getPermittedNote(args.note_id)
         if (args.action === 'open_write') requireWrite(authInfo)
         return text(mcpEditing.open({
           clientKey,
@@ -1094,8 +1104,8 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
   }, async (args) => {
     try {
       requireWrite(authInfo)
-      const before = notes.getNote(args.note_id)
-      const note = notes.archiveNote(args.note_id, actor, 'mcp')
+      const before = getPermittedNote(args.note_id)
+      const note = notes.archiveNote(args.note_id, actor, 'mcp', tagMatcher)
       return text({
         note: noteSummary(note),
         notice: before.archivedAt ? 'Note was already archived.' : 'Note archived.'
@@ -1109,8 +1119,8 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
   }, async (args) => {
     try {
       requireWrite(authInfo)
-      const before = notes.getNote(args.note_id)
-      const note = notes.restoreNote(args.note_id, actor, 'mcp')
+      const before = getPermittedNote(args.note_id)
+      const note = notes.restoreNote(args.note_id, actor, 'mcp', tagMatcher)
       return text({
         note: noteSummary(note),
         notice: before.archivedAt ? 'Note restored.' : 'Note was not archived.'
@@ -1130,7 +1140,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     try {
       requireWrite(authInfo)
       assertNoWriteSession()
-      const note = notes.getNote(args.note_id)
+      const note = getPermittedNote(args.note_id)
       if (!note.archivedAt) {
         const error = new Error('Only archived notes can be purged')
         error.code = 'note_not_archived'
@@ -1174,9 +1184,11 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     try {
       requireWrite(authInfo)
       assertNoWriteSession()
-      const archived = notes.listArchivedNotes()
-      const archivedById = new Map(archived.map(note => [note.id, note]))
-      let candidates = archived
+      let candidates = notes.listArchivedNotes()
+      if (tagMatcher && !tagMatcher.isUnrestricted) {
+        candidates = candidates.filter(n => tagMatcher.isAllowed(tags.tagsForNote(n.id)))
+      }
+      const archivedById = new Map(candidates.map(note => [note.id, note]))
 
       if (Array.isArray(args.note_ids) && args.note_ids.length) {
         const wanted = [...new Set(args.note_ids)]
@@ -1185,7 +1197,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
         for (const id of wanted) {
           if (archivedById.has(id)) continue
           try {
-            const note = notes.getNote(id)
+            const note = getPermittedNote(id)
             if (!note.archivedAt) active.push(id)
           } catch (_) {
             missing.push(id)
@@ -1286,7 +1298,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
   }, async (args) => {
     try {
       requireWrite(authInfo)
-      return text(notes.promoteRevision(args.note_id, args.revision_id, actor))
+      return text(notes.promoteRevision(args.note_id, args.revision_id, actor, tagMatcher))
     } catch (e) { return fail(e.message) }
   })
 
@@ -1296,7 +1308,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     new ResourceTemplate('local-keep://notes/{noteId}', { list: undefined }),
     { description: 'Current note markdown', mimeType: 'text/markdown' },
     async (uri, { noteId }) => {
-      const note = notes.getNote(decodeURIComponent(String(noteId)))
+      const note = getPermittedNote(decodeURIComponent(String(noteId)))
       return { contents: [{ uri: uri.href, mimeType: 'text/markdown', text: note.content || '' }] }
     }
   )
@@ -1306,6 +1318,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     new ResourceTemplate('local-keep://notes/{noteId}/revisions/{revisionId}', { list: undefined }),
     { description: 'Historical revision markdown', mimeType: 'text/markdown' },
     async (uri, { noteId, revisionId }) => {
+      getPermittedNote(decodeURIComponent(String(noteId)))
       const revision = revisions.getRevision(decodeURIComponent(String(revisionId)))
       if (!revision || revision.note_id !== decodeURIComponent(String(noteId))) {
         throw new Error('Revision not found')
@@ -1319,7 +1332,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     new ResourceTemplate('local-keep://notes/{noteId}/thread', { list: undefined }),
     { description: 'Revision tree JSON', mimeType: 'application/json' },
     async (uri, { noteId }) => {
-      const history = notes.history(decodeURIComponent(String(noteId)))
+      const history = notes.history(decodeURIComponent(String(noteId)), tagMatcher)
       return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(history) }] }
     }
   )
@@ -1329,6 +1342,7 @@ export function createMcpServer({ services, authInfo, baseUrl = '', requestRende
     new ResourceTemplate('local-keep://notes/{noteId}/backlinks', { list: undefined }),
     { description: 'Backlinks JSON', mimeType: 'application/json' },
     async (uri, { noteId }) => {
+      getPermittedNote(decodeURIComponent(String(noteId)))
       const data = links.backlinks(decodeURIComponent(String(noteId)))
       return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(data) }] }
     }

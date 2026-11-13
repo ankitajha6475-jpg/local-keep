@@ -33,7 +33,9 @@ function toRecord(row) {
     createdAt: row.createdAt ?? row.created_at,
     lastUsedAt: row.lastUsedAt ?? row.last_used_at ?? null,
     revokedAt: row.revokedAt ?? row.revoked_at ?? null,
-    createdBy: row.createdBy ?? row.created_by ?? null
+    createdBy: row.createdBy ?? row.created_by ?? null,
+    userId: row.userId ?? row.user_id ?? null,
+    username: row.username ?? null
   }
 }
 
@@ -46,18 +48,20 @@ export function ensureApiTokensTable(db) {
       scopes TEXT NOT NULL DEFAULT 'read,write',
       created_at TEXT NOT NULL,
       last_used_at TEXT,
-      revoked_at TEXT
+      revoked_at TEXT,
+      user_id TEXT
     );
   `)
   const columns = new Set(db.prepare("PRAGMA table_info('api_tokens')").all().map(column => column.name))
   if (!columns.has('expires_at')) db.exec('ALTER TABLE api_tokens ADD COLUMN expires_at TEXT')
   if (!columns.has('created_by')) db.exec('ALTER TABLE api_tokens ADD COLUMN created_by TEXT')
+  if (!columns.has('user_id')) db.exec('ALTER TABLE api_tokens ADD COLUMN user_id TEXT REFERENCES users(id) ON DELETE CASCADE')
 }
 
 export function createTokenService({ db }) {
   ensureApiTokensTable(db)
 
-  function create({ name, scopes = 'read,write', expiresAt = null, createdBy = null } = {}) {
+  function create({ name, scopes = 'read,write', expiresAt = null, createdBy = null, userId = null } = {}) {
     const cleanName = String(name || '').trim()
     if (!cleanName) {
       const error = new Error('Token name is required')
@@ -84,9 +88,9 @@ export function createTokenService({ db }) {
       }
     }
     db.prepare(`
-      INSERT INTO api_tokens (id, name, token_hash, scopes, created_at, expires_at, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, cleanName, hashToken(raw), cleanScopes.join(','), now, expiry, createdBy || null)
+      INSERT INTO api_tokens (id, name, token_hash, scopes, created_at, expires_at, created_by, user_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, cleanName, hashToken(raw), cleanScopes.join(','), now, expiry, createdBy || null, userId || null)
     return {
       token: raw,
       record: {
@@ -95,24 +99,39 @@ export function createTokenService({ db }) {
         scopes: cleanScopes,
         createdAt: now,
         expiresAt: expiry,
-        createdBy: createdBy || null
+        createdBy: createdBy || null,
+        userId: userId || null
       }
     }
   }
 
-  function list() {
+  function list(userId = null) {
+    if (userId) {
+      return db.prepare(`
+        SELECT t.id, t.name, t.scopes, t.created_at AS createdAt, t.last_used_at AS lastUsedAt,
+               t.revoked_at AS revokedAt, t.expires_at AS expiresAt, t.created_by AS createdBy,
+               t.user_id AS userId, u.username AS username
+        FROM api_tokens t
+        LEFT JOIN users u ON u.id = t.user_id
+        WHERE t.user_id = ?
+        ORDER BY t.created_at DESC
+      `).all(userId).map(toRecord)
+    }
     return db.prepare(`
-      SELECT id, name, scopes, created_at AS createdAt, last_used_at AS lastUsedAt,
-             revoked_at AS revokedAt, expires_at AS expiresAt, created_by AS createdBy
-      FROM api_tokens
-      ORDER BY created_at DESC
+      SELECT t.id, t.name, t.scopes, t.created_at AS createdAt, t.last_used_at AS lastUsedAt,
+             t.revoked_at AS revokedAt, t.expires_at AS expiresAt, t.created_by AS createdBy,
+             t.user_id AS userId, u.username AS username
+      FROM api_tokens t
+      LEFT JOIN users u ON u.id = t.user_id
+      ORDER BY t.created_at DESC
     `).all().map(toRecord)
   }
 
   function getById(id) {
     const row = db.prepare(`
       SELECT id, name, scopes, created_at AS createdAt, last_used_at AS lastUsedAt,
-             revoked_at AS revokedAt, expires_at AS expiresAt, created_by AS createdBy
+             revoked_at AS revokedAt, expires_at AS expiresAt, created_by AS createdBy,
+             user_id AS userId
       FROM api_tokens WHERE id = ?
     `).get(id)
     return row ? toRecord(row) : null
@@ -149,7 +168,8 @@ export function createTokenService({ db }) {
       id: row.id,
       name: row.name,
       scopes: String(row.scopes || '').split(',').filter(Boolean),
-      expiresAt: row.expires_at || null
+      expiresAt: row.expires_at || null,
+      userId: row.user_id || null
     }
   }
 

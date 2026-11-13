@@ -243,7 +243,7 @@
                   <button v-if="isAdmin" type="button" :data-shortcut="shortcut('interfaceSettings')" @click="openUiSettings">
                     <AppIcon name="sliders" :size="16" /> Interface
                   </button>
-                  <button v-if="isAdmin" type="button" :data-shortcut="shortcut('mcpSettings')" @click="openMcpSettings">
+                  <button type="button" :data-shortcut="shortcut('mcpSettings')" @click="openMcpSettings">
                     <AppIcon name="plug" :size="16" /> MCP access
                   </button>
                   <button v-if="isAdmin" type="button" :data-shortcut="shortcut('hybridSettings')" @click="openEmbeddingSettings">
@@ -559,7 +559,7 @@
             admin tokens can also manage tokens and configuration. Tokens are shown once and
             stored hashed. Only a human admin session can create another admin token.
           </p>
-          <div class="mcp-limit-settings">
+          <div v-if="isAdmin" class="mcp-limit-settings">
             <h3>Session limits</h3>
             <p class="mcp-hint">
               Limits apply per MCP token. Raise the write limit when several sub-agents share
@@ -586,7 +586,7 @@
             <select v-model="mcpTokenScopes" aria-label="Token scopes">
               <option value="read">read (read-only)</option>
               <option value="read,write">read, write (client)</option>
-              <option value="read,write,admin">read, write, admin</option>
+              <option v-if="isAdmin" value="read,write,admin">read, write, admin</option>
             </select>
             <input v-model.number="mcpTokenExpiresDays" type="number" min="0" placeholder="Expires in days">
             <button type="submit" class="save-btn" :data-shortcut="shortcut('mcpCreateToken')" :disabled="!mcpTokenName.trim()">Create token</button>
@@ -602,6 +602,7 @@
             <div v-for="token in mcpTokens" :key="token.id" class="mcp-token-row">
               <div>
                 <strong>{{ token.name }}</strong>
+                <span v-if="isAdmin && token.username" class="user-badge" style="margin-left: 0.4rem;">@{{ token.username }}</span>
                 <small>
                   {{ token.scopes.join(', ') }}
                   <template v-if="token.createdBy"> · by {{ token.createdBy }}</template>
@@ -748,6 +749,12 @@
               <option value="admin">Admin</option>
             </select>
             <button type="submit" class="save-btn" :data-shortcut="shortcut('usersAdd')">Add person</button>
+            <input
+              v-model="newUserForm.tagWhitelist"
+              type="text"
+              placeholder="Tag whitelist (.gitignore syntax, e.g. * or work/*,!:untagged)"
+              class="new-user-whitelist"
+            >
           </form>
           <p v-if="usersError" class="error">{{ usersError }}</p>
           <div v-if="resetPasswordResult" class="temp-password">
@@ -761,29 +768,45 @@
 
           <p v-if="usersLoading" class="users-hint">Loading…</p>
           <div v-else class="users-list">
-            <div v-for="user in usersList" :key="user.id" class="user-row" :class="{ disabled: user.disabledAt }">
-              <div class="user-identity">
-                <strong>{{ user.displayName || user.username }}</strong>
-                <small>@{{ user.username }}<template v-if="user.lastLoginAt"> · last seen {{ formatDate(user.lastLoginAt) }}</template></small>
+            <div v-for="user in usersList" :key="user.id" class="user-card" :class="{ disabled: user.disabledAt }">
+              <div class="user-row">
+                <div class="user-identity">
+                  <strong>{{ user.displayName || user.username }}</strong>
+                  <small>@{{ user.username }}<template v-if="user.lastLoginAt"> · last seen {{ formatDate(user.lastLoginAt) }}</template></small>
+                </div>
+                <select
+                  :value="user.role"
+                  :disabled="user.id === currentUser?.id"
+                  @change="updateUser(user, { role: $event.target.value })"
+                >
+                  <option value="member">Member</option>
+                  <option value="admin">Admin</option>
+                </select>
+                <span v-if="user.disabledAt" class="user-badge">Disabled</span>
+                <span v-else-if="user.id === currentUser?.id" class="user-badge">You</span>
+                <button v-if="user.id !== currentUser?.id" type="button" class="small-btn" @click="resetUserPassword(user)">Reset password</button>
+                <button
+                  v-if="user.id !== currentUser?.id"
+                  type="button"
+                  class="small-btn"
+                  :class="{ danger: !user.disabledAt }"
+                  @click="updateUser(user, { disabled: !user.disabledAt })"
+                >{{ user.disabledAt ? 'Enable' : 'Disable' }}</button>
               </div>
-              <select
-                :value="user.role"
-                :disabled="user.id === currentUser?.id"
-                @change="updateUser(user, { role: $event.target.value })"
-              >
-                <option value="member">Member</option>
-                <option value="admin">Admin</option>
-              </select>
-              <span v-if="user.disabledAt" class="user-badge">Disabled</span>
-              <span v-else-if="user.id === currentUser?.id" class="user-badge">You</span>
-              <button v-if="user.id !== currentUser?.id" type="button" class="small-btn" @click="resetUserPassword(user)">Reset password</button>
-              <button
-                v-if="user.id !== currentUser?.id"
-                type="button"
-                class="small-btn"
-                :class="{ danger: !user.disabledAt }"
-                @click="updateUser(user, { disabled: !user.disabledAt })"
-              >{{ user.disabledAt ? 'Enable' : 'Disable' }}</button>
+              <div class="user-whitelist-row">
+                <input
+                  :value="editingTagWhitelists[user.id] ?? user.tagWhitelist ?? ''"
+                  @input="editingTagWhitelists[user.id] = $event.target.value"
+                  placeholder="Tag whitelist (e.g. * or work/*,!:untagged)"
+                  class="user-whitelist-input"
+                >
+                <button
+                  v-if="editingTagWhitelists[user.id] !== undefined && editingTagWhitelists[user.id] !== (user.tagWhitelist || '')"
+                  type="button"
+                  class="small-btn save-btn"
+                  @click="saveUserWhitelist(user)"
+                >Save tags</button>
+              </div>
             </div>
           </div>
         </div>
@@ -1504,7 +1527,8 @@ export default {
     const usersList = ref([])
     const usersLoading = ref(false)
     const usersError = ref('')
-    const newUserForm = ref({ username: '', displayName: '', password: '', role: 'member' })
+    const newUserForm = ref({ username: '', displayName: '', password: '', role: 'member', tagWhitelist: '' })
+    const editingTagWhitelists = ref({})
     const resetPasswordResult = ref('')
     const embeddingSettingsOpen = ref(false)
     const embeddingSettings = ref(null)
@@ -3130,7 +3154,8 @@ export default {
       if (!isAdmin.value) return
       usersOpen.value = true
       resetPasswordResult.value = ''
-      newUserForm.value = { username: '', displayName: '', password: '', role: 'member' }
+      editingTagWhitelists.value = {}
+      newUserForm.value = { username: '', displayName: '', password: '', role: 'member', tagWhitelist: '' }
       await loadUsers()
     }
 
@@ -3144,11 +3169,24 @@ export default {
             displayName: newUserForm.value.displayName.trim(),
             password: newUserForm.value.password,
             role: newUserForm.value.role,
+            tagWhitelist: newUserForm.value.tagWhitelist ? newUserForm.value.tagWhitelist.trim() : null,
             mustChangePassword: true
           })
         })
-        newUserForm.value = { username: '', displayName: '', password: '', role: 'member' }
+        newUserForm.value = { username: '', displayName: '', password: '', role: 'member', tagWhitelist: '' }
         await loadUsers()
+      } catch (e) {
+        usersError.value = e.message
+      }
+    }
+
+    async function saveUserWhitelist(user) {
+      try {
+        const next = editingTagWhitelists.value[user.id]
+        if (next === undefined) return
+        usersError.value = ''
+        await updateUser(user, { tagWhitelist: next.trim() })
+        delete editingTagWhitelists.value[user.id]
       } catch (e) {
         usersError.value = e.message
       }
@@ -4302,7 +4340,9 @@ export default {
       mcpTokenScopes.value = 'read,write'
       mcpTokenExpiresDays.value = null
       mcpLimitsNotice.value = ''
-      await Promise.all([loadMcpTokens(), loadMcpLimits()])
+      const loads = [loadMcpTokens()]
+      if (isAdmin.value) loads.push(loadMcpLimits())
+      await Promise.all(loads)
     }
 
     function applyUiSettings(data) {
@@ -5128,11 +5168,13 @@ export default {
       usersLoading,
       usersError,
       newUserForm,
+      editingTagWhitelists,
       resetPasswordResult,
       openUsers,
       loadUsers,
       createUser,
       updateUser,
+      saveUserWhitelist,
       resetUserPassword,
       copyToClipboard,
       // Notes
@@ -9694,11 +9736,57 @@ main {
   white-space: nowrap;
 }
 
+.new-user-whitelist {
+  grid-column: 1 / -1;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.75rem;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid #dbe2ea;
+  border-radius: 6px;
+  background: #fff;
+}
+
 .users-list {
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: 0.5rem;
   margin-top: 0.6rem;
+}
+
+.user-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.user-card.disabled {
+  opacity: 0.62;
+  background: #f8fafc;
+}
+
+.user-card .user-row {
+  border: none;
+  padding: 0;
+  border-radius: 0;
+}
+
+.user-whitelist-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.user-whitelist-input {
+  flex: 1;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.72rem;
+  padding: 0.25rem 0.45rem;
+  border: 1px solid #dbe2ea;
+  border-radius: 6px;
+  background: #fff;
 }
 
 .user-row {

@@ -38,6 +38,7 @@ import { createMcpServer } from './src/mcp/createServer.js'
 import { createEventBus, EVENTS } from './src/server/events.js'
 import { createTextCollabService } from './src/server/services/textCollab.js'
 import { createMcpEditingService } from './src/server/services/mcpEditing.js'
+import { createTagMatcher } from './src/shared/tagMatcher.js'
 import { bytesToBase64, base64ToBytes } from './src/shared/base64.js'
 import {
   extractCanvasText,
@@ -59,6 +60,7 @@ import { migration012AppSettings } from './src/server/migrations/012-app-setting
 import { migration013NoteColor } from './src/server/migrations/013-note-color.js'
 import { migration014VersionPinnedLinks } from './src/server/migrations/014-version-pinned-links.js'
 import { migration015NoteMetadata } from './src/server/migrations/015-note-metadata.js'
+import { migration016UnifiedAccountsTagWhitelist } from './src/server/migrations/016-unified-accounts-tag-whitelist.js'
 
 import debugLib from 'debug'
 const log = debugLib('local-keep:server')
@@ -345,7 +347,7 @@ try {
 try {
   const migration = runMigrations({
     db,
-    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits, migration012AppSettings, migration013NoteColor, migration014VersionPinnedLinks, migration015NoteMetadata],
+    migrations: [migration001NoteThreads, migration002RelationshipsAndTags, migration003ApiTokens, migration004MultiuserAuth, migration005Embeddings, migration006OptionalRerank, migration007LiveTextCollab, migration008EmbeddingVariants, migration009EmbeddingTuning, migration010TokenAdmin, migration011McpSessionLimits, migration012AppSettings, migration013NoteColor, migration014VersionPinnedLinks, migration015NoteMetadata, migration016UnifiedAccountsTagWhitelist],
     backupDir: BACKUPS_DIR,
     context: { imageStore }
   })
@@ -497,8 +499,8 @@ try {
   console.error('⚠️ image_refs migration error:', e.message)
 }
 
-function getAllNotes() {
-  return notesService.listNoteIndex({ includeArchived: true })
+function getAllNotes(tagMatcher = null) {
+  return notesService.listNoteIndex({ includeArchived: true, tagMatcher })
 }
 
 // Security headers.
@@ -596,17 +598,19 @@ app.post('/api/images/cleanup', checkAuth, (req, res) => {
 
 // Broadcast notes to all authenticated clients
 function broadcastNotes(excludeWs = null) {
-  const notes = getAllNotes()
-  const message = JSON.stringify({ type: 'notes', notes })
+  const allNotes = getAllNotes()
 
-  console.log(`📢 Broadcasting to ${countClients()} clients, ${notes.length} notes`)
+  console.log(`📢 Broadcasting to ${countClients()} clients, ${allNotes.length} notes`)
 
   let sent = 0
   for (const [token, wsSet] of clients) {
     for (const ws of wsSet) {
       if (ws !== excludeWs && ws.readyState === WebSocket.OPEN) {
         try {
-          ws.send(message)
+          const notes = ws._tagMatcher && !ws._tagMatcher.isUnrestricted
+            ? allNotes.filter(n => ws._tagMatcher.isAllowed(n.tags))
+            : allNotes
+          ws.send(JSON.stringify({ type: 'notes', notes }))
           sent++
           console.log(`  ✓ Sent to one client`)
         } catch (e) {
@@ -870,7 +874,11 @@ function issueSession(res, user) {
 }
 
 function requireAdmin(req, res, next) {
-  if (req.user?.role === 'admin' || req.auth?.scopes?.includes('admin')) {
+  if (req.mcpToken) {
+    if (req.auth?.scopes?.includes('admin')) return next()
+    return authError(res, 403, 'Admin access required', 'forbidden')
+  }
+  if (req.user?.role === 'admin') {
     return next()
   }
   return authError(res, 403, 'Admin access required', 'forbidden')
@@ -982,7 +990,8 @@ app.post('/api/users', checkAuth, requireAdmin, async (req, res) => {
       displayName: req.body?.displayName,
       password: req.body?.password,
       role: req.body?.role === 'admin' ? 'admin' : 'member',
-      mustChangePassword: req.body?.mustChangePassword !== false
+      mustChangePassword: req.body?.mustChangePassword !== false,
+      tagWhitelist: req.body?.tagWhitelist !== undefined ? req.body.tagWhitelist : (req.body?.role === 'admin' ? null : '*')
     })
     res.json({ user })
   } catch (error) {
@@ -995,11 +1004,23 @@ app.patch('/api/users/:id', checkAuth, requireAdmin, (req, res) => {
     const user = users.update(req.params.id, {
       displayName: req.body?.displayName,
       role: req.body?.role,
-      disabled: req.body?.disabled
+      disabled: req.body?.disabled,
+      tagWhitelist: req.body?.tagWhitelist
     })
     if (user.disabledAt) {
       closeSocketsForUser(user.id)
       sessions.revokeUser(user.id)
+    } else {
+      // Refresh tagMatcher for active sockets of this user
+      for (const [token, wsSet] of clients) {
+        for (const ws of wsSet) {
+          if (ws._user?.id === user.id) {
+            ws._user = user
+            ws._tagMatcher = createTagMatcher(user.tagWhitelist, { isAdmin: user.role === 'admin' })
+          }
+        }
+      }
+      broadcastNotes()
     }
     res.json({ user })
   } catch (error) {
@@ -1114,15 +1135,23 @@ function authenticate(req) {
   if (header.startsWith('Bearer ')) {
     const token = tokens.verify(header.slice(7).trim())
     if (token) {
+      let user = token.userId ? users.getById(token.userId) : null
+      if (!user) user = users.getByUsername('admin')
+      if (!user || user.disabledAt) return null
       const actor = token.name.startsWith('mcp:') ? token.name : `mcp:${token.name}`
       return {
         actor,
         token,
+        user,
         authInfo: {
           clientId: token.id,
           actor,
           tokenId: token.id,
-          scopes: token.scopes
+          scopes: token.scopes,
+          userId: user.id,
+          username: user.username,
+          tagWhitelist: user.tagWhitelist,
+          isAdmin: user.role === 'admin'
         }
       }
     }
@@ -1146,7 +1175,11 @@ function authenticate(req) {
       authInfo: {
         clientId: `user:${user.username}`,
         actor: `user:${user.username}`,
-        scopes: ['read', 'write']
+        scopes: ['read', 'write'],
+        userId: user.id,
+        username: user.username,
+        tagWhitelist: user.tagWhitelist,
+        isAdmin: user.role === 'admin'
       }
     }
   }
@@ -1166,6 +1199,8 @@ function checkAuth(req, res, next) {
   req.user = auth.user || null
   req.session = auth.session || null
   req.sessionId = auth.sessionId || null
+  req.tagMatcher = createTagMatcher(auth.user?.tagWhitelist, { isAdmin: auth.user?.role === 'admin' })
+  req.auth.tagMatcher = req.tagMatcher
   if (req.user?.mustChangePassword) {
     const allowed = new Set([
       '/api/auth/change-password',
@@ -1192,6 +1227,8 @@ function mcpAuth(req, res, next) {
   req.user = auth.user || null
   req.session = auth.session || null
   req.sessionId = auth.sessionId || null
+  req.tagMatcher = createTagMatcher(auth.user?.tagWhitelist, { isAdmin: auth.user?.role === 'admin' })
+  req.auth.tagMatcher = req.tagMatcher
   if (req.user?.mustChangePassword) {
     return res.status(403).json({ error: 'Password change required', code: 'password_change_required' })
   }
@@ -1199,36 +1236,62 @@ function mcpAuth(req, res, next) {
 }
 
 // MCP token management. Human admins and admin-scoped tokens may manage
-// client tokens; only a human admin session may mint another admin token.
-app.get('/api/mcp/tokens', checkAuth, requireAdmin, (req, res) => {
-  try { res.json(tokens.list()) } catch (e) { sendServiceError(res, e) }
+// client tokens; human users can list and create tokens for their own account.
+app.get('/api/mcp/tokens', checkAuth, (req, res) => {
+  try {
+    if (req.mcpToken && !req.auth?.scopes?.includes('admin')) {
+      return res.status(403).json({ error: 'Admin access required', code: 'forbidden' })
+    }
+    if (req.user?.role === 'admin' || req.auth?.scopes?.includes('admin')) {
+      const userId = req.query.userId || null
+      res.json(tokens.list(userId))
+    } else {
+      res.json(tokens.list(req.user?.id))
+    }
+  } catch (e) { sendServiceError(res, e) }
 })
 
-app.post('/api/mcp/tokens', checkAuth, requireAdmin, (req, res) => {
+app.post('/api/mcp/tokens', checkAuth, (req, res) => {
   try {
+    if (req.mcpToken && !req.auth?.scopes?.includes('admin')) {
+      return res.status(403).json({ error: 'Admin access required', code: 'forbidden' })
+    }
     const scopes = Array.isArray(req.body?.scopes)
       ? req.body.scopes
       : String(req.body?.scopes || 'read,write').split(',')
     const cleanScopes = [...new Set(scopes.map(scope => String(scope).trim()).filter(Boolean))]
-    if (cleanScopes.includes('admin') && req.mcpToken) {
+    if (cleanScopes.includes('admin') && (req.user?.role !== 'admin' || req.mcpToken)) {
       return res.status(403).json({
         error: 'Admin tokens can only be created from a human admin session',
         code: 'admin_token_requires_human'
       })
     }
+    const targetUserId = (req.user?.role === 'admin' && req.body?.userId) ? req.body.userId : req.user?.id
     const created = tokens.create({
       name: req.body?.name,
       scopes: cleanScopes,
       expiresAt: req.body?.expiresAt || null,
-      createdBy: req.actor
+      createdBy: req.actor,
+      userId: targetUserId
     })
     res.json(created)
   } catch (e) { sendServiceError(res, e) }
 })
 
-app.delete('/api/mcp/tokens/:id', checkAuth, requireAdmin, (req, res) => {
+app.delete('/api/mcp/tokens/:id', checkAuth, (req, res) => {
   try {
+    if (req.mcpToken && !req.auth?.scopes?.includes('admin')) {
+      return res.status(403).json({ error: 'Admin access required', code: 'forbidden' })
+    }
     const token = tokens.getById(req.params.id)
+    if (!token) {
+      return res.status(404).json({ error: 'Token not found', code: 'token_not_found' })
+    }
+    const isOwner = token.userId === req.user?.id
+    const isAdminUser = req.user?.role === 'admin' || req.auth?.scopes?.includes('admin')
+    if (!isOwner && !isAdminUser) {
+      return res.status(403).json({ error: 'Cannot revoke another user\'s token', code: 'forbidden' })
+    }
     const result = tokens.revoke(req.params.id)
     if (token) mcpEditing?.closeForToken(token.id, { discard: false, reason: 'token-revoked' })
     res.json(result)
@@ -1300,7 +1363,8 @@ app.get('/api/notes', checkAuth, (req, res) => {
       tag: req.query.tag || null,
       exactTag: req.query.exactTag === '1' || req.query.exactTag === 'true',
       limit: req.query.limit != null ? Number(req.query.limit) : null,
-      offset: req.query.offset != null ? Number(req.query.offset) : 0
+      offset: req.query.offset != null ? Number(req.query.offset) : 0,
+      tagMatcher: req.tagMatcher
     })
     res.json(notes)
   } catch (error) {
@@ -1317,7 +1381,8 @@ app.post('/api/notes', checkAuth, (req, res) => {
       canvasData: req.body.canvasData || null,
       thumbnail: req.body.thumbnail || null,
       actor: req.actor || 'ui',
-      source: 'ui'
+      source: 'ui',
+      tagMatcher: req.tagMatcher
     })
     const head = revisions.getHead(note.id)
     const revision = head ? revisions.getRevision(head.head_revision_id) : null
@@ -1331,7 +1396,8 @@ app.post('/api/notes', checkAuth, (req, res) => {
 app.get('/api/notes/index', checkAuth, (req, res) => {
   try {
     res.json(notesService.listNoteIndex({
-      includeArchived: req.query.includeArchived !== '0' && req.query.includeArchived !== 'false'
+      includeArchived: req.query.includeArchived !== '0' && req.query.includeArchived !== 'false',
+      tagMatcher: req.tagMatcher
     }))
   } catch (error) {
     sendServiceError(res, error)
@@ -1347,7 +1413,7 @@ app.post('/api/notes/window', checkAuth, (req, res) => {
     if (ids.length > 200) {
       return res.status(400).json({ error: 'At most 200 note ids are allowed' })
     }
-    res.json(notesService.listNoteCardsByIds(ids))
+    res.json(notesService.listNoteCardsByIds(ids, { tagMatcher: req.tagMatcher }))
   } catch (error) {
     sendServiceError(res, error)
   }
@@ -1355,7 +1421,7 @@ app.post('/api/notes/window', checkAuth, (req, res) => {
 
 app.get('/api/notes/:id', checkAuth, (req, res) => {
   try {
-    res.json(notesService.getNote(req.params.id))
+    res.json(notesService.getNote(req.params.id, { tagMatcher: req.tagMatcher }))
   } catch (error) {
     sendServiceError(res, error)
   }
@@ -1467,7 +1533,7 @@ app.put('/api/notes/:id', checkAuth, (req, res) => {
 
 app.put('/api/notes/:id/color', checkAuth, (req, res) => {
   try {
-    const note = notesService.setNoteColor(req.params.id, req.body?.color ?? null)
+    const note = notesService.setNoteColor(req.params.id, req.body?.color ?? null, req.tagMatcher)
     res.json(note)
     broadcastToAllClients({
       type: 'note-color',
@@ -1481,7 +1547,7 @@ app.put('/api/notes/:id/color', checkAuth, (req, res) => {
 
 app.get('/api/notes/:id/history', checkAuth, (req, res) => {
   try {
-    res.json(notesService.history(req.params.id))
+    res.json(notesService.history(req.params.id, req.tagMatcher))
   } catch (error) {
     sendServiceError(res, error)
   }
@@ -1489,7 +1555,7 @@ app.get('/api/notes/:id/history', checkAuth, (req, res) => {
 
 app.get('/api/notes/:id/history/:revisionId', checkAuth, (req, res) => {
   try {
-    res.json(notesService.revisionSnapshot(req.params.id, req.params.revisionId))
+    res.json(notesService.revisionSnapshot(req.params.id, req.params.revisionId, req.tagMatcher))
   } catch (error) {
     sendServiceError(res, error)
   }
@@ -1498,7 +1564,7 @@ app.get('/api/notes/:id/history/:revisionId', checkAuth, (req, res) => {
 app.post('/api/notes/:id/history/:revisionId/restore', checkAuth, (req, res) => {
   try {
     const result = notesService.restoreRevision(
-      req.params.id, req.params.revisionId, req.actor || 'ui'
+      req.params.id, req.params.revisionId, req.actor || 'ui', req.tagMatcher
     )
     res.json(result)
     broadcastNotes()
@@ -1510,7 +1576,7 @@ app.post('/api/notes/:id/history/:revisionId/restore', checkAuth, (req, res) => 
 app.post('/api/notes/:id/history/:revisionId/promote', checkAuth, (req, res) => {
   try {
     const result = notesService.promoteRevision(
-      req.params.id, req.params.revisionId, req.actor || 'ui'
+      req.params.id, req.params.revisionId, req.actor || 'ui', req.tagMatcher
     )
     res.json(result)
     broadcastNotes()
@@ -1521,7 +1587,7 @@ app.post('/api/notes/:id/history/:revisionId/promote', checkAuth, (req, res) => 
 
 app.post('/api/notes/:id/restore', checkAuth, (req, res) => {
   try {
-    const note = notesService.restoreNote(req.params.id, req.actor || 'ui')
+    const note = notesService.restoreNote(req.params.id, req.actor || 'ui', 'ui', req.tagMatcher)
     res.json(note)
     broadcastNotes()
   } catch (error) {
@@ -1541,9 +1607,9 @@ app.delete('/api/notes/:id', checkAuth, (req, res) => {
   try {
     const purge = req.query.purge === '1' || req.query.purge === 'true'
     if (purge) {
-      notesService.purgeNote(req.params.id, req.actor || 'ui')
+      notesService.purgeNote(req.params.id, req.actor || 'ui', 'ui', req.tagMatcher)
     } else {
-      notesService.archiveNote(req.params.id, req.actor || 'ui')
+      notesService.archiveNote(req.params.id, req.actor || 'ui', 'ui', req.tagMatcher)
     }
     clearNoteState(req.params.id)
     res.json({ success: true, purged: purge, archived: !purge })
@@ -1561,7 +1627,7 @@ app.post('/api/notes/batch-delete', checkAuth, (req, res) => {
       return res.status(400).json({ error: 'Invalid note IDs' })
     }
 
-    const changed = notesService.archiveNotes(ids, req.actor || 'ui')
+    const changed = notesService.archiveNotes(ids, req.actor || 'ui', 'ui', req.tagMatcher)
     res.json({ success: true, count: changed, archived: true })
     broadcastNotes()
     for (const id of ids) {
@@ -1578,7 +1644,7 @@ app.post('/api/notes/batch-delete', checkAuth, (req, res) => {
 
 app.get('/api/tags', checkAuth, (req, res) => {
   try {
-    res.json(tags.tree({ prefix: req.query.prefix || '' }))
+    res.json(tags.tree({ prefix: req.query.prefix || '', tagMatcher: req.tagMatcher }))
   } catch (error) {
     sendServiceError(res, error)
   }
@@ -1612,13 +1678,28 @@ app.delete('/api/tags', checkAuth, requireAdmin, (req, res) => {
 
 app.get('/api/graph', checkAuth, (req, res) => {
   try {
-    res.json(links.graph({
+    const data = links.graph({
       noteId: req.query.noteId || null,
       depth: req.query.depth != null ? Number(req.query.depth) : 1,
       tag: req.query.tag || null,
       limit: req.query.limit != null ? Number(req.query.limit) : 300,
       includeUnresolved: req.query.includeUnresolved === '1' || req.query.includeUnresolved === 'true'
-    }))
+    })
+    if (req.tagMatcher && !req.tagMatcher.isUnrestricted) {
+      const allowedNodeIds = new Set()
+      const filteredNodes = []
+      for (const node of data.nodes || []) {
+        if (req.tagMatcher.isAllowed(node.tags || [])) {
+          allowedNodeIds.add(node.id)
+          filteredNodes.push(node)
+        }
+      }
+      const filteredEdges = (data.edges || []).filter(e =>
+        allowedNodeIds.has(e.source) && allowedNodeIds.has(e.target)
+      )
+      return res.json({ nodes: filteredNodes, edges: filteredEdges })
+    }
+    res.json(data)
   } catch (error) {
     sendServiceError(res, error)
   }
@@ -1634,7 +1715,8 @@ app.get('/api/search/semantic', checkAuth, async (req, res) => {
       type: req.query.type || null,
       includeArchived: req.query.includeArchived === '1',
       limit: req.query.limit != null ? Number(req.query.limit) : 20,
-      offset: req.query.offset != null ? Number(req.query.offset) : 0
+      offset: req.query.offset != null ? Number(req.query.offset) : 0,
+      tagMatcher: req.tagMatcher
     }))
   } catch (error) {
     sendServiceError(res, error)
@@ -1651,7 +1733,8 @@ app.get('/api/search/hybrid', checkAuth, async (req, res) => {
       type: req.query.type || null,
       includeArchived: req.query.includeArchived === '1',
       limit: req.query.limit != null ? Number(req.query.limit) : 20,
-      offset: req.query.offset != null ? Number(req.query.offset) : 0
+      offset: req.query.offset != null ? Number(req.query.offset) : 0,
+      tagMatcher: req.tagMatcher
     }))
   } catch (error) {
     sendServiceError(res, error)
@@ -1666,8 +1749,11 @@ app.get('/api/search', checkAuth, (req, res) => {
   if (tag) tagIds = tags.noteIdsForTag(tag, { exact: exactTag })
 
   if (!raw) {
-    if (tagIds) return res.json([...tagIds])
-    return res.json([])
+    let ids = tagIds ? [...tagIds] : []
+    if (req.tagMatcher && !req.tagMatcher.isUnrestricted) {
+      ids = ids.filter(id => req.tagMatcher.isAllowed(tags.tagsForNote(id)))
+    }
+    return res.json(ids)
   }
 
   // Sanitize and build prefix query
@@ -1691,6 +1777,9 @@ app.get('/api/search', checkAuth, (req, res) => {
     `).all(query)
     let ids = rows.map(r => r.note_id)
     if (tagIds) ids = ids.filter(id => tagIds.has(id))
+    if (req.tagMatcher && !req.tagMatcher.isUnrestricted) {
+      ids = ids.filter(id => req.tagMatcher.isAllowed(tags.tagsForNote(id)))
+    }
     res.json(ids)
   } catch (e) {
     console.error('Search error:', e.message)
